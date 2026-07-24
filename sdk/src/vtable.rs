@@ -27,7 +27,7 @@ use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider, Span as SdkOtelSpan
 
 use opentelemetry_c_abi::{
     OtelAttributeType, OtelImplVtable, OtelKeyValue, OtelSpanKind, OtelSpanStatusCode, OtelStatus,
-    OtelStringView,
+    OtelStringView, OTEL_IMPL_ABI_VERSION,
 };
 
 use crate::error::{fail, fail_abi};
@@ -481,6 +481,8 @@ extern "C" fn vt_span_free(ctx: *mut c_void) {
 
 /// The single `'static` implementation vtable installed into the API global slot.
 pub(crate) static SDK_VTABLE: OtelImplVtable = OtelImplVtable {
+    abi_version: OTEL_IMPL_ABI_VERSION,
+    struct_size: std::mem::size_of::<OtelImplVtable>(),
     provider_get_tracer: vt_provider_get_tracer,
     provider_retain: vt_provider_retain,
     provider_free: vt_provider_free,

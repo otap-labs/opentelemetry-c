@@ -132,6 +132,8 @@ extern "C" fn t_span_free(ctx: *mut c_void) {
 }
 
 static TEST_VTABLE: OtelImplVtable = OtelImplVtable {
+    abi_version: opentelemetry_c_abi::OTEL_IMPL_ABI_VERSION,
+    struct_size: std::mem::size_of::<OtelImplVtable>(),
     provider_get_tracer: t_provider_get_tracer,
     provider_retain: t_provider_retain,
     provider_free: t_provider_free,
