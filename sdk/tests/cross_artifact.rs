@@ -60,13 +60,9 @@ fn is_ci() -> bool {
 
 /// Find a target profile dir that contains BOTH cdylibs.
 fn find_lib_dir() -> Option<PathBuf> {
-    // This crate lives at `<workspace>/opentelemetry-c/sdk`, so the workspace root is two
-    // parents up: opentelemetry-c/sdk -> opentelemetry-c -> <workspace>.
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
+    // This crate lives at `<workspace>/sdk`, so the workspace root is one parent up:
+    // sdk -> <workspace>.
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     // Honor CARGO_TARGET_DIR: an absolute value is used as-is; a relative value is resolved
     // against the workspace root (NOT the SDK crate dir). Otherwise default to <root>/target.
     let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
