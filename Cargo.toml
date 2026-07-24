@@ -1,0 +1,29 @@
+[workspace]
+members = [
+    "abi",
+    "api",
+    "sdk",
+]
+
+resolver = "2"
+
+[profile.bench]
+# https://doc.rust-lang.org/cargo/reference/profiles.html#bench
+# See function names in profiling reports.
+# 2/true is too much, 0 is not enough, 1 is just right for back traces
+debug = 1
+
+[workspace.dependencies]
+opentelemetry = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false }
+opentelemetry_sdk = { version = "0.32", default-features = false }
+criterion = "0.8"
+
+[workspace.lints.rust]
+rust_2024_compatibility = { level = "warn", priority = -1 }
+# No need to enable those, because it is either unnecessary or results in ugly syntax
+if_let_rescope = "allow"
+tail_expr_drop_order = "allow"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = 1 }
