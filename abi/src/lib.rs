@@ -18,28 +18,32 @@
 
 use std::os::raw::{c_char, c_void};
 
-/// Status code returned by fallible C API functions. Mirrors `otel_status_t`.
+/// Fixed-width status code returned by fallible C API functions. Mirrors `otel_status_t`.
 ///
-/// `Ok` (0) is success; any non-zero value is a failure. New variants may be appended.
-#[repr(C)]
+/// `Ok` (0) is success; any non-zero value is a failure. This is an integer newtype rather
+/// than a Rust enum so receiving a status added by a newer API/SDK remains well-defined.
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OtelStatus {
+pub struct OtelStatus(pub u32);
+
+#[allow(non_upper_case_globals)]
+impl OtelStatus {
     /// Operation completed successfully.
-    Ok = 0,
+    pub const Ok: Self = Self(0);
     /// A required pointer argument was NULL, or a handle failed validation.
-    InvalidArgument = 1,
+    pub const InvalidArgument: Self = Self(1);
     /// A string argument was not valid UTF-8 where UTF-8 is required.
-    InvalidUtf8 = 2,
+    pub const InvalidUtf8: Self = Self(2);
     /// Configuration supplied to the SDK builder was invalid.
-    InvalidConfig = 3,
+    pub const InvalidConfig: Self = Self(3);
     /// The SDK (or provider) has already been shut down.
-    AlreadyShutdown = 4,
+    pub const AlreadyShutdown: Self = Self(4);
     /// The operation did not complete within the supplied timeout.
-    Timeout = 5,
+    pub const Timeout: Self = Self(5);
     /// A span export failed at runtime. This never crashes the process.
-    ExportFailed = 6,
+    pub const ExportFailed: Self = Self(6);
     /// An unexpected internal error occurred (including a caught Rust panic).
-    InternalError = 7,
+    pub const InternalError: Self = Self(7);
 }
 
 /// A fallible-conversion error: a status code and a `'static` diagnostic message. The
@@ -319,6 +323,10 @@ impl OtelSpanStatusCode {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OtelImplVtable {
+    /// Internal ABI version. Increment only for an incompatible layout or semantic change.
+    pub abi_version: u32,
+    /// Size of this vtable in bytes. New entries may only be appended.
+    pub struct_size: usize,
     /// Create a tracer from a provider context. Returns an opaque tracer context.
     pub provider_get_tracer: extern "C" fn(
         provider_ctx: *mut c_void,
@@ -379,6 +387,12 @@ pub struct OtelImplVtable {
     pub span_free: extern "C" fn(span_ctx: *mut c_void),
 }
 
+/// Current internal ABI understood by the API and SDK libraries.
+pub const OTEL_IMPL_ABI_VERSION: u32 = 1;
+
+/// Minimum vtable size required by this API version.
+pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelImplVtable>();
+
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
@@ -429,6 +443,15 @@ mod tests {
             try_owned_string_lossy(raw).unwrap(),
             String::from_utf8_lossy(raw)
         );
+    }
+
+    #[test]
+    fn status_is_fixed_width_and_accepts_unknown_values() {
+        assert_eq!(
+            std::mem::size_of::<OtelStatus>(),
+            std::mem::size_of::<u32>()
+        );
+        assert_ne!(OtelStatus(999), OtelStatus::Ok);
     }
 
     #[test]

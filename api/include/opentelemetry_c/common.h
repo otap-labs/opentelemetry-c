@@ -48,7 +48,8 @@ extern "C" {
  * New codes may be appended in future minor releases. Treat any unrecognized
  * non-zero value as a generic failure.
  */
-typedef enum otel_status_t {
+typedef uint32_t otel_status_t;
+enum {
     OTEL_STATUS_OK = 0,               /* Success. */
     OTEL_STATUS_INVALID_ARGUMENT = 1, /* NULL/invalid pointer or handle. */
     OTEL_STATUS_INVALID_UTF8 = 2,     /* A UTF-8 string argument was malformed. */
@@ -57,7 +58,7 @@ typedef enum otel_status_t {
     OTEL_STATUS_TIMEOUT = 5,          /* Operation did not finish within the timeout. */
     OTEL_STATUS_EXPORT_FAILED = 6,    /* A runtime export failed (non-fatal). */
     OTEL_STATUS_INTERNAL_ERROR = 7    /* Unexpected internal error (incl. caught panic). */
-} otel_status_t;
+};
 
 /*
  * Boolean type. Crosses the ABI as a fixed-width uint32_t (not a C enum) so that any bit
