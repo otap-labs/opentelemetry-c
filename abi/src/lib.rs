@@ -298,6 +298,70 @@ impl OtelSpanStatusCode {
     }
 }
 
+/// Metrics instrument kind. Crosses the ABI as a validated raw `u32`.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OtelMetricInstrumentKind {
+    Counter = 0,
+    UpDownCounter = 1,
+    Gauge = 2,
+    Histogram = 3,
+    ObservableCounter = 4,
+    ObservableUpDownCounter = 5,
+    ObservableGauge = 6,
+}
+
+impl OtelMetricInstrumentKind {
+    pub fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Counter),
+            1 => Some(Self::UpDownCounter),
+            2 => Some(Self::Gauge),
+            3 => Some(Self::Histogram),
+            4 => Some(Self::ObservableCounter),
+            5 => Some(Self::ObservableUpDownCounter),
+            6 => Some(Self::ObservableGauge),
+            _ => None,
+        }
+    }
+}
+
+/// Metrics numeric type. Crosses the ABI as a validated raw `u32`.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OtelMetricNumberKind {
+    U64 = 0,
+    I64 = 1,
+    F64 = 2,
+}
+
+impl OtelMetricNumberKind {
+    pub fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::U64),
+            1 => Some(Self::I64),
+            2 => Some(Self::F64),
+            _ => None,
+        }
+    }
+}
+
+/// Internal instrument creation configuration shared by API and SDK.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelMetricInstrumentConfig {
+    pub kind: u32,
+    pub number: u32,
+    pub name: OtelStringView,
+    pub description: OtelStringView,
+    pub unit: OtelStringView,
+    pub boundaries: *const f64,
+    pub boundary_count: usize,
+    pub callback: Option<extern "C" fn(observer_ctx: *mut c_void, state: *mut c_void)>,
+    pub callback_state: *mut c_void,
+    pub callback_state_free: Option<extern "C" fn(state: *mut c_void)>,
+}
+
 /// Internal implementation vtable registered by the SDK into the API-owned global slot
 /// (and returned from `otel_sdk_get_tracer_provider`).
 ///
@@ -393,6 +457,80 @@ pub const OTEL_IMPL_ABI_VERSION: u32 = 1;
 /// Minimum vtable size required by this API version.
 pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelImplVtable>();
 
+/// Internal Metrics implementation vtable. Metrics uses a distinct provider context and
+/// API-owned global slot from traces.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelMetricsVtable {
+    /// Internal ABI version. Increment only for an incompatible layout or semantic change.
+    pub abi_version: u32,
+    /// Size of this vtable in bytes. New entries may only be appended.
+    pub struct_size: usize,
+    pub provider_get_meter: extern "C" fn(
+        provider_ctx: *mut c_void,
+        name: OtelStringView,
+        version: OtelStringView,
+        schema_url: OtelStringView,
+    ) -> *mut c_void,
+    pub provider_retain: extern "C" fn(provider_ctx: *mut c_void) -> *mut c_void,
+    pub provider_free: extern "C" fn(provider_ctx: *mut c_void),
+    pub meter_create_instrument: extern "C" fn(
+        meter_ctx: *mut c_void,
+        config: *const OtelMetricInstrumentConfig,
+    ) -> *mut c_void,
+    pub meter_free: extern "C" fn(meter_ctx: *mut c_void),
+    pub instrument_record_u64: extern "C" fn(
+        instrument_ctx: *mut c_void,
+        value: u64,
+        attributes: *const OtelKeyValue,
+        attribute_count: usize,
+    ) -> OtelStatus,
+    pub instrument_record_i64: extern "C" fn(
+        instrument_ctx: *mut c_void,
+        value: i64,
+        attributes: *const OtelKeyValue,
+        attribute_count: usize,
+    ) -> OtelStatus,
+    pub instrument_record_f64: extern "C" fn(
+        instrument_ctx: *mut c_void,
+        value: f64,
+        attributes: *const OtelKeyValue,
+        attribute_count: usize,
+    ) -> OtelStatus,
+    pub observer_observe_u64: extern "C" fn(
+        observer_ctx: *mut c_void,
+        value: u64,
+        attributes: *const OtelKeyValue,
+        attribute_count: usize,
+    ) -> OtelStatus,
+    pub observer_observe_i64: extern "C" fn(
+        observer_ctx: *mut c_void,
+        value: i64,
+        attributes: *const OtelKeyValue,
+        attribute_count: usize,
+    ) -> OtelStatus,
+    pub observer_observe_f64: extern "C" fn(
+        observer_ctx: *mut c_void,
+        value: f64,
+        attributes: *const OtelKeyValue,
+        attribute_count: usize,
+    ) -> OtelStatus,
+    pub instrument_free: extern "C" fn(instrument_ctx: *mut c_void),
+}
+
+/// Minimum Metrics vtable size required by this API version.
+pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelMetricsVtable>();
+
+pub fn trace_vtable_compatible(vtable: &OtelImplVtable) -> bool {
+    vtable.abi_version == OTEL_IMPL_ABI_VERSION
+        && vtable.struct_size >= OTEL_IMPL_VTABLE_REQUIRED_SIZE
+}
+
+pub fn metrics_vtable_compatible(vtable: &OtelMetricsVtable) -> bool {
+    vtable.abi_version == OTEL_IMPL_ABI_VERSION
+        && vtable.struct_size >= OTEL_METRICS_VTABLE_REQUIRED_SIZE
+}
+
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
@@ -468,5 +606,15 @@ mod tests {
             Some(OtelSpanStatusCode::Error)
         );
         assert_eq!(OtelSpanStatusCode::from_u32(9), None);
+        assert_eq!(
+            OtelMetricInstrumentKind::from_u32(3),
+            Some(OtelMetricInstrumentKind::Histogram)
+        );
+        assert_eq!(OtelMetricInstrumentKind::from_u32(99), None);
+        assert_eq!(
+            OtelMetricNumberKind::from_u32(2),
+            Some(OtelMetricNumberKind::F64)
+        );
+        assert_eq!(OtelMetricNumberKind::from_u32(99), None);
     }
 }

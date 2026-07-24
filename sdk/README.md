@@ -2,10 +2,11 @@
 
 [![Apache License][license-image]][license-url]
 
-The **C SDK** of the Rust-backed OpenTelemetry C binding: an OTLP **HTTP/protobuf**
-exporter and a batch span processor behind the `otel_sdk_*` C functions. Installing the
-SDK registers it into the **API library's** global provider slot, so instrumentation that
-links only [`opentelemetry-c-api`](../api) exports through it.
+The **C SDK** of the Rust-backed OpenTelemetry C binding: OTLP **HTTP/protobuf** trace and
+Metrics exporters, a batch span processor, periodic Metrics readers, and declarative
+Metrics views behind C functions. Installing a signal provider registers it into the
+**API library's** corresponding global slot, so instrumentation that links only
+[`opentelemetry-c-api`](../api) exports through it.
 
 The exporter uses the blocking `reqwest` client, so the SDK owns all of its own threading
 and **no user-managed async runtime is required**. HTTPS is supported via a selectable TLS
@@ -55,8 +56,9 @@ provider, tracer, span obtained after `set_as_global`) must also be destroyed be
 Statically linking the API into multiple artifacts creates separate global slots and is
 **not** the shared-global model.
 
-A ready-to-run example that links both libraries is in
-[`examples/c-basic-traces/`](examples/c-basic-traces) (`make run`).
+Ready-to-run examples that link both libraries are in
+[`examples/c-basic-traces/`](examples/c-basic-traces) and
+[`examples/c-metrics/`](examples/c-metrics).
 
 For minimal API-only instrumentation and application SDK setup snippets, see the
 [root component README](../README.md#minimal-c-usage).
@@ -76,12 +78,28 @@ batch span processor builder ─build─▶ otel_span_processor_t
                  SDK builder ──build──▶ otel_sdk_t ──set_as_global──▶ global provider
 ```
 
-Only the **OTLP HTTP/protobuf trace exporter** and the **batch span processor** are
+For traces, only the **OTLP HTTP/protobuf exporter** and the **batch span processor** are
 implemented today. The generic `otel_trace_exporter_t` / `otel_span_processor_t` handles are
 opaque extension points: internally each wraps an enum (`TraceExporterImpl` implementing
 `SpanExporter`, `SpanProcessorImpl` implementing `SpanProcessor`), so another exporter or
 processor kind is a new variant plus a builder — no change to the C ABI, the generic handles,
 or the SDK builder's storage. No custom-callback exporter is provided yet.
+
+Metrics uses a parallel pipeline:
+
+```
+OTLP Metrics exporter builder ──build──▶ otel_metric_exporter_t
+                                                │ set_exporter
+                                                ▼
+periodic reader builder ─────────build──▶ otel_periodic_metric_reader_t
+                                                │ add_metric_reader
+declarative view builder ────────build──▶ otel_metric_view_t
+                                                │ add_metric_view
+                           SDK builder ──build──▶ otel_sdk_t
+```
+
+Multiple readers and views may be added before build. Metrics installation, force flush, and
+shutdown are independent from trace lifecycle.
 
 ### Cargo features (optional OTLP)
 
@@ -126,6 +144,12 @@ Enabling `otlp` without a TLS feature builds an HTTP-only OTLP exporter (no HTTP
   builder (exporter + bounded queue/delay/batch settings).
 - [`trace_exporter.h`](include/opentelemetry_c/trace_exporter.h) /
   [`span_processor.h`](include/opentelemetry_c/span_processor.h) — the generic opaque handles.
+- [`otlp_metric_exporter.h`](include/opentelemetry_c/otlp_metric_exporter.h) — OTLP Metrics
+  endpoint, headers, timeout, and temporality preference.
+- [`periodic_metric_reader.h`](include/opentelemetry_c/periodic_metric_reader.h) — periodic
+  export interval/timeout and exporter ownership.
+- [`metric_view.h`](include/opentelemetry_c/metric_view.h) — instrument selection, stream
+  metadata, attribute filtering, cardinality, and aggregation.
 
 ## Behavior & guarantees
 
@@ -140,11 +164,11 @@ Enabling `otlp` without a TLS feature builds an HTTP-only OTLP exporter (no HTTP
 
 ## Tests
 
-`cargo test -p opentelemetry-c-sdk --all-features` covers the vtable trace behavior
-(parent/child semantics), global registration, batch bounds, and force-flush cleanup. The
+`cargo test -p opentelemetry-c-sdk --all-features` covers trace and Metrics vtable behavior,
+global registration, callback lifetime, batch bounds, and force-flush cleanup. The
 `cross_artifact` integration test compiles a C program, links it against **both** built
-cdylibs, and confirms API-only spans (after SDK install) export through the SDK to a mock
-collector — proving the shared global provider.
+cdylibs, and confirms API-only spans and Metrics export through the SDK to a mock collector
+after installation — proving both shared global providers.
 
 Because `cargo test` does not emit cdylib artifacts, build them first:
 

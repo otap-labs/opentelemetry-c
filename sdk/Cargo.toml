@@ -17,13 +17,14 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 opentelemetry-c-abi = { path = "../abi" }
-opentelemetry = { workspace = true, features = ["trace"] }
-opentelemetry_sdk = { workspace = true, features = ["trace"] }
+opentelemetry = { workspace = true, features = ["trace", "metrics"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "spec_unstable_metrics_views"] }
 # The OTLP HTTP/protobuf trace exporter is an OPTIONAL exporter implementation, not SDK core.
 # It is enabled by default (via the `otlp`/TLS features below) but the SDK core — builder,
 # batch span processor, and the generic exporter/processor handles — builds without it.
 opentelemetry-otlp = { workspace = true, optional = true, features = [
     "trace",
+    "metrics",
     "http-proto",
     "reqwest-blocking-client",
 ] }
@@ -35,7 +36,7 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
 ] }
 
 [dev-dependencies]
-opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "testing", "spec_unstable_metrics_views"] }
 # The SDK-backed hot-path benchmark drives the real C API entrypoints (global provider
 # slot, span/tracer ops). Linking the API rlib here also resolves this crate's `api_ffi`
 # extern `otel_api_*` imports for the bench binary. Benchmark/test only — never a runtime dep.

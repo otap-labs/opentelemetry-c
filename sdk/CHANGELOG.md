@@ -4,6 +4,13 @@
 
 ### Added
 
+- Experimental Metrics SDK: OTLP HTTP/protobuf exporter, periodic reader, multiple-reader
+  pipelines, independent Metrics global install/flush/shutdown, cumulative/delta/low-memory
+  temporality, declarative views, attribute allow-lists, cardinality limits, explicit and
+  base-2 exponential histograms, synchronous/observable C examples, and Metrics hot-path
+  benchmarks.
+- Cross-artifact C integration now proves API-only Metrics export through separately linked
+  API and SDK shared libraries; C11/C++17 header compilation covers all Metrics headers.
 - Exporter/processor separation of concerns with **optional OTLP**. The generic
   `otel_trace_exporter_t` / `otel_span_processor_t` handles now wrap internal enums
   (`TraceExporterImpl: SpanExporter`, `SpanProcessorImpl: SpanProcessor`), and the SDK builder

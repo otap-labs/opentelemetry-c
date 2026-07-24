@@ -8,7 +8,7 @@
 
 use std::os::raw::{c_char, c_void};
 
-use opentelemetry_c_abi::{OtelImplVtable, OtelStatus};
+use opentelemetry_c_abi::{OtelImplVtable, OtelMetricsVtable, OtelStatus};
 
 #[cfg(not(test))]
 mod imp {
@@ -24,6 +24,14 @@ mod imp {
         ) -> OtelStatus;
         pub fn otel_api_provider_new(
             vtable: *const OtelImplVtable,
+            provider_ctx: *mut c_void,
+        ) -> *mut c_void;
+        pub fn otel_api_register_global_meter_provider(
+            vtable: *const OtelMetricsVtable,
+            provider_ctx: *mut c_void,
+        ) -> OtelStatus;
+        pub fn otel_api_meter_provider_new(
+            vtable: *const OtelMetricsVtable,
             provider_ctx: *mut c_void,
         ) -> *mut c_void;
         pub fn otel_api_set_last_error(ptr: *const c_char, len: usize);
@@ -60,6 +68,19 @@ mod imp {
     ) -> *mut c_void {
         provider_ctx
     }
+    pub unsafe fn otel_api_register_global_meter_provider(
+        _vtable: *const OtelMetricsVtable,
+        provider_ctx: *mut c_void,
+    ) -> OtelStatus {
+        *REGISTERED.lock().unwrap() = Some((0, provider_ctx as usize));
+        OtelStatus::Ok
+    }
+    pub unsafe fn otel_api_meter_provider_new(
+        _vtable: *const OtelMetricsVtable,
+        provider_ctx: *mut c_void,
+    ) -> *mut c_void {
+        provider_ctx
+    }
     /// # Safety
     /// Test stub mirroring the real ABI.
     pub unsafe fn otel_api_set_last_error(ptr: *const c_char, len: usize) {
@@ -92,6 +113,20 @@ pub(crate) fn provider_new(
     provider_ctx: *mut c_void,
 ) -> *mut c_void {
     unsafe { imp::otel_api_provider_new(vtable, provider_ctx) }
+}
+
+pub(crate) fn register_global_meter_provider(
+    vtable: *const OtelMetricsVtable,
+    provider_ctx: *mut c_void,
+) -> OtelStatus {
+    unsafe { imp::otel_api_register_global_meter_provider(vtable, provider_ctx) }
+}
+
+pub(crate) fn meter_provider_new(
+    vtable: *const OtelMetricsVtable,
+    provider_ctx: *mut c_void,
+) -> *mut c_void {
+    unsafe { imp::otel_api_meter_provider_new(vtable, provider_ctx) }
 }
 
 /// Record a diagnostic in the API-owned thread-local error slot.

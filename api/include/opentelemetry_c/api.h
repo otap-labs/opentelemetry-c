@@ -37,13 +37,13 @@
  * Windows dynamic linking is NOT yet verified/supported — the SDK's undefined otel_api_*
  * symbols need the API's import library at link time (follow-up work); see README.md.
  *
- * Status: EXPERIMENTAL. The C ABI is not yet stable (see README.md). Metrics and logs are
- * intentionally not part of this slice and will be added without breaking the traces ABI.
+ * Status: EXPERIMENTAL. The C ABI is not yet stable (see README.md).
  */
 #ifndef OPENTELEMETRY_C_API_H
 #define OPENTELEMETRY_C_API_H
 
 #include "common.h"
+#include "metrics.h"
 #include "trace.h"
 
 #endif /* OPENTELEMETRY_C_API_H */

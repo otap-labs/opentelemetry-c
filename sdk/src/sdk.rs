@@ -16,6 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
@@ -27,6 +28,8 @@ use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, take,
     HasMagic,
 };
+use crate::metric_view::{MetricViewConfig, OtelMetricView};
+use crate::periodic_metric_reader::{OtelPeriodicMetricReader, PeriodicMetricReaderImpl};
 use crate::span_processor::{OtelSpanProcessor, SpanProcessorImpl};
 use crate::vtable;
 
@@ -42,6 +45,8 @@ pub struct OtelSdkBuilder {
     // `build`, or freed on destroy if `build` was not completed. Homogeneous `SpanProcessorImpl`
     // so any processor kind (batch today, e.g. simple later) is stored uniformly here.
     processors: Vec<SpanProcessorImpl>,
+    metric_readers: Vec<PeriodicMetricReaderImpl>,
+    metric_views: Vec<MetricViewConfig>,
 }
 
 impl HasMagic for OtelSdkBuilder {
@@ -58,7 +63,9 @@ impl HasMagic for OtelSdkBuilder {
 pub struct OtelSdk {
     magic: u64,
     provider: SdkTracerProvider,
+    meter_provider: SdkMeterProvider,
     shutdown: AtomicBool,
+    metrics_shutdown: AtomicBool,
     flush_in_flight: Arc<AtomicBool>,
 }
 
@@ -95,7 +102,61 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
             service_name: None,
             resource_attributes: Vec::new(),
             processors: Vec::new(),
+            metric_readers: Vec::new(),
+            metric_views: Vec::new(),
         })
+    })
+}
+
+/// Add (transfer) a declarative Metrics view.
+/// Transfer a Metrics view into an SDK builder.
+///
+/// # Safety
+///
+/// `builder` and `view` must be live handles and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_add_metric_view(
+    builder: *mut OtelSdkBuilder,
+    view: *mut OtelMetricView,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let builder = match unsafe { checked_mut(builder) } {
+            Some(builder) => builder,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let view = match unsafe { take(view) } {
+            Some(view) => view,
+            None => return OtelStatus::InvalidArgument,
+        };
+        builder.metric_views.push(view.config);
+        OtelStatus::Ok
+    })
+}
+
+/// Add (transfer) a periodic Metrics reader. On success the SDK builder owns `reader`.
+/// Transfer a periodic Metrics reader into an SDK builder.
+///
+/// # Safety
+///
+/// `builder` and `reader` must be live handles and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_add_metric_reader(
+    builder: *mut OtelSdkBuilder,
+    reader: *mut OtelPeriodicMetricReader,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let builder = match unsafe { checked_mut(builder) } {
+            Some(builder) => builder,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let reader = match unsafe { take(reader) } {
+            Some(reader) => reader,
+            None => return OtelStatus::InvalidArgument,
+        };
+        builder.metric_readers.push(reader.reader);
+        OtelStatus::Ok
     })
 }
 
@@ -239,20 +300,94 @@ pub unsafe extern "C" fn otel_sdk_build(
         };
         // Move the transferred processors out of the builder into the provider.
         let processors = std::mem::take(&mut builder.processors);
+        let metric_readers = std::mem::take(&mut builder.metric_readers);
+        let metric_views = std::mem::take(&mut builder.metric_views);
         let resource = build_resource(builder);
         let mut provider_builder = SdkTracerProvider::builder().with_resource(resource);
         for processor in processors {
             provider_builder = provider_builder.with_span_processor(processor);
         }
         let provider = provider_builder.build();
+        #[allow(unused_mut)]
+        let mut meter_provider_builder =
+            SdkMeterProvider::builder().with_resource(build_resource(builder));
+        for reader in metric_readers {
+            match reader {
+                #[cfg(feature = "otlp")]
+                PeriodicMetricReaderImpl::Otlp(reader) => {
+                    meter_provider_builder = meter_provider_builder.with_reader(reader);
+                }
+            }
+        }
+        for view in metric_views {
+            meter_provider_builder =
+                meter_provider_builder.with_view(move |instrument| view.apply(instrument));
+        }
+        let meter_provider = meter_provider_builder.build();
         let sdk = into_raw(OtelSdk {
             magic: SDK_MAGIC,
             provider,
+            meter_provider,
             shutdown: AtomicBool::new(false),
+            metrics_shutdown: AtomicBool::new(false),
             flush_in_flight: Arc::new(AtomicBool::new(false)),
         });
         unsafe { *out_sdk = sdk };
         OtelStatus::Ok
+    })
+}
+
+/// Return an owned API `otel_meter_provider_t*` backed by this SDK.
+/// Obtain an API-owned handle for the SDK's MeterProvider.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_get_meter_provider(sdk: *const OtelSdk) -> *mut c_void {
+    guard_ptr(|| {
+        clear_last_error();
+        match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => {
+                let ctx = crate::metrics_vtable::provider_ctx(sdk.meter_provider.clone());
+                let handle = api_ffi::meter_provider_new(crate::metrics_vtable::vtable_ptr(), ctx);
+                if handle.is_null() {
+                    (crate::metrics_vtable::SDK_METRICS_VTABLE.provider_free)(ctx);
+                }
+                handle
+            }
+            None => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// Install this SDK's Metrics provider into the API-owned global Metrics slot.
+/// Install this SDK's MeterProvider in the API-owned global Metrics slot.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_set_metrics_as_global(sdk: *mut OtelSdk) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        if sdk.metrics_shutdown.load(Ordering::Acquire) {
+            return fail(
+                OtelStatus::AlreadyShutdown,
+                "cannot install a shut-down Metrics provider as global",
+            );
+        }
+        let ctx = crate::metrics_vtable::provider_ctx(sdk.meter_provider.clone());
+        let status =
+            api_ffi::register_global_meter_provider(crate::metrics_vtable::vtable_ptr(), ctx);
+        if status != OtelStatus::Ok {
+            (crate::metrics_vtable::SDK_METRICS_VTABLE.provider_free)(ctx);
+        }
+        status
     })
 }
 
@@ -414,8 +549,69 @@ pub unsafe extern "C" fn otel_sdk_shutdown(sdk: *mut OtelSdk, timeout_millis: u6
                 "SDK has already been shut down",
             );
         }
+
         let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
         match sdk.provider.shutdown_with_timeout(timeout) {
+            Ok(()) => OtelStatus::Ok,
+            Err(err) => status_from_sdk_error(&err),
+        }
+    })
+}
+
+/// Flush all configured Metrics readers. The pinned Rust 0.32 PeriodicReader blocks without
+/// accepting a caller timeout, so `timeout_millis` is currently advisory and ignored.
+/// Force collection and export through all configured Metrics readers.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_metrics_force_flush(
+    sdk: *mut OtelSdk,
+    _timeout_millis: u64,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        if sdk.metrics_shutdown.load(Ordering::Acquire) {
+            return fail(
+                OtelStatus::AlreadyShutdown,
+                "cannot force flush a shut-down Metrics provider",
+            );
+        }
+        map_flush_result(sdk.meter_provider.force_flush())
+    })
+}
+
+/// Shut down the Metrics provider exactly once. OpenTelemetry Rust 0.32 ignores the supplied
+/// provider shutdown timeout and PeriodicReader uses its own fixed five-second wait.
+/// Shut down the Metrics provider at most once.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_metrics_shutdown(
+    sdk: *mut OtelSdk,
+    timeout_millis: u64,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        if sdk.metrics_shutdown.swap(true, Ordering::AcqRel) {
+            return fail(
+                OtelStatus::AlreadyShutdown,
+                "Metrics provider has already been shut down",
+            );
+        }
+        let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
+        match sdk.meter_provider.shutdown_with_timeout(timeout) {
             Ok(()) => OtelStatus::Ok,
             Err(err) => status_from_sdk_error(&err),
         }

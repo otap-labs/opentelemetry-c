@@ -25,6 +25,25 @@ fn find_cc() -> Option<String> {
     None
 }
 
+fn find_cxx() -> Option<String> {
+    if let Ok(cxx) = std::env::var("CXX") {
+        if !cxx.is_empty() {
+            return Some(cxx);
+        }
+    }
+    for compiler in ["c++", "clang++", "g++"] {
+        if Command::new(compiler)
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return Some(compiler.to_owned());
+        }
+    }
+    None
+}
+
 fn manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -123,25 +142,49 @@ int main(void) {
 #include <opentelemetry_c/span_processor.h>
 #include <opentelemetry_c/otlp_trace_exporter.h>
 #include <opentelemetry_c/batch_span_processor.h>
+#include <opentelemetry_c/otlp_metric_exporter.h>
+#include <opentelemetry_c/periodic_metric_reader.h>
+#include <opentelemetry_c/metric_view.h>
 int main(void) {
     otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
     otel_otlp_trace_exporter_builder_set_endpoint(eb, otel_cstr("http://localhost:4318/v1/traces"));
     otel_otlp_trace_exporter_builder_set_timeout_millis(eb, 5000);
-    otel_trace_exporter_t* exporter = (void*)0;
+    otel_trace_exporter_t* exporter = NULL;
     otel_otlp_trace_exporter_builder_build(eb, &exporter);
     otel_otlp_trace_exporter_builder_destroy(eb);
 
     otel_batch_span_processor_builder_t* pb = otel_batch_span_processor_builder_new();
     otel_batch_span_processor_builder_set_exporter(pb, exporter);
     otel_batch_span_processor_builder_set_max_queue_size(pb, 2048);
-    otel_span_processor_t* processor = (void*)0;
+    otel_span_processor_t* processor = NULL;
     otel_batch_span_processor_builder_build(pb, &processor);
     otel_batch_span_processor_builder_destroy(pb);
 
     otel_sdk_builder_t* sb = otel_sdk_builder_new();
     otel_sdk_builder_set_service_name(sb, otel_cstr("hdr-check"));
     otel_sdk_builder_add_span_processor(sb, processor);
-    otel_sdk_t* sdk = (void*)0;
+
+    otel_otlp_metric_exporter_builder_t* meb = otel_otlp_metric_exporter_builder_new();
+    otel_otlp_metric_exporter_builder_set_endpoint(meb, otel_cstr("http://localhost:4318/v1/metrics"));
+    otel_metric_exporter_t* metric_exporter = NULL;
+    otel_otlp_metric_exporter_builder_build(meb, &metric_exporter);
+    otel_otlp_metric_exporter_builder_destroy(meb);
+    otel_periodic_metric_reader_builder_t* mrb = otel_periodic_metric_reader_builder_new();
+    otel_periodic_metric_reader_builder_set_exporter(mrb, metric_exporter);
+    otel_periodic_metric_reader_t* reader = NULL;
+    otel_periodic_metric_reader_builder_build(mrb, &reader);
+    otel_periodic_metric_reader_builder_destroy(mrb);
+    otel_sdk_builder_add_metric_reader(sb, reader);
+
+    otel_metric_view_builder_t* vb = otel_metric_view_builder_new();
+    otel_metric_view_builder_set_name_pattern(vb, otel_cstr("request.*"));
+    otel_metric_view_builder_set_cardinality_limit(vb, 100);
+    otel_metric_view_t* view = NULL;
+    otel_metric_view_builder_build(vb, &view);
+    otel_metric_view_builder_destroy(vb);
+    otel_sdk_builder_add_metric_view(sb, view);
+
+    otel_sdk_t* sdk = NULL;
     otel_sdk_build(sb, &sdk);
     otel_sdk_builder_destroy(sb);
     (void)sdk;
@@ -165,7 +208,87 @@ int main(void) {
             pipeline.as_os_str(),
         ],
     );
+
+    if let Some(cxx) = find_cxx() {
+        syntax_check(
+            &cxx,
+            &[
+                "-std=c++17".as_ref(),
+                "-Wall".as_ref(),
+                "-Wextra".as_ref(),
+                "-Werror".as_ref(),
+                "-fsyntax-only".as_ref(),
+                "-x".as_ref(),
+                "c++".as_ref(),
+                "-I".as_ref(),
+                api_inc.as_os_str(),
+                "-I".as_ref(),
+                sdk_inc.as_os_str(),
+                pipeline.as_os_str(),
+            ],
+        );
+    } else {
+        eprintln!("skipping C++ header check: no C++ compiler found");
+    }
     let _ = std::fs::remove_file(&pipeline);
+
+    for (label, header) in [
+        ("metrics", "opentelemetry_c/metrics.h"),
+        (
+            "otlp_metric_exporter",
+            "opentelemetry_c/otlp_metric_exporter.h",
+        ),
+        (
+            "periodic_metric_reader",
+            "opentelemetry_c/periodic_metric_reader.h",
+        ),
+        ("metric_view", "opentelemetry_c/metric_view.h"),
+    ] {
+        let standalone = unique_temp_c(label);
+        std::fs::write(
+            &standalone,
+            format!("#include <{header}>\nint main(void) {{ return 0; }}\n"),
+        )
+        .expect("write standalone header source");
+        syntax_check(
+            &cc,
+            &[
+                "-std=c11".as_ref(),
+                "-Wall".as_ref(),
+                "-Wextra".as_ref(),
+                "-Werror".as_ref(),
+                "-fsyntax-only".as_ref(),
+                "-I".as_ref(),
+                api_inc.as_os_str(),
+                "-I".as_ref(),
+                sdk_inc.as_os_str(),
+                standalone.as_os_str(),
+            ],
+        );
+        let _ = std::fs::remove_file(&standalone);
+    }
+
+    let metrics_example = manifest().join("examples/c-metrics/main.c");
+    assert!(
+        metrics_example.exists(),
+        "example missing: {}",
+        metrics_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            metrics_example.as_os_str(),
+        ],
+    );
 
     // The shipped split example (includes api.h + sdk.h).
     let example = manifest().join("examples/c-basic-traces/main.c");

@@ -24,18 +24,25 @@
 mod error;
 mod global;
 mod handle;
+mod metrics;
+mod metrics_global;
 mod trace;
 
 // Re-export the shared ABI value types so Rust consumers (and this crate's tests) can use
 // them by name; these are the same `#[repr(C)]` types the C headers describe.
 pub use opentelemetry_c_abi::{
-    OtelAttributeType, OtelAttributeValue, OtelBool, OtelKeyValue, OtelSpanKind,
-    OtelSpanStatusCode, OtelStatus, OtelStringView,
+    OtelAttributeType, OtelAttributeValue, OtelBool, OtelKeyValue, OtelMetricInstrumentKind,
+    OtelMetricNumberKind, OtelSpanKind, OtelSpanStatusCode, OtelStatus, OtelStringView,
 };
 
 pub use error::{otel_api_clear_last_error, otel_api_set_last_error, otel_last_error_message};
 pub use global::{
     otel_api_provider_new, otel_api_register_global_provider, otel_global_tracer_provider,
+};
+pub use metrics::*;
+pub use metrics_global::{
+    otel_api_meter_provider_new, otel_api_register_global_meter_provider,
+    otel_global_meter_provider,
 };
 pub use trace::{
     otel_span_add_event, otel_span_destroy, otel_span_end, otel_span_set_attribute,

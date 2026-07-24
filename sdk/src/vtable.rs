@@ -144,7 +144,7 @@ pub(crate) unsafe fn to_key_value(kv: &OtelKeyValue) -> Result<KeyValue, OtelSta
 ///
 /// # Safety
 /// `attributes` must point to `count` valid [`OtelKeyValue`]s, or be NULL when `count == 0`.
-unsafe fn collect_key_values(
+pub(crate) unsafe fn collect_key_values(
     attributes: *const OtelKeyValue,
     count: usize,
 ) -> Result<Vec<KeyValue>, OtelStatus> {

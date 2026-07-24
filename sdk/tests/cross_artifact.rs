@@ -96,6 +96,11 @@ typedef struct otel_sdk_t otel_sdk_t;
 typedef struct otel_tracer_provider_t otel_tracer_provider_t;
 typedef struct otel_tracer_t otel_tracer_t;
 typedef struct otel_span_t otel_span_t;
+typedef struct otel_meter_provider_t otel_meter_provider_t;
+typedef struct otel_meter_t otel_meter_t;
+typedef struct otel_counter_u64_t otel_counter_u64_t;
+typedef struct otel_gauge_f64_t otel_gauge_f64_t;
+typedef struct otel_histogram_f64_t otel_histogram_f64_t;
 typedef struct { uint32_t kind; const otel_span_t* parent; } otel_span_start_options_t;
 extern otel_tracer_provider_t* otel_global_tracer_provider(void);
 extern otel_tracer_t* otel_tracer_provider_get_tracer(const otel_tracer_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
@@ -105,10 +110,27 @@ extern int otel_span_end(otel_span_t*);
 extern void otel_span_destroy(otel_span_t*);
 extern void otel_tracer_destroy(otel_tracer_t*);
 extern void otel_tracer_provider_destroy(otel_tracer_provider_t*);
+extern otel_meter_provider_t* otel_global_meter_provider(void);
+extern otel_meter_t* otel_meter_provider_get_meter(const otel_meter_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
+extern int otel_meter_create_u64_counter(const otel_meter_t*, otel_string_view_t, const void*, otel_counter_u64_t**);
+extern int otel_meter_create_f64_gauge(const otel_meter_t*, otel_string_view_t, const void*, otel_gauge_f64_t**);
+extern int otel_meter_create_f64_histogram(const otel_meter_t*, otel_string_view_t, const void*, otel_histogram_f64_t**);
+extern int otel_counter_u64_add(const otel_counter_u64_t*, uint64_t, const void*, size_t);
+extern int otel_gauge_f64_record(const otel_gauge_f64_t*, double, const void*, size_t);
+extern int otel_histogram_f64_record(const otel_histogram_f64_t*, double, const void*, size_t);
+extern void otel_counter_u64_destroy(otel_counter_u64_t*);
+extern void otel_gauge_f64_destroy(otel_gauge_f64_t*);
+extern void otel_histogram_f64_destroy(otel_histogram_f64_t*);
+extern void otel_meter_destroy(otel_meter_t*);
+extern void otel_meter_provider_destroy(otel_meter_provider_t*);
 typedef struct otel_trace_exporter_t otel_trace_exporter_t;
 typedef struct otel_span_processor_t otel_span_processor_t;
 typedef struct otel_otlp_trace_exporter_builder_t otel_otlp_trace_exporter_builder_t;
 typedef struct otel_batch_span_processor_builder_t otel_batch_span_processor_builder_t;
+typedef struct otel_metric_exporter_t otel_metric_exporter_t;
+typedef struct otel_otlp_metric_exporter_builder_t otel_otlp_metric_exporter_builder_t;
+typedef struct otel_periodic_metric_reader_builder_t otel_periodic_metric_reader_builder_t;
+typedef struct otel_periodic_metric_reader_t otel_periodic_metric_reader_t;
 extern otel_otlp_trace_exporter_builder_t* otel_otlp_trace_exporter_builder_new(void);
 extern int otel_otlp_trace_exporter_builder_set_endpoint(otel_otlp_trace_exporter_builder_t*, otel_string_view_t);
 extern int otel_otlp_trace_exporter_builder_set_timeout_millis(otel_otlp_trace_exporter_builder_t*, uint64_t);
@@ -121,13 +143,25 @@ extern int otel_batch_span_processor_builder_set_max_queue_size(otel_batch_span_
 extern int otel_batch_span_processor_builder_build(otel_batch_span_processor_builder_t*, otel_span_processor_t**);
 extern void otel_batch_span_processor_builder_destroy(otel_batch_span_processor_builder_t*);
 extern void otel_span_processor_destroy(otel_span_processor_t*);
+extern otel_otlp_metric_exporter_builder_t* otel_otlp_metric_exporter_builder_new(void);
+extern int otel_otlp_metric_exporter_builder_set_endpoint(otel_otlp_metric_exporter_builder_t*, otel_string_view_t);
+extern int otel_otlp_metric_exporter_builder_build(const otel_otlp_metric_exporter_builder_t*, otel_metric_exporter_t**);
+extern void otel_otlp_metric_exporter_builder_destroy(otel_otlp_metric_exporter_builder_t*);
+extern otel_periodic_metric_reader_builder_t* otel_periodic_metric_reader_builder_new(void);
+extern int otel_periodic_metric_reader_builder_set_exporter(otel_periodic_metric_reader_builder_t*, otel_metric_exporter_t*);
+extern int otel_periodic_metric_reader_builder_build(otel_periodic_metric_reader_builder_t*, otel_periodic_metric_reader_t**);
+extern void otel_periodic_metric_reader_builder_destroy(otel_periodic_metric_reader_builder_t*);
 extern otel_sdk_builder_t* otel_sdk_builder_new(void);
 extern int otel_sdk_builder_set_service_name(otel_sdk_builder_t*, otel_string_view_t);
 extern int otel_sdk_builder_add_span_processor(otel_sdk_builder_t*, otel_span_processor_t*);
+extern int otel_sdk_builder_add_metric_reader(otel_sdk_builder_t*, otel_periodic_metric_reader_t*);
 extern int otel_sdk_build(otel_sdk_builder_t*, otel_sdk_t**);
 extern void otel_sdk_builder_destroy(otel_sdk_builder_t*);
 extern int otel_sdk_set_as_global(otel_sdk_t*);
+extern int otel_sdk_set_metrics_as_global(otel_sdk_t*);
 extern int otel_sdk_force_flush(otel_sdk_t*, uint64_t);
+extern int otel_sdk_metrics_force_flush(otel_sdk_t*, uint64_t);
+extern int otel_sdk_metrics_shutdown(otel_sdk_t*, uint64_t);
 extern int otel_sdk_shutdown(otel_sdk_t*, uint64_t);
 extern void otel_sdk_destroy(otel_sdk_t*);
 static otel_string_view_t cs(const char* s){ otel_string_view_t v; v.ptr=s; v.len=s?strlen(s):0; return v; }
@@ -144,8 +178,22 @@ static void work(void){
     otel_span_end(parent); otel_span_destroy(parent);
     otel_tracer_destroy(t); otel_tracer_provider_destroy(p);
 }
+static void metrics_work(void){
+    otel_meter_provider_t* p = otel_global_meter_provider();
+    otel_meter_t* m = otel_meter_provider_get_meter(p, cs("metric-instr"), cs("1.0"), emp());
+    otel_counter_u64_t* c=(void*)0; otel_gauge_f64_t* g=(void*)0; otel_histogram_f64_t* h=(void*)0;
+    if (otel_meter_create_u64_counter(m,cs("requests"),(void*)0,&c)!=0) return;
+    if (otel_meter_create_f64_gauge(m,cs("queue_depth"),(void*)0,&g)!=0) return;
+    if (otel_meter_create_f64_histogram(m,cs("duration"),(void*)0,&h)!=0) return;
+    otel_counter_u64_add(c,3,(void*)0,0);
+    otel_gauge_f64_record(g,2.5,(void*)0,0);
+    otel_histogram_f64_record(h,7.5,(void*)0,0);
+    otel_histogram_f64_destroy(h); otel_gauge_f64_destroy(g); otel_counter_u64_destroy(c);
+    otel_meter_destroy(m); otel_meter_provider_destroy(p);
+}
 int main(void){
     work(); /* API-only no-op before install (must be safe) */
+    metrics_work();
     /* Build the pipeline: OTLP exporter -> batch processor -> SDK builder. */
     otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
     otel_otlp_trace_exporter_builder_set_endpoint(eb, cs(getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")));
@@ -161,12 +209,27 @@ int main(void){
     otel_sdk_builder_t* b = otel_sdk_builder_new();
     otel_sdk_builder_set_service_name(b, cs("cross-artifact"));
     if (otel_sdk_builder_add_span_processor(b,processor)!=0) return 5;
+    otel_otlp_metric_exporter_builder_t* meb=otel_otlp_metric_exporter_builder_new();
+    otel_otlp_metric_exporter_builder_set_endpoint(meb,cs(getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")));
+    otel_metric_exporter_t* mex=(void*)0;
+    if (otel_otlp_metric_exporter_builder_build(meb,&mex)!=0||!mex) return 11;
+    otel_otlp_metric_exporter_builder_destroy(meb);
+    otel_periodic_metric_reader_builder_t* mrb=otel_periodic_metric_reader_builder_new();
+    if (otel_periodic_metric_reader_builder_set_exporter(mrb,mex)!=0) return 12;
+    otel_periodic_metric_reader_t* mr=(void*)0;
+    if (otel_periodic_metric_reader_builder_build(mrb,&mr)!=0||!mr) return 13;
+    otel_periodic_metric_reader_builder_destroy(mrb);
+    if (otel_sdk_builder_add_metric_reader(b,mr)!=0) return 14;
     otel_sdk_t* sdk=(void*)0;
     if (otel_sdk_build(b,&sdk)!=0||!sdk) return 6;
     otel_sdk_builder_destroy(b);
     if (otel_sdk_set_as_global(sdk)!=0) return 7;
+    if (otel_sdk_set_metrics_as_global(sdk)!=0) return 15;
     work(); /* API-only calls AFTER install must export through the SDK */
+    metrics_work();
     otel_sdk_force_flush(sdk, 5000);
+    otel_sdk_metrics_force_flush(sdk, 0);
+    otel_sdk_metrics_shutdown(sdk, 5000);
     otel_sdk_shutdown(sdk, 5000);
     otel_sdk_destroy(sdk);
     return 0;
@@ -174,13 +237,18 @@ int main(void){
 "#;
 
 /// Minimal mock OTLP/HTTP collector: accepts POSTs and accumulates total body bytes.
-fn start_mock() -> (u16, Arc<AtomicUsize>, Arc<AtomicBool>) {
+fn start_mock() -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicBool>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
     let bytes = Arc::new(AtomicUsize::new(0));
+    let metric_bytes = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
-    let (b2, s2) = (Arc::clone(&bytes), Arc::clone(&stop));
+    let (b2, mb2, s2) = (
+        Arc::clone(&bytes),
+        Arc::clone(&metric_bytes),
+        Arc::clone(&stop),
+    );
     std::thread::spawn(move || {
         while !s2.load(Ordering::Acquire) {
             match listener.accept() {
@@ -219,7 +287,11 @@ fn start_mock() -> (u16, Arc<AtomicUsize>, Arc<AtomicBool>) {
                         }
                     }
                     if let Some(he) = header_end {
-                        b2.fetch_add(buf.len().saturating_sub(he), Ordering::Relaxed);
+                        let body_len = buf.len().saturating_sub(he);
+                        b2.fetch_add(body_len, Ordering::Relaxed);
+                        if String::from_utf8_lossy(&buf[..he]).contains("POST /v1/metrics") {
+                            mb2.fetch_add(body_len, Ordering::Relaxed);
+                        }
                     }
                     let _ = sock.write_all(
                         b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\n\r\n",
@@ -232,7 +304,7 @@ fn start_mock() -> (u16, Arc<AtomicUsize>, Arc<AtomicBool>) {
             }
         }
     });
-    (port, bytes, stop)
+    (port, bytes, metric_bytes, stop)
 }
 
 #[test]
@@ -308,10 +380,12 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         String::from_utf8_lossy(&compile.stderr)
     );
 
-    let (port, bytes, stop) = start_mock();
+    let (port, bytes, metric_bytes, stop) = start_mock();
     let endpoint = format!("http://127.0.0.1:{port}/v1/traces");
+    let metrics_endpoint = format!("http://127.0.0.1:{port}/v1/metrics");
     let run = Command::new(&out)
         .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &endpoint)
+        .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
         .env("DYLD_LIBRARY_PATH", &lib_dir)
         .env("LD_LIBRARY_PATH", &lib_dir)
         .output()
@@ -339,6 +413,10 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         received > 0,
         "the mock collector received no exported span bytes — API-only calls after SDK \
          install did NOT reach the SDK across the artifact boundary"
+    );
+    assert!(
+        metric_bytes.load(Ordering::Relaxed) > 0,
+        "the mock collector received no OTLP metric bytes through the API-owned Metrics slot"
     );
     eprintln!("cross-artifact export OK: {received} protobuf bytes via API-only path");
 }

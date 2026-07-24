@@ -10,7 +10,9 @@
 use std::os::raw::c_void;
 use std::sync::RwLock;
 
-use opentelemetry_c_abi::{OtelImplVtable, OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE};
+use opentelemetry_c_abi::{
+    trace_vtable_compatible, OtelImplVtable, OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE,
+};
 
 use crate::error::{clear_last_error, fail, has_last_error, set_last_error, OtelStatus};
 use crate::handle::{guard_ptr, guard_status, into_raw};
@@ -177,6 +179,14 @@ pub unsafe extern "C" fn otel_api_provider_new(
             fail(
                 OtelStatus::InvalidArgument,
                 "provider_new: vtable must not be NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        // SAFETY: non-NULL and required by the construction contract.
+        if !trace_vtable_compatible(unsafe { &*vtable }) {
+            fail(
+                OtelStatus::InvalidConfig,
+                "provider_new: incompatible trace implementation ABI",
             );
             return std::ptr::null_mut();
         }

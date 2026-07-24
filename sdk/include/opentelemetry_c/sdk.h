@@ -88,6 +88,9 @@
 #define OPENTELEMETRY_C_SDK_H
 
 #include <opentelemetry_c/common.h>
+#include <opentelemetry_c/metrics.h>
+#include <opentelemetry_c/metric_view.h>
+#include <opentelemetry_c/periodic_metric_reader.h>
 #include <opentelemetry_c/trace.h>
 #include <opentelemetry_c/span_processor.h>
 
@@ -135,6 +138,13 @@ otel_status_t otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t* builde
 otel_status_t otel_sdk_builder_add_span_processor(otel_sdk_builder_t* builder,
                                                   otel_span_processor_t* processor);
 
+/* Add a periodic Metrics reader. Ownership transfers only on OTEL_STATUS_OK. More than one
+ * reader may be added; each maintains independent aggregation/temporality state. */
+otel_status_t otel_sdk_builder_add_metric_reader(otel_sdk_builder_t* builder,
+                                                 otel_periodic_metric_reader_t* reader);
+otel_status_t otel_sdk_builder_add_metric_view(otel_sdk_builder_t* builder,
+                                               otel_metric_view_t* view);
+
 /* ---- Build ---------------------------------------------------------------- */
 
 /*
@@ -156,6 +166,7 @@ otel_status_t otel_sdk_build(otel_sdk_builder_t* builder, otel_sdk_t** out_sdk);
  * invalid.
  */
 otel_tracer_provider_t* otel_sdk_get_tracer_provider(const otel_sdk_t* sdk);
+otel_meter_provider_t* otel_sdk_get_meter_provider(const otel_sdk_t* sdk);
 
 /*
  * Install this SDK's provider as the process-global provider. May be called more than
@@ -168,6 +179,7 @@ otel_tracer_provider_t* otel_sdk_get_tracer_provider(const otel_sdk_t* sdk);
  * returns OTEL_STATUS_ALREADY_SHUTDOWN.
  */
 otel_status_t otel_sdk_set_as_global(otel_sdk_t* sdk);
+otel_status_t otel_sdk_set_metrics_as_global(otel_sdk_t* sdk);
 
 /* ---- Lifecycle ------------------------------------------------------------ */
 
@@ -191,6 +203,14 @@ otel_status_t otel_sdk_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
  * no-op. This should be called before process exit to avoid losing buffered spans.
  */
 otel_status_t otel_sdk_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
+
+/* Metrics force-flush currently blocks until all readers complete. Rust 0.32 does not
+ * honor a caller-supplied provider timeout, so timeout_millis is reserved/advisory. */
+otel_status_t otel_sdk_metrics_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
+
+/* Metrics shutdown is independent from trace shutdown and runs at most once. The pinned
+ * Rust provider ignores timeout_millis; PeriodicReader uses its own fixed five-second wait. */
+otel_status_t otel_sdk_metrics_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
 
 /*
  * Destroy an SDK handle (no-op on NULL). If not already shut down, dropping the SDK

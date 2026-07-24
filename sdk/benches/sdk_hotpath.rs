@@ -30,11 +30,16 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 
 // Public C API entrypoints (dev-dep): the real process-global provider slot and span/tracer ops.
 use opentelemetry_c_api::{
-    otel_global_tracer_provider, otel_span_add_event, otel_span_destroy, otel_span_end,
+    otel_counter_u64_add, otel_counter_u64_destroy, otel_gauge_f64_destroy, otel_gauge_f64_record,
+    otel_global_meter_provider, otel_global_tracer_provider, otel_histogram_f64_destroy,
+    otel_histogram_f64_record, otel_meter_create_f64_gauge, otel_meter_create_f64_histogram,
+    otel_meter_create_u64_counter, otel_meter_destroy, otel_meter_provider_destroy,
+    otel_meter_provider_get_meter, otel_span_add_event, otel_span_destroy, otel_span_end,
     otel_span_set_bool_attribute, otel_span_set_double_attribute, otel_span_set_int64_attribute,
     otel_span_set_string_attribute, otel_tracer_destroy, otel_tracer_provider_destroy,
     otel_tracer_provider_get_tracer, otel_tracer_start_span, OtelAttributeType, OtelAttributeValue,
-    OtelKeyValue, OtelSpan, OtelStatus, OtelStringView, OtelTracer,
+    OtelCounterU64, OtelGaugeF64, OtelHistogramF64, OtelKeyValue, OtelMeter, OtelSpan, OtelStatus,
+    OtelStringView, OtelTracer,
 };
 // Public C SDK entrypoints (crate under bench): build the pipeline and install it as global.
 use opentelemetry_c_sdk::{
@@ -43,11 +48,18 @@ use opentelemetry_c_sdk::{
     otel_batch_span_processor_builder_set_max_export_batch_size,
     otel_batch_span_processor_builder_set_max_queue_size,
     otel_batch_span_processor_builder_set_scheduled_delay_millis,
+    otel_otlp_metric_exporter_builder_build, otel_otlp_metric_exporter_builder_destroy,
+    otel_otlp_metric_exporter_builder_new, otel_otlp_metric_exporter_builder_set_endpoint,
     otel_otlp_trace_exporter_builder_build, otel_otlp_trace_exporter_builder_destroy,
     otel_otlp_trace_exporter_builder_new, otel_otlp_trace_exporter_builder_set_endpoint,
-    otel_sdk_build, otel_sdk_builder_add_span_processor, otel_sdk_builder_destroy,
-    otel_sdk_builder_new, otel_sdk_builder_set_service_name, otel_sdk_destroy,
-    otel_sdk_set_as_global, otel_sdk_shutdown, OtelSdk, OtelSpanProcessor, OtelTraceExporter,
+    otel_periodic_metric_reader_builder_build, otel_periodic_metric_reader_builder_destroy,
+    otel_periodic_metric_reader_builder_new, otel_periodic_metric_reader_builder_set_exporter,
+    otel_periodic_metric_reader_builder_set_interval_millis, otel_sdk_build,
+    otel_sdk_builder_add_metric_reader, otel_sdk_builder_add_span_processor,
+    otel_sdk_builder_destroy, otel_sdk_builder_new, otel_sdk_builder_set_service_name,
+    otel_sdk_destroy, otel_sdk_metrics_shutdown, otel_sdk_set_as_global,
+    otel_sdk_set_metrics_as_global, otel_sdk_shutdown, OtelMetricExporter,
+    OtelPeriodicMetricReader, OtelSdk, OtelSpanProcessor, OtelTraceExporter,
 };
 
 fn sv(s: &str) -> OtelStringView {
@@ -102,11 +114,40 @@ fn install_sdk() -> *mut OtelSdk {
         let sb = otel_sdk_builder_new();
         assert_ok(otel_sdk_builder_set_service_name(sb, sv("otel-c-bench")));
         assert_ok(otel_sdk_builder_add_span_processor(sb, processor));
+
+        let meb = otel_otlp_metric_exporter_builder_new();
+        assert_ok(otel_otlp_metric_exporter_builder_set_endpoint(
+            meb,
+            sv("http://127.0.0.1:1/v1/metrics"),
+        ));
+        let mut metric_exporter: *mut OtelMetricExporter = ptr::null_mut();
+        assert_ok(otel_otlp_metric_exporter_builder_build(
+            meb,
+            &mut metric_exporter,
+        ));
+        otel_otlp_metric_exporter_builder_destroy(meb);
+        let mrb = otel_periodic_metric_reader_builder_new();
+        assert_ok(otel_periodic_metric_reader_builder_set_interval_millis(
+            mrb, 3_600_000,
+        ));
+        assert_ok(otel_periodic_metric_reader_builder_set_exporter(
+            mrb,
+            metric_exporter,
+        ));
+        let mut metric_reader: *mut OtelPeriodicMetricReader = ptr::null_mut();
+        assert_ok(otel_periodic_metric_reader_builder_build(
+            mrb,
+            &mut metric_reader,
+        ));
+        otel_periodic_metric_reader_builder_destroy(mrb);
+        assert_ok(otel_sdk_builder_add_metric_reader(sb, metric_reader));
+
         let mut sdk: *mut OtelSdk = ptr::null_mut();
         assert_ok(otel_sdk_build(sb, &mut sdk));
         otel_sdk_builder_destroy(sb);
 
         assert_ok(otel_sdk_set_as_global(sdk));
+        assert_ok(otel_sdk_set_metrics_as_global(sdk));
         sdk
     }
 }
@@ -236,11 +277,49 @@ fn bench_sdk_backed(c: &mut Criterion) {
         );
     });
 
+    let meter_provider = otel_global_meter_provider();
+    let meter: *mut OtelMeter =
+        unsafe { otel_meter_provider_get_meter(meter_provider, sv("bench"), empty(), empty()) };
+    let mut counter: *mut OtelCounterU64 = ptr::null_mut();
+    let mut gauge: *mut OtelGaugeF64 = ptr::null_mut();
+    let mut histogram: *mut OtelHistogramF64 = ptr::null_mut();
+    assert_ok(unsafe {
+        otel_meter_create_u64_counter(meter, sv("requests"), ptr::null(), &mut counter)
+    });
+    assert_ok(unsafe {
+        otel_meter_create_f64_gauge(meter, sv("queue_depth"), ptr::null(), &mut gauge)
+    });
+    assert_ok(unsafe {
+        otel_meter_create_f64_histogram(meter, sv("request_duration"), ptr::null(), &mut histogram)
+    });
+
+    g.bench_function("metrics_counter_add_zero_attributes", |b| {
+        b.iter(|| {
+            black_box(unsafe { otel_counter_u64_add(counter, 1, ptr::null(), 0) });
+        });
+    });
+    g.bench_function("metrics_gauge_record_zero_attributes", |b| {
+        b.iter(|| {
+            black_box(unsafe { otel_gauge_f64_record(gauge, 1.5, ptr::null(), 0) });
+        });
+    });
+    g.bench_function("metrics_histogram_record_zero_attributes", |b| {
+        b.iter(|| {
+            black_box(unsafe { otel_histogram_f64_record(histogram, 1.5, ptr::null(), 0) });
+        });
+    });
+
     g.finish();
 
     // Teardown (not measured): drop the cached tracer, then shut down and destroy the SDK.
     unsafe {
+        otel_histogram_f64_destroy(histogram);
+        otel_gauge_f64_destroy(gauge);
+        otel_counter_u64_destroy(counter);
+        otel_meter_destroy(meter);
+        otel_meter_provider_destroy(meter_provider);
         otel_tracer_destroy(tracer);
+        otel_sdk_metrics_shutdown(sdk, 2_000);
         otel_sdk_shutdown(sdk, 2_000);
         otel_sdk_destroy(sdk);
     }
