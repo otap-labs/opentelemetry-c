@@ -155,10 +155,12 @@ extern otel_otlp_metric_exporter_builder_t* otel_otlp_metric_exporter_builder_ne
 extern int otel_otlp_metric_exporter_builder_set_endpoint(otel_otlp_metric_exporter_builder_t*, otel_string_view_t);
 extern int otel_otlp_metric_exporter_builder_build(const otel_otlp_metric_exporter_builder_t*, otel_metric_exporter_t**);
 extern void otel_otlp_metric_exporter_builder_destroy(otel_otlp_metric_exporter_builder_t*);
+extern void otel_metric_exporter_destroy(otel_metric_exporter_t*);
 extern otel_periodic_metric_reader_builder_t* otel_periodic_metric_reader_builder_new(void);
 extern int otel_periodic_metric_reader_builder_set_exporter(otel_periodic_metric_reader_builder_t*, otel_metric_exporter_t*);
 extern int otel_periodic_metric_reader_builder_build(otel_periodic_metric_reader_builder_t*, otel_periodic_metric_reader_t**);
 extern void otel_periodic_metric_reader_builder_destroy(otel_periodic_metric_reader_builder_t*);
+extern void otel_periodic_metric_reader_destroy(otel_periodic_metric_reader_t*);
 extern otel_sdk_builder_t* otel_sdk_builder_new(void);
 extern int otel_sdk_builder_set_service_name(otel_sdk_builder_t*, otel_string_view_t);
 extern int otel_sdk_builder_add_span_processor(otel_sdk_builder_t*, otel_span_processor_t*);
@@ -198,74 +200,189 @@ static void work(void){
     otel_span_end(parent); otel_span_destroy(parent);
     otel_tracer_destroy(t); otel_tracer_provider_destroy(p);
 }
-static void metrics_work(void){
-    otel_meter_provider_t* p = otel_global_meter_provider();
-    otel_meter_t* m = otel_meter_provider_get_meter(p, cs("metric-instr"), cs("1.0"), emp());
-    otel_counter_u64_t* c=(void*)0; otel_gauge_f64_t* g=(void*)0; otel_histogram_f64_t* h=(void*)0;
-    if (otel_meter_create_u64_counter(m,cs("requests"),(void*)0,&c)!=0) return;
-    if (otel_meter_create_f64_gauge(m,cs("queue_depth"),(void*)0,&g)!=0) return;
-    if (otel_meter_create_f64_histogram(m,cs("duration"),(void*)0,&h)!=0) return;
-    otel_counter_u64_add(c,3,(void*)0,0);
-    otel_gauge_f64_record(g,2.5,(void*)0,0);
-    otel_histogram_f64_record(h,7.5,(void*)0,0);
-    otel_histogram_f64_destroy(h); otel_gauge_f64_destroy(g); otel_counter_u64_destroy(c);
-    otel_meter_destroy(m); otel_meter_provider_destroy(p);
+static int metrics_work(void){
+    int result=0;
+    otel_meter_provider_t* p=(void*)0;
+    otel_meter_t* m=(void*)0;
+    otel_counter_u64_t* c=(void*)0;
+    otel_gauge_f64_t* g=(void*)0;
+    otel_histogram_f64_t* h=(void*)0;
+
+    p=otel_global_meter_provider();
+    if (!p){ result=1; goto cleanup; }
+    m=otel_meter_provider_get_meter(p,cs("metric-instr"),cs("1.0"),emp());
+    if (!m){ result=2; goto cleanup; }
+    if (otel_meter_create_u64_counter(m,cs("requests"),(void*)0,&c)!=0||!c){
+        result=3; goto cleanup;
+    }
+    if (otel_meter_create_f64_gauge(m,cs("queue_depth"),(void*)0,&g)!=0||!g){
+        result=4; goto cleanup;
+    }
+    if (otel_meter_create_f64_histogram(m,cs("duration"),(void*)0,&h)!=0||!h){
+        result=5; goto cleanup;
+    }
+    if (otel_counter_u64_add(c,3,(void*)0,0)!=0){ result=6; goto cleanup; }
+    if (otel_gauge_f64_record(g,2.5,(void*)0,0)!=0){ result=7; goto cleanup; }
+    if (otel_histogram_f64_record(h,7.5,(void*)0,0)!=0){ result=8; goto cleanup; }
+
+cleanup:
+    if (h) otel_histogram_f64_destroy(h);
+    if (g) otel_gauge_f64_destroy(g);
+    if (c) otel_counter_u64_destroy(c);
+    if (m) otel_meter_destroy(m);
+    if (p) otel_meter_provider_destroy(p);
+    return result;
 }
 static int observable_setup(void){
-    otel_meter_provider_t* p = otel_global_meter_provider();
-    otel_meter_t* m = otel_meter_provider_get_meter(p, cs("observable-instr"), cs("1.0"), emp());
-    void* state=malloc(1);
-    if (!state) return 16;
-    if (otel_meter_create_u64_observable_gauge(m,cs("observable_queue"),(void*)0,observe_queue,state,destroy_observable_state,&observable)!=0) return 17;
-    otel_meter_destroy(m); otel_meter_provider_destroy(p);
-    return 0;
+    int result=0;
+    int create_status=0;
+    otel_meter_provider_t* p=(void*)0;
+    otel_meter_t* m=(void*)0;
+    otel_observable_gauge_u64_t* created=(void*)0;
+    void* state=(void*)0;
+
+    p=otel_global_meter_provider();
+    if (!p){ result=1; goto cleanup; }
+    m=otel_meter_provider_get_meter(p,cs("observable-instr"),cs("1.0"),emp());
+    if (!m){ result=2; goto cleanup; }
+    state=malloc(1);
+    if (!state){ result=3; goto cleanup; }
+
+    create_status=otel_meter_create_u64_observable_gauge(
+        m,cs("observable_queue"),(void*)0,observe_queue,state,
+        destroy_observable_state,&created);
+    /*
+     * The non-NULL out/callback/meter and fixed valid name/options above satisfy all
+     * API-side validation. CallbackState therefore owns state before SDK dispatch,
+     * including SDK-side creation failure.
+     */
+    state=(void*)0;
+    if (create_status!=0){ result=4; goto cleanup; }
+    if (!created){ result=5; goto cleanup; }
+    observable=created;
+    created=(void*)0;
+
+cleanup:
+    if (created) otel_observable_gauge_u64_destroy(created);
+    if (state) free(state);
+    if (m) otel_meter_destroy(m);
+    if (p) otel_meter_provider_destroy(p);
+    return result;
 }
 int main(void){
-    work(); /* API-only no-op before install (must be safe) */
-    metrics_work();
-    /* Build the pipeline: OTLP exporter -> batch processor -> SDK builder. */
-    otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
-    otel_otlp_trace_exporter_builder_set_endpoint(eb, cs(getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")));
-    otel_otlp_trace_exporter_builder_set_timeout_millis(eb, 5000);
+    int result=1;
+    int stage_status=0;
+    otel_otlp_trace_exporter_builder_t* eb=(void*)0;
     otel_trace_exporter_t* exporter=(void*)0;
-    if (otel_otlp_trace_exporter_builder_build(eb,&exporter)!=0||!exporter) return 2;
-    otel_otlp_trace_exporter_builder_destroy(eb);
-    otel_batch_span_processor_builder_t* pb = otel_batch_span_processor_builder_new();
-    if (otel_batch_span_processor_builder_set_exporter(pb,exporter)!=0) return 3;
+    otel_batch_span_processor_builder_t* pb=(void*)0;
     otel_span_processor_t* processor=(void*)0;
-    if (otel_batch_span_processor_builder_build(pb,&processor)!=0||!processor) return 4;
-    otel_batch_span_processor_builder_destroy(pb);
-    otel_sdk_builder_t* b = otel_sdk_builder_new();
-    otel_sdk_builder_set_service_name(b, cs("cross-artifact"));
-    if (otel_sdk_builder_add_span_processor(b,processor)!=0) return 5;
-    otel_otlp_metric_exporter_builder_t* meb=otel_otlp_metric_exporter_builder_new();
-    otel_otlp_metric_exporter_builder_set_endpoint(meb,cs(getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")));
+    otel_sdk_builder_t* b=(void*)0;
+    otel_otlp_metric_exporter_builder_t* meb=(void*)0;
     otel_metric_exporter_t* mex=(void*)0;
-    if (otel_otlp_metric_exporter_builder_build(meb,&mex)!=0||!mex) return 11;
-    otel_otlp_metric_exporter_builder_destroy(meb);
-    otel_periodic_metric_reader_builder_t* mrb=otel_periodic_metric_reader_builder_new();
-    if (otel_periodic_metric_reader_builder_set_exporter(mrb,mex)!=0) return 12;
+    otel_periodic_metric_reader_builder_t* mrb=(void*)0;
     otel_periodic_metric_reader_t* mr=(void*)0;
-    if (otel_periodic_metric_reader_builder_build(mrb,&mr)!=0||!mr) return 13;
-    otel_periodic_metric_reader_builder_destroy(mrb);
-    if (otel_sdk_builder_add_metric_reader(b,mr)!=0) return 14;
     otel_sdk_t* sdk=(void*)0;
-    if (otel_sdk_build(b,&sdk)!=0||!sdk) return 6;
+
+    work(); /* API-only no-op before install (must be safe) */
+    stage_status=metrics_work();
+    if (stage_status!=0){ result=30+stage_status; goto cleanup; }
+    /* Build the pipeline: OTLP exporter -> batch processor -> SDK builder. */
+    eb=otel_otlp_trace_exporter_builder_new();
+    if (!eb){ result=2; goto cleanup; }
+    if (otel_otlp_trace_exporter_builder_set_endpoint(
+            eb,cs(getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")))!=0){
+        result=3; goto cleanup;
+    }
+    if (otel_otlp_trace_exporter_builder_set_timeout_millis(eb,5000)!=0){
+        result=4; goto cleanup;
+    }
+    if (otel_otlp_trace_exporter_builder_build(eb,&exporter)!=0||!exporter){
+        result=5; goto cleanup;
+    }
+    otel_otlp_trace_exporter_builder_destroy(eb);
+    eb=(void*)0;
+    pb=otel_batch_span_processor_builder_new();
+    if (!pb){ result=6; goto cleanup; }
+    if (otel_batch_span_processor_builder_set_exporter(pb,exporter)!=0){
+        result=7; goto cleanup;
+    }
+    exporter=(void*)0;
+    if (otel_batch_span_processor_builder_build(pb,&processor)!=0||!processor){
+        result=8; goto cleanup;
+    }
+    otel_batch_span_processor_builder_destroy(pb);
+    pb=(void*)0;
+    b=otel_sdk_builder_new();
+    if (!b){ result=9; goto cleanup; }
+    if (otel_sdk_builder_set_service_name(b,cs("cross-artifact"))!=0){
+        result=10; goto cleanup;
+    }
+    if (otel_sdk_builder_add_span_processor(b,processor)!=0){
+        result=11; goto cleanup;
+    }
+    processor=(void*)0;
+    meb=otel_otlp_metric_exporter_builder_new();
+    if (!meb){ result=12; goto cleanup; }
+    if (otel_otlp_metric_exporter_builder_set_endpoint(
+            meb,cs(getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")))!=0){
+        result=13; goto cleanup;
+    }
+    if (otel_otlp_metric_exporter_builder_build(meb,&mex)!=0||!mex){
+        result=14; goto cleanup;
+    }
+    otel_otlp_metric_exporter_builder_destroy(meb);
+    meb=(void*)0;
+    mrb=otel_periodic_metric_reader_builder_new();
+    if (!mrb){ result=15; goto cleanup; }
+    if (otel_periodic_metric_reader_builder_set_exporter(mrb,mex)!=0){
+        result=16; goto cleanup;
+    }
+    mex=(void*)0;
+    if (otel_periodic_metric_reader_builder_build(mrb,&mr)!=0||!mr){
+        result=17; goto cleanup;
+    }
+    otel_periodic_metric_reader_builder_destroy(mrb);
+    mrb=(void*)0;
+    if (otel_sdk_builder_add_metric_reader(b,mr)!=0){
+        result=18; goto cleanup;
+    }
+    mr=(void*)0;
+    if (otel_sdk_build(b,&sdk)!=0||!sdk){ result=19; goto cleanup; }
     otel_sdk_builder_destroy(b);
-    if (otel_sdk_set_as_global(sdk)!=0) return 7;
-    if (otel_sdk_set_metrics_as_global(sdk)!=0) return 15;
+    b=(void*)0;
+    if (otel_sdk_set_as_global(sdk)!=0){ result=20; goto cleanup; }
+    if (otel_sdk_set_metrics_as_global(sdk)!=0){ result=21; goto cleanup; }
     work(); /* API-only calls AFTER install must export through the SDK */
-    metrics_work();
-    if (observable_setup()!=0) return 18;
-    otel_sdk_force_flush(sdk, 5000);
-    otel_sdk_metrics_force_flush(sdk, 0);
-    if (observable_calls==0) return 19;
-    otel_observable_gauge_u64_destroy(observable);
-    otel_sdk_metrics_shutdown(sdk, 5000);
-    otel_sdk_shutdown(sdk, 5000);
-    otel_sdk_destroy(sdk);
-    if (observable_destroyed!=1) return 20;
-    return 0;
+    stage_status=metrics_work();
+    if (stage_status!=0){ result=40+stage_status; goto cleanup; }
+    stage_status=observable_setup();
+    if (stage_status!=0){ result=60+stage_status; goto cleanup; }
+    if (otel_sdk_force_flush(sdk,5000)!=0){ result=70; goto cleanup; }
+    if (otel_sdk_metrics_force_flush(sdk,0)!=0){ result=71; goto cleanup; }
+    if (observable_calls==0){ result=72; goto cleanup; }
+    result=0;
+
+cleanup:
+    if (observable){
+        otel_observable_gauge_u64_destroy(observable);
+        observable=(void*)0;
+    }
+    if (sdk){
+        otel_sdk_metrics_shutdown(sdk,5000);
+        otel_sdk_shutdown(sdk,5000);
+        otel_sdk_destroy(sdk);
+    }
+    if (b) otel_sdk_builder_destroy(b);
+    if (mr) otel_periodic_metric_reader_destroy(mr);
+    if (mrb) otel_periodic_metric_reader_builder_destroy(mrb);
+    if (mex) otel_metric_exporter_destroy(mex);
+    if (meb) otel_otlp_metric_exporter_builder_destroy(meb);
+    if (processor) otel_span_processor_destroy(processor);
+    if (pb) otel_batch_span_processor_builder_destroy(pb);
+    if (exporter) otel_trace_exporter_destroy(exporter);
+    if (eb) otel_otlp_trace_exporter_builder_destroy(eb);
+    if (result==0&&observable_destroyed!=1) return 73;
+    return result;
 }
 "#;
 

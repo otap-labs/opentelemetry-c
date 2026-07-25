@@ -12,5 +12,5 @@ Set `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to override
 `http://localhost:4318/v1/metrics`.
 
 The observable handle may be destroyed before shutdown, which disables later callback work.
-Its `user_data` destroy callback runs only after the Rust pipeline releases the registered
-closure, normally during MeterProvider shutdown/drop.
+Its `user_data` destroy callback runs exactly once after the handle is destroyed and after any
+callback already in flight returns. It does not depend on MeterProvider shutdown or drop.
