@@ -1121,7 +1121,7 @@ mod tests {
     use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex, OnceLock};
     use std::time::Duration;
 
-    use opentelemetry_c_abi::OTEL_IMPL_ABI_VERSION;
+    use opentelemetry_c_abi::OTEL_METRICS_IMPL_ABI_VERSION;
 
     struct MockInstrument {
         callback: extern "C" fn(*mut c_void, *mut c_void),
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     static MOCK_METRICS_VTABLE: OtelMetricsVtable = OtelMetricsVtable {
-        abi_version: OTEL_IMPL_ABI_VERSION,
+        abi_version: OTEL_METRICS_IMPL_ABI_VERSION,
         struct_size: std::mem::size_of::<OtelMetricsVtable>(),
         provider_get_meter: mock_provider_get_meter,
         provider_retain: mock_provider_retain,

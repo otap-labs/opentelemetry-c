@@ -9,7 +9,7 @@ use opentelemetry::metrics::{
 use opentelemetry::InstrumentationScope;
 use opentelemetry_c_abi::{
     OtelMetricInstrumentConfig, OtelMetricInstrumentKind, OtelMetricNumberKind, OtelMetricsVtable,
-    OtelStatus, OtelStringView, OTEL_IMPL_ABI_VERSION,
+    OtelStatus, OtelStringView, OTEL_METRICS_IMPL_ABI_VERSION,
 };
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
@@ -628,7 +628,7 @@ extern "C" fn instrument_free(ctx: *mut c_void) {
 }
 
 pub(crate) static SDK_METRICS_VTABLE: OtelMetricsVtable = OtelMetricsVtable {
-    abi_version: OTEL_IMPL_ABI_VERSION,
+    abi_version: OTEL_METRICS_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelMetricsVtable>(),
     provider_get_meter,
     provider_retain,

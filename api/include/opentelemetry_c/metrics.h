@@ -6,6 +6,9 @@
  *
  * Without an installed Metrics SDK, valid instrument creation succeeds and measurements
  * are allocation-free no-ops. Instrument configuration is still validated consistently.
+ * A Meter acquired while no Metrics SDK is installed remains no-op; installing an SDK later
+ * does not retrofit existing Meter or instrument handles. Reacquire the Meter and recreate
+ * its instruments after installing the global SDK. This is expected handle behavior.
  */
 #ifndef OPENTELEMETRY_C_METRICS_H
 #define OPENTELEMETRY_C_METRICS_H
@@ -122,9 +125,13 @@ void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
  * Destroying the public observable handle disables future callback work and releases its
  * user-data ownership. user_data_destroy runs exactly once after any callback already in
  * flight releases its temporary reference; it does not depend on the SDK pipeline closure
- * being unregistered or dropped. The library contains panics from its own Rust trampoline
- * logic before they can unwind across the ABI. This does not make unwinding or exceptions
- * from a user callback across its C function boundary safe.
+ * being unregistered or dropped. opentelemetry-rust 0.32 does not support callback
+ * unregistration, so the internal no-op pipeline callback registration may remain until its
+ * MeterProvider shuts down or is dropped. Repeatedly creating and destroying observables can
+ * therefore accumulate inactive registrations retained for the provider lifetime; this is
+ * provider-lifetime retention, not a permanent memory leak. The library contains panics from
+ * its own Rust trampoline logic before they can unwind across the ABI. This does not make
+ * unwinding or exceptions from a user callback across its C function boundary safe.
  */
 #define OTEL_DECLARE_OBSERVABLE_CREATE(fn, type, callback_type) \
     otel_status_t fn(const otel_meter_t* meter, otel_string_view_t name, \

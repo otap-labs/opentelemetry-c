@@ -10,9 +10,7 @@
 use std::os::raw::c_void;
 use std::sync::RwLock;
 
-use opentelemetry_c_abi::{
-    trace_vtable_compatible, OtelImplVtable, OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE,
-};
+use opentelemetry_c_abi::{trace_vtable_compatible, OtelImplVtable, OTEL_TRACE_IMPL_ABI_VERSION};
 
 use crate::error::{clear_last_error, fail, has_last_error, set_last_error, OtelStatus};
 use crate::handle::{guard_ptr, guard_status, into_raw};
@@ -117,24 +115,14 @@ pub unsafe extern "C" fn otel_api_register_global_provider(
                 "register_global_provider: vtable must not be NULL",
             );
         }
-        // SAFETY: the caller contract requires a readable vtable. The version and size form
-        // its stable prefix and are validated before any function pointer is accessed.
-        let (abi_version, struct_size) = unsafe { ((*vtable).abi_version, (*vtable).struct_size) };
-        if abi_version != OTEL_IMPL_ABI_VERSION {
+        // SAFETY: the caller contract requires a readable stable header. No function pointer
+        // is accessed until the signal kind/version and required trace prefix are validated.
+        if !unsafe { trace_vtable_compatible(vtable) } {
             return fail(
                 OtelStatus::InvalidArgument,
                 format!(
-                    "register_global_provider: unsupported implementation ABI version \
-                     {abi_version} (expected {OTEL_IMPL_ABI_VERSION})"
-                ),
-            );
-        }
-        if struct_size < OTEL_IMPL_VTABLE_REQUIRED_SIZE {
-            return fail(
-                OtelStatus::InvalidArgument,
-                format!(
-                    "register_global_provider: implementation vtable is too small \
-                     ({struct_size} bytes; need at least {OTEL_IMPL_VTABLE_REQUIRED_SIZE})"
+                    "register_global_provider: incompatible trace implementation ABI \
+                     (expected kind/version {OTEL_TRACE_IMPL_ABI_VERSION})"
                 ),
             );
         }

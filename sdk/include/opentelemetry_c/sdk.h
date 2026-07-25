@@ -62,6 +62,12 @@
  * replaces the global slot. Shutdown+destroy does NOT make unloading the SDK safe. Any live
  * SDK-backed handles (tracer provider, tracer, span) must also be destroyed before unload.
  *
+ * Metrics unregistration or shutdown alone also does NOT make unloading the SDK safe.
+ * Before unloading, ensure the SDK is no longer globally installed; destroy every SDK-backed
+ * MeterProvider, Meter, and instrument handle; wait for all observable callbacks to finish;
+ * and ensure no thread can call through an SDK Metrics vtable. Existing handles retain
+ * function pointers into `libopentelemetry_c_sdk`.
+ *
  * Typical lifecycle
  * -----------------
  *   Build an exporter, wrap it in a span processor, then hand the processor to the SDK

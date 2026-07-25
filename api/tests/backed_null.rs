@@ -113,7 +113,7 @@ extern "C" fn vt_span_free(c: *mut c_void) {
 }
 
 static BACKED_VTABLE: OtelImplVtable = OtelImplVtable {
-    abi_version: opentelemetry_c_abi::OTEL_IMPL_ABI_VERSION,
+    abi_version: opentelemetry_c_abi::OTEL_TRACE_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelImplVtable>(),
     provider_get_tracer: vt_provider_get_tracer,
     provider_retain: vt_provider_retain,

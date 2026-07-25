@@ -389,7 +389,7 @@ pub struct OtelMetricInstrumentConfig {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OtelImplVtable {
-    /// Internal ABI version. Increment only for an incompatible layout or semantic change.
+    /// Trace ABI kind/version identifier.
     pub abi_version: u32,
     /// Size of this vtable in bytes. New entries may only be appended.
     pub struct_size: usize,
@@ -453,18 +453,23 @@ pub struct OtelImplVtable {
     pub span_free: extern "C" fn(span_ctx: *mut c_void),
 }
 
-/// Current internal ABI understood by the API and SDK libraries.
-pub const OTEL_IMPL_ABI_VERSION: u32 = 1;
+/// Current trace implementation ABI kind/version identifier.
+pub const OTEL_TRACE_IMPL_ABI_VERSION: u32 = 1;
+
+/// Compatibility alias for existing trace consumers.
+///
+/// Metrics vtables must use [`OTEL_METRICS_IMPL_ABI_VERSION`] instead.
+pub const OTEL_IMPL_ABI_VERSION: u32 = OTEL_TRACE_IMPL_ABI_VERSION;
 
 /// Minimum vtable size required by this API version.
 pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelImplVtable>();
 
-/// Internal Metrics implementation vtable. Metrics uses a distinct provider context and
-/// API-owned global slot from traces.
+/// Internal Metrics implementation vtable. Metrics uses a distinct ABI identifier,
+/// provider context, and API-owned global slot from traces.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OtelMetricsVtable {
-    /// Internal ABI version. Increment only for an incompatible layout or semantic change.
+    /// Metrics ABI kind/version identifier.
     pub abi_version: u32,
     /// Size of this vtable in bytes. New entries may only be appended.
     pub struct_size: usize,
@@ -520,6 +525,9 @@ pub struct OtelMetricsVtable {
     pub instrument_free: extern "C" fn(instrument_ctx: *mut c_void),
 }
 
+/// Current Metrics implementation ABI kind/version identifier.
+pub const OTEL_METRICS_IMPL_ABI_VERSION: u32 = 2;
+
 /// Minimum Metrics vtable size required by this API version.
 pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelMetricsVtable>();
 
@@ -532,17 +540,23 @@ pub struct OtelVtableHeader {
 
 /// Validate the stable prefix of a trace implementation vtable.
 ///
+/// The ABI identifier selects both the trace signal kind and its compatible version.
+/// `struct_size` permits append-only extensions within that same kind.
+///
 /// # Safety
 ///
 /// `vtable` must be non-NULL, correctly aligned, and readable for at least
 /// [`OtelVtableHeader`]. No bytes beyond that prefix are read until the size check succeeds.
 pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
     let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
-    header.abi_version == OTEL_IMPL_ABI_VERSION
+    header.abi_version == OTEL_TRACE_IMPL_ABI_VERSION
         && header.struct_size >= OTEL_IMPL_VTABLE_REQUIRED_SIZE
 }
 
 /// Validate the stable prefix of a Metrics implementation vtable.
+///
+/// The ABI identifier selects both the Metrics signal kind and its compatible version.
+/// `struct_size` permits append-only extensions within that same kind.
 ///
 /// # Safety
 ///
@@ -550,9 +564,11 @@ pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
 /// [`OtelVtableHeader`]. No bytes beyond that prefix are read until the size check succeeds.
 pub unsafe fn metrics_vtable_compatible(vtable: *const OtelMetricsVtable) -> bool {
     let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
-    header.abi_version == OTEL_IMPL_ABI_VERSION
+    header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
         && header.struct_size >= OTEL_METRICS_VTABLE_REQUIRED_SIZE
 }
+
+const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
 
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use opentelemetry_c_abi::{
     OtelKeyValue, OtelMetricInstrumentConfig, OtelMetricsVtable, OtelStatus, OtelStringView,
-    OTEL_IMPL_ABI_VERSION,
+    OTEL_METRICS_IMPL_ABI_VERSION,
 };
 use opentelemetry_c_api::{
     otel_api_register_global_meter_provider, otel_global_meter_provider, otel_meter_destroy,
@@ -90,7 +90,7 @@ extern "C" fn record_f64(_: *mut c_void, _: f64, _: *const OtelKeyValue, _: usiz
 }
 
 static VTABLE: OtelMetricsVtable = OtelMetricsVtable {
-    abi_version: OTEL_IMPL_ABI_VERSION,
+    abi_version: OTEL_METRICS_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelMetricsVtable>(),
     provider_get_meter: get_meter,
     provider_retain: retain,
