@@ -59,6 +59,14 @@ impl HasMagic for OtelSdkBuilder {
     }
 }
 
+impl Drop for OtelSdkBuilder {
+    fn drop(&mut self) {
+        for reader in self.metric_readers.drain(..) {
+            reader.shutdown();
+        }
+    }
+}
+
 /// Opaque SDK handle (`otel_sdk_t`). All operations except destroy take shared access.
 pub struct OtelSdk {
     magic: u64,
@@ -111,6 +119,7 @@ impl Drop for OtelSdk {
         if let Some(registration_id) = registration_id {
             let _ = api_ffi::unregister_global_meter_provider(registration_id);
         }
+        let _ = self.meter_provider.shutdown();
     }
 }
 
@@ -343,6 +352,10 @@ pub unsafe extern "C" fn otel_sdk_build(
             match reader {
                 #[cfg(feature = "otlp")]
                 PeriodicMetricReaderImpl::Otlp(reader) => {
+                    meter_provider_builder = meter_provider_builder.with_reader(reader);
+                }
+                #[cfg(test)]
+                PeriodicMetricReaderImpl::Test(reader) => {
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
                 }
             }
@@ -691,7 +704,8 @@ mod tests {
     };
     #[cfg(feature = "otlp")]
     use crate::span_processor::otel_span_processor_destroy;
-    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Barrier};
 
     #[cfg(feature = "otlp")]
     fn sv(s: &str) -> OtelStringView {
@@ -733,6 +747,59 @@ mod tests {
             otel_batch_span_processor_builder_destroy(pb);
             assert!(!processor.is_null());
             processor
+        }
+    }
+
+    #[test]
+    fn metric_reader_transfer_and_sdk_destruction_release_exporter_once() {
+        unsafe {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let reader = crate::periodic_metric_reader::test_reader(Arc::clone(&drops));
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            crate::periodic_metric_reader::otel_periodic_metric_reader_destroy(reader);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 0);
+
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 0);
+            otel_sdk_destroy(sdk);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn failed_sdk_build_and_invalid_transfer_preserve_reader_ownership() {
+        unsafe {
+            let invalid_drops = Arc::new(AtomicUsize::new(0));
+            let invalid_reader =
+                crate::periodic_metric_reader::test_reader(Arc::clone(&invalid_drops));
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(std::ptr::null_mut(), invalid_reader),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(invalid_drops.load(AtomicOrdering::SeqCst), 0);
+            crate::periodic_metric_reader::otel_periodic_metric_reader_destroy(invalid_reader);
+            assert_eq!(invalid_drops.load(AtomicOrdering::SeqCst), 1);
+
+            let build_drops = Arc::new(AtomicUsize::new(0));
+            let reader = crate::periodic_metric_reader::test_reader(Arc::clone(&build_drops));
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_sdk_build(builder, std::ptr::null_mut()),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(build_drops.load(AtomicOrdering::SeqCst), 0);
+            otel_sdk_builder_destroy(builder);
+            assert_eq!(build_drops.load(AtomicOrdering::SeqCst), 1);
         }
     }
 

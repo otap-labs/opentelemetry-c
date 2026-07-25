@@ -11,18 +11,36 @@ use crate::handle::{
 use crate::metric_exporter::{MetricExporterImpl, OtelMetricExporter};
 
 #[cfg(feature = "otlp")]
-use opentelemetry_sdk::metrics::{PeriodicReader, PeriodicReaderBuilder};
+use opentelemetry_sdk::metrics::PeriodicReaderBuilder;
+#[cfg(any(feature = "otlp", test))]
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 
 const BUILDER_MAGIC: u64 = 0x4F54_4C43_4D52_4442;
 const READER_MAGIC: u64 = 0x4F54_4C43_4D52_4452;
 
-#[cfg(feature = "otlp")]
 pub(crate) enum PeriodicMetricReaderImpl {
+    #[cfg(feature = "otlp")]
     Otlp(PeriodicReader<opentelemetry_otlp::MetricExporter>),
+    #[cfg(test)]
+    Test(PeriodicReader<crate::metric_exporter::TestMetricExporter>),
 }
 
-#[cfg(not(feature = "otlp"))]
-pub(crate) enum PeriodicMetricReaderImpl {}
+impl PeriodicMetricReaderImpl {
+    pub(crate) fn shutdown(self) {
+        match self {
+            #[cfg(feature = "otlp")]
+            Self::Otlp(reader) => {
+                let provider = SdkMeterProvider::builder().with_reader(reader).build();
+                let _ = provider.shutdown();
+            }
+            #[cfg(test)]
+            Self::Test(reader) => {
+                let provider = SdkMeterProvider::builder().with_reader(reader).build();
+                let _ = provider.shutdown();
+            }
+        }
+    }
+}
 
 pub struct OtelPeriodicMetricReaderBuilder {
     magic: u64,
@@ -146,6 +164,15 @@ fn build_reader(
             };
             PeriodicMetricReaderImpl::Otlp(builder.build())
         }
+        #[cfg(test)]
+        MetricExporterImpl::Test(exporter) => {
+            let builder = PeriodicReader::builder(exporter);
+            let builder = match interval {
+                Some(interval) => builder.with_interval(interval),
+                None => builder,
+            };
+            PeriodicMetricReaderImpl::Test(builder.build())
+        }
     }
 }
 
@@ -209,5 +236,125 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_build(
 pub unsafe extern "C" fn otel_periodic_metric_reader_destroy(
     reader: *mut OtelPeriodicMetricReader,
 ) {
-    guard_unit(|| unsafe { destroy(reader) });
+    guard_unit(|| {
+        if let Some(reader) = unsafe { take(reader) } {
+            reader.reader.shutdown();
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn test_reader(
+    drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> *mut OtelPeriodicMetricReader {
+    let exporter = crate::metric_exporter::TestMetricExporter::new(drops);
+    into_raw(OtelPeriodicMetricReader {
+        magic: READER_MAGIC,
+        reader: PeriodicMetricReaderImpl::Test(PeriodicReader::builder(exporter).build()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "otlp")]
+    use crate::metric_exporter::otel_metric_exporter_destroy;
+    use crate::metric_exporter::{OtelMetricExporter, TestMetricExporter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn test_exporter(drops: &Arc<AtomicUsize>) -> *mut OtelMetricExporter {
+        into_raw(OtelMetricExporter::new(MetricExporterImpl::Test(
+            TestMetricExporter::new(Arc::clone(drops)),
+        )))
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn exporter_transfer_duplicate_rejection_and_reader_destruction_are_exactly_once() {
+        unsafe {
+            let first_drops = Arc::new(AtomicUsize::new(0));
+            let second_drops = Arc::new(AtomicUsize::new(0));
+            let builder = otel_periodic_metric_reader_builder_new();
+            let first = test_exporter(&first_drops);
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_exporter(builder, first),
+                OtelStatus::Ok
+            );
+            otel_metric_exporter_destroy(first);
+            assert_eq!(first_drops.load(Ordering::SeqCst), 0);
+
+            let second = test_exporter(&second_drops);
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_exporter(builder, second),
+                OtelStatus::InvalidConfig
+            );
+            assert_eq!(second_drops.load(Ordering::SeqCst), 0);
+            otel_metric_exporter_destroy(second);
+            assert_eq!(second_drops.load(Ordering::SeqCst), 1);
+
+            let mut reader = std::ptr::null_mut();
+            assert_eq!(
+                otel_periodic_metric_reader_builder_build(builder, &mut reader),
+                OtelStatus::Ok
+            );
+            assert!(!reader.is_null());
+            otel_periodic_metric_reader_builder_destroy(builder);
+            assert_eq!(first_drops.load(Ordering::SeqCst), 0);
+            otel_periodic_metric_reader_destroy(reader);
+            assert_eq!(first_drops.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn reader_build_failure_preserves_or_releases_owned_exporter_correctly() {
+        unsafe {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let builder = otel_periodic_metric_reader_builder_new();
+            let exporter = test_exporter(&drops);
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_exporter(builder, exporter),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_periodic_metric_reader_builder_build(builder, std::ptr::null_mut()),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            otel_periodic_metric_reader_builder_destroy(builder);
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+            let empty_builder = otel_periodic_metric_reader_builder_new();
+            let mut reader = std::ptr::null_mut();
+            assert_eq!(
+                otel_periodic_metric_reader_builder_build(empty_builder, &mut reader),
+                OtelStatus::InvalidConfig
+            );
+            assert!(reader.is_null());
+            otel_periodic_metric_reader_builder_destroy(empty_builder);
+        }
+    }
+
+    #[cfg(not(feature = "otlp"))]
+    #[test]
+    fn unavailable_reader_build_releases_transferred_exporter_once() {
+        unsafe {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let builder = otel_periodic_metric_reader_builder_new();
+            let exporter = test_exporter(&drops);
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_exporter(builder, exporter),
+                OtelStatus::Ok
+            );
+            let mut reader = std::ptr::null_mut();
+            assert_eq!(
+                otel_periodic_metric_reader_builder_build(builder, &mut reader),
+                OtelStatus::InvalidConfig
+            );
+            assert!(reader.is_null());
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            otel_periodic_metric_reader_builder_destroy(builder);
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
+    }
 }
