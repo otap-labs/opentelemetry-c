@@ -8,7 +8,7 @@
 use std::os::raw::{c_char, c_void};
 
 use opentelemetry_c_abi::{
-    OtelImplVtable, OtelKeyValue, OtelStatus, OtelStringView, OTEL_IMPL_ABI_VERSION,
+    OtelImplVtable, OtelKeyValue, OtelStatus, OtelStringView, OTEL_TRACE_IMPL_ABI_VERSION,
 };
 
 use opentelemetry_c_api::{
@@ -97,7 +97,7 @@ extern "C" fn span_free(c: *mut c_void) {
 
 const fn vtable_with(retain: extern "C" fn(*mut c_void) -> *mut c_void) -> OtelImplVtable {
     OtelImplVtable {
-        abi_version: opentelemetry_c_abi::OTEL_IMPL_ABI_VERSION,
+        abi_version: OTEL_TRACE_IMPL_ABI_VERSION,
         struct_size: std::mem::size_of::<OtelImplVtable>(),
         provider_get_tracer,
         provider_retain: retain,
@@ -146,7 +146,7 @@ fn last_error_bytes() -> Option<Vec<u8>> {
 fn global_retain_failure_returns_null_with_error() {
     // Reject an incompatible ABI without consuming the caller-owned provider context.
     let mut incompatible = VTABLE_NO_ERROR;
-    incompatible.abi_version = OTEL_IMPL_ABI_VERSION + 1;
+    incompatible.abi_version = OTEL_TRACE_IMPL_ABI_VERSION + 1;
     let ctx = dummy();
     assert_eq!(
         unsafe { otel_api_register_global_provider(&incompatible, ctx) },

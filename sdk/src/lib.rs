@@ -38,7 +38,12 @@ mod api_ffi;
 mod batch_processor;
 mod error;
 mod handle;
+mod metric_exporter;
+mod metric_view;
+mod metrics_vtable;
 mod otlp_exporter;
+mod otlp_metric_exporter;
+mod periodic_metric_reader;
 mod sdk;
 mod span_processor;
 mod trace_exporter;
@@ -53,17 +58,46 @@ pub use batch_processor::{
     otel_batch_span_processor_builder_set_max_queue_size,
     otel_batch_span_processor_builder_set_scheduled_delay_millis, OtelBatchSpanProcessorBuilder,
 };
+pub use metric_exporter::{otel_metric_exporter_destroy, OtelMetricExporter};
+pub use metric_view::{
+    otel_metric_view_builder_add_allowed_attribute, otel_metric_view_builder_build,
+    otel_metric_view_builder_destroy, otel_metric_view_builder_new,
+    otel_metric_view_builder_set_aggregation, otel_metric_view_builder_set_cardinality_limit,
+    otel_metric_view_builder_set_explicit_histogram,
+    otel_metric_view_builder_set_exponential_histogram,
+    otel_metric_view_builder_set_instrument_kind, otel_metric_view_builder_set_meter_name,
+    otel_metric_view_builder_set_name_pattern, otel_metric_view_builder_set_output_description,
+    otel_metric_view_builder_set_output_name, otel_metric_view_builder_set_output_unit,
+    otel_metric_view_builder_set_unit, otel_metric_view_destroy, OtelMetricView,
+    OtelMetricViewBuilder,
+};
 pub use otlp_exporter::{
     otel_otlp_trace_exporter_builder_add_header, otel_otlp_trace_exporter_builder_build,
     otel_otlp_trace_exporter_builder_destroy, otel_otlp_trace_exporter_builder_new,
     otel_otlp_trace_exporter_builder_set_endpoint,
     otel_otlp_trace_exporter_builder_set_timeout_millis, OtelOtlpTraceExporterBuilder,
 };
+pub use otlp_metric_exporter::{
+    otel_otlp_metric_exporter_builder_add_header, otel_otlp_metric_exporter_builder_build,
+    otel_otlp_metric_exporter_builder_destroy, otel_otlp_metric_exporter_builder_new,
+    otel_otlp_metric_exporter_builder_set_endpoint,
+    otel_otlp_metric_exporter_builder_set_temporality,
+    otel_otlp_metric_exporter_builder_set_timeout_millis, OtelOtlpMetricExporterBuilder,
+};
+pub use periodic_metric_reader::{
+    otel_periodic_metric_reader_builder_build, otel_periodic_metric_reader_builder_destroy,
+    otel_periodic_metric_reader_builder_new, otel_periodic_metric_reader_builder_set_exporter,
+    otel_periodic_metric_reader_builder_set_interval_millis, otel_periodic_metric_reader_destroy,
+    OtelPeriodicMetricReader, OtelPeriodicMetricReaderBuilder,
+};
 pub use sdk::{
-    otel_sdk_build, otel_sdk_builder_add_resource_attribute, otel_sdk_builder_add_span_processor,
+    otel_sdk_build, otel_sdk_builder_add_metric_reader, otel_sdk_builder_add_metric_view,
+    otel_sdk_builder_add_resource_attribute, otel_sdk_builder_add_span_processor,
     otel_sdk_builder_destroy, otel_sdk_builder_new, otel_sdk_builder_set_service_name,
-    otel_sdk_destroy, otel_sdk_force_flush, otel_sdk_get_tracer_provider, otel_sdk_set_as_global,
-    otel_sdk_shutdown, OtelSdk, OtelSdkBuilder,
+    otel_sdk_destroy, otel_sdk_force_flush, otel_sdk_get_meter_provider,
+    otel_sdk_get_tracer_provider, otel_sdk_metrics_force_flush, otel_sdk_metrics_shutdown,
+    otel_sdk_set_as_global, otel_sdk_set_metrics_as_global, otel_sdk_shutdown, OtelSdk,
+    OtelSdkBuilder,
 };
 pub use span_processor::{otel_span_processor_destroy, OtelSpanProcessor};
 pub use trace_exporter::{otel_trace_exporter_destroy, OtelTraceExporter};

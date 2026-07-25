@@ -10,7 +10,7 @@
 use std::os::raw::c_void;
 use std::sync::RwLock;
 
-use opentelemetry_c_abi::{OtelImplVtable, OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE};
+use opentelemetry_c_abi::{trace_vtable_compatible, OtelImplVtable, OTEL_TRACE_IMPL_ABI_VERSION};
 
 use crate::error::{clear_last_error, fail, has_last_error, set_last_error, OtelStatus};
 use crate::handle::{guard_ptr, guard_status, into_raw};
@@ -100,8 +100,11 @@ pub(crate) fn retain_global() -> GlobalRetain {
 /// owns `vtable`/`provider_ctx` (the SDK cdylib) must stay loaded for that whole window.
 ///
 /// # Safety
-/// `vtable` must point to a `'static` [`OtelImplVtable`] and `provider_ctx` to a provider
-/// object owned by the caller; ownership of `provider_ctx` transfers to the API slot.
+/// `vtable` must be correctly aligned and readable for `OtelVtableHeader`. If its trace
+/// kind/version and size are compatible, it must point to a complete `'static`
+/// [`OtelImplVtable`]. `provider_ctx` must be caller-owned and accepted by that vtable.
+/// Its ownership transfers to the API slot only on successful registration; on failure it
+/// remains caller-owned.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_register_global_provider(
     vtable: *const OtelImplVtable,
@@ -115,24 +118,14 @@ pub unsafe extern "C" fn otel_api_register_global_provider(
                 "register_global_provider: vtable must not be NULL",
             );
         }
-        // SAFETY: the caller contract requires a readable vtable. The version and size form
-        // its stable prefix and are validated before any function pointer is accessed.
-        let (abi_version, struct_size) = unsafe { ((*vtable).abi_version, (*vtable).struct_size) };
-        if abi_version != OTEL_IMPL_ABI_VERSION {
+        // SAFETY: the caller contract requires a readable stable header. No function pointer
+        // is accessed until the signal kind/version and required trace prefix are validated.
+        if !unsafe { trace_vtable_compatible(vtable) } {
             return fail(
                 OtelStatus::InvalidArgument,
                 format!(
-                    "register_global_provider: unsupported implementation ABI version \
-                     {abi_version} (expected {OTEL_IMPL_ABI_VERSION})"
-                ),
-            );
-        }
-        if struct_size < OTEL_IMPL_VTABLE_REQUIRED_SIZE {
-            return fail(
-                OtelStatus::InvalidArgument,
-                format!(
-                    "register_global_provider: implementation vtable is too small \
-                     ({struct_size} bytes; need at least {OTEL_IMPL_VTABLE_REQUIRED_SIZE})"
+                    "register_global_provider: incompatible trace implementation ABI \
+                     (expected kind/version {OTEL_TRACE_IMPL_ABI_VERSION})"
                 ),
             );
         }
@@ -164,8 +157,10 @@ pub unsafe extern "C" fn otel_api_register_global_provider(
 /// returned handle owns `provider_ctx` and frees it (via `provider_free`) when destroyed.
 ///
 /// # Safety
-/// `vtable` must point to a `'static` [`OtelImplVtable`]; `provider_ctx` to a provider
-/// object whose ownership transfers to the returned handle.
+/// `vtable` must be correctly aligned and readable for `OtelVtableHeader`. If its trace
+/// kind/version and size are compatible, it must point to a complete [`OtelImplVtable`] that
+/// remains live for the returned handle's lifetime. `provider_ctx` must be caller-owned and
+/// accepted by that vtable. Its ownership transfers only when a non-NULL handle is returned.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_provider_new(
     vtable: *const OtelImplVtable,
@@ -177,6 +172,14 @@ pub unsafe extern "C" fn otel_api_provider_new(
             fail(
                 OtelStatus::InvalidArgument,
                 "provider_new: vtable must not be NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        // SAFETY: non-NULL and required by the construction contract.
+        if !unsafe { trace_vtable_compatible(vtable) } {
+            fail(
+                OtelStatus::InvalidConfig,
+                "provider_new: incompatible trace implementation ABI",
             );
             return std::ptr::null_mut();
         }

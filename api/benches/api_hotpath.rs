@@ -17,10 +17,13 @@ use std::os::raw::c_char;
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use opentelemetry_c_api::{
-    otel_global_tracer_provider, otel_span_destroy, otel_span_end, otel_span_set_bool_attribute,
-    otel_span_set_double_attribute, otel_span_set_int64_attribute, otel_span_set_string_attribute,
-    otel_tracer_destroy, otel_tracer_provider_destroy, otel_tracer_provider_get_tracer,
-    otel_tracer_start_span, OtelSpan, OtelStringView, OtelTracer,
+    otel_counter_u64_add, otel_counter_u64_destroy, otel_global_meter_provider,
+    otel_global_tracer_provider, otel_meter_create_u64_counter, otel_meter_destroy,
+    otel_meter_provider_destroy, otel_meter_provider_get_meter, otel_span_destroy, otel_span_end,
+    otel_span_set_bool_attribute, otel_span_set_double_attribute, otel_span_set_int64_attribute,
+    otel_span_set_string_attribute, otel_tracer_destroy, otel_tracer_provider_destroy,
+    otel_tracer_provider_get_tracer, otel_tracer_start_span, OtelCounterU64, OtelSpan,
+    OtelStringView, OtelTracer,
 };
 
 fn sv(s: &str) -> OtelStringView {
@@ -110,6 +113,27 @@ fn bench_api_no_sdk(c: &mut Criterion) {
             otel_span_end(span);
             otel_span_destroy(span);
             otel_tracer_destroy(tracer);
+        }
+    });
+
+    g.bench_function("metrics_noop_counter_add_zero_attributes", |b| {
+        let provider = otel_global_meter_provider();
+        let meter =
+            unsafe { otel_meter_provider_get_meter(provider, sv("bench"), empty(), empty()) };
+        let mut counter: *mut OtelCounterU64 = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_meter_create_u64_counter(meter, sv("requests"), std::ptr::null(), &mut counter)
+            },
+            opentelemetry_c_api::OtelStatus::Ok
+        );
+        b.iter(|| {
+            black_box(unsafe { otel_counter_u64_add(counter, 1, std::ptr::null(), 0) });
+        });
+        unsafe {
+            otel_counter_u64_destroy(counter);
+            otel_meter_destroy(meter);
+            otel_meter_provider_destroy(provider);
         }
     });
 

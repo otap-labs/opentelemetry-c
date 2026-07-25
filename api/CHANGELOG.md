@@ -4,10 +4,20 @@
 
 ### Added
 
+- Experimental Metrics API with independent API-owned global `MeterProvider`, API-only no-op
+  behavior, all nine synchronous numeric instrument combinations, all seven observable
+  combinations, typed observer callbacks, strict instrument validation, and callback-scoped
+  observer lifetime enforcement.
+- Versioned, signal-namespaced internal Metrics vtable with kind/version and size compatibility
+  checks that reject trace vtables before dispatch, plus race-safe provider replacement.
+- Prefix-only ABI validation rejects truncated vtables before forming a full Rust reference.
+  Observable callback state ownership is consumed exactly once even when SDK construction
+  panics, and token-based Metrics deregistration releases the global provider on Metrics
+  shutdown/destroy without clearing a newer installation.
 - Initial release of `opentelemetry-c-api` as part of the split of `opentelemetry-c` into
   separate C **API** and **SDK** artifacts. The API library exposes the public trace API
-  (tracer providers, tracers, spans) as opaque handles, owns the single process-global
-  provider slot with a no-op default, and exposes the internal registration ABI the SDK
+  (tracer providers, tracers, spans) as opaque handles, owns the process-global trace provider
+  slot with a no-op default, and exposes the internal registration ABI the SDK
   uses to install itself. It depends only on the internal ABI-types crate — never on
   `opentelemetry_sdk`, `opentelemetry-otlp`, or `reqwest` — so instrumentation can link the
   API alone. Existing FFI-safety hardening is preserved (fixed-width discriminants,

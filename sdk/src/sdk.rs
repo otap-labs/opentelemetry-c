@@ -11,11 +11,12 @@
 
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
@@ -27,6 +28,8 @@ use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, take,
     HasMagic,
 };
+use crate::metric_view::{MetricViewConfig, OtelMetricView};
+use crate::periodic_metric_reader::{OtelPeriodicMetricReader, PeriodicMetricReaderImpl};
 use crate::span_processor::{OtelSpanProcessor, SpanProcessorImpl};
 use crate::vtable;
 
@@ -42,6 +45,8 @@ pub struct OtelSdkBuilder {
     // `build`, or freed on destroy if `build` was not completed. Homogeneous `SpanProcessorImpl`
     // so any processor kind (batch today, e.g. simple later) is stored uniformly here.
     processors: Vec<SpanProcessorImpl>,
+    metric_readers: Vec<PeriodicMetricReaderImpl>,
+    metric_views: Vec<MetricViewConfig>,
 }
 
 impl HasMagic for OtelSdkBuilder {
@@ -54,12 +59,28 @@ impl HasMagic for OtelSdkBuilder {
     }
 }
 
+impl Drop for OtelSdkBuilder {
+    fn drop(&mut self) {
+        for reader in self.metric_readers.drain(..) {
+            reader.shutdown();
+        }
+    }
+}
+
 /// Opaque SDK handle (`otel_sdk_t`). All operations except destroy take shared access.
 pub struct OtelSdk {
     magic: u64,
     provider: SdkTracerProvider,
+    meter_provider: SdkMeterProvider,
     shutdown: AtomicBool,
+    metrics_lifecycle: Mutex<MetricsLifecycle>,
     flush_in_flight: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct MetricsLifecycle {
+    shutdown_started: bool,
+    global_registration: Option<u64>,
 }
 
 impl HasMagic for OtelSdk {
@@ -79,6 +100,29 @@ const _: () = {
     let _ = assert_sync::<OtelSdk>;
 };
 
+impl OtelSdk {
+    fn metrics_lifecycle(&self) -> std::sync::MutexGuard<'_, MetricsLifecycle> {
+        self.metrics_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Drop for OtelSdk {
+    fn drop(&mut self) {
+        let registration_id = self
+            .metrics_lifecycle
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_registration
+            .take();
+        if let Some(registration_id) = registration_id {
+            let _ = api_ffi::unregister_global_meter_provider(registration_id);
+        }
+        let _ = self.meter_provider.shutdown();
+    }
+}
+
 fn optional_millis(millis: u64) -> Option<Duration> {
     (millis != 0).then(|| Duration::from_millis(millis))
 }
@@ -95,12 +139,65 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
             service_name: None,
             resource_attributes: Vec::new(),
             processors: Vec::new(),
+            metric_readers: Vec::new(),
+            metric_views: Vec::new(),
         })
     })
 }
 
-/// Destroy an SDK builder (no-op on NULL). Frees any span processors transferred in but not
-/// yet consumed by `otel_sdk_build`.
+/// Transfer a Metrics view into an SDK builder.
+///
+/// # Safety
+///
+/// `builder` and `view` must be live handles and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_add_metric_view(
+    builder: *mut OtelSdkBuilder,
+    view: *mut OtelMetricView,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let builder = match unsafe { checked_mut(builder) } {
+            Some(builder) => builder,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let view = match unsafe { take(view) } {
+            Some(view) => view,
+            None => return OtelStatus::InvalidArgument,
+        };
+        builder.metric_views.push(view.config);
+        OtelStatus::Ok
+    })
+}
+
+/// Transfer a periodic Metrics reader into an SDK builder. On success the SDK builder owns
+/// `reader`.
+///
+/// # Safety
+///
+/// `builder` and `reader` must be live handles and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_add_metric_reader(
+    builder: *mut OtelSdkBuilder,
+    reader: *mut OtelPeriodicMetricReader,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let builder = match unsafe { checked_mut(builder) } {
+            Some(builder) => builder,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let reader = match unsafe { take(reader) } {
+            Some(reader) => reader,
+            None => return OtelStatus::InvalidArgument,
+        };
+        builder.metric_readers.push(reader.reader);
+        OtelStatus::Ok
+    })
+}
+
+/// Destroy an SDK builder (no-op on NULL). Frees any span processors, Metrics readers, and
+/// Metrics views transferred in but not yet consumed by `otel_sdk_build`.
 ///
 /// # Safety
 /// `builder` must be NULL or a live builder not destroyed concurrently.
@@ -239,20 +336,106 @@ pub unsafe extern "C" fn otel_sdk_build(
         };
         // Move the transferred processors out of the builder into the provider.
         let processors = std::mem::take(&mut builder.processors);
+        let metric_readers = std::mem::take(&mut builder.metric_readers);
+        let metric_views = std::mem::take(&mut builder.metric_views);
         let resource = build_resource(builder);
         let mut provider_builder = SdkTracerProvider::builder().with_resource(resource);
         for processor in processors {
             provider_builder = provider_builder.with_span_processor(processor);
         }
         let provider = provider_builder.build();
+        #[allow(unused_mut)]
+        let mut meter_provider_builder =
+            SdkMeterProvider::builder().with_resource(build_resource(builder));
+        for reader in metric_readers {
+            match reader {
+                #[cfg(feature = "otlp")]
+                PeriodicMetricReaderImpl::Otlp(reader) => {
+                    meter_provider_builder = meter_provider_builder.with_reader(reader);
+                }
+                #[cfg(test)]
+                PeriodicMetricReaderImpl::Test { reader, .. } => {
+                    meter_provider_builder = meter_provider_builder.with_reader(reader);
+                }
+            }
+        }
+        for view in metric_views {
+            meter_provider_builder =
+                meter_provider_builder.with_view(move |instrument| view.apply(instrument));
+        }
+        let meter_provider = meter_provider_builder.build();
         let sdk = into_raw(OtelSdk {
             magic: SDK_MAGIC,
             provider,
+            meter_provider,
             shutdown: AtomicBool::new(false),
+            metrics_lifecycle: Mutex::new(MetricsLifecycle::default()),
             flush_in_flight: Arc::new(AtomicBool::new(false)),
         });
         unsafe { *out_sdk = sdk };
         OtelStatus::Ok
+    })
+}
+
+/// Return an owned API `otel_meter_provider_t*` backed by this SDK.
+/// Obtain an API-owned handle for the SDK's MeterProvider.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_get_meter_provider(sdk: *const OtelSdk) -> *mut c_void {
+    guard_ptr(|| {
+        clear_last_error();
+        match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => {
+                let ctx = crate::metrics_vtable::provider_ctx(sdk.meter_provider.clone());
+                let handle = api_ffi::meter_provider_new(crate::metrics_vtable::vtable_ptr(), ctx);
+                if handle.is_null() {
+                    (crate::metrics_vtable::SDK_METRICS_VTABLE.provider_free)(ctx);
+                }
+                handle
+            }
+            None => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// Install this SDK's Metrics provider into the API-owned global Metrics slot.
+/// Install this SDK's MeterProvider in the API-owned global Metrics slot.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_set_metrics_as_global(sdk: *mut OtelSdk) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let mut lifecycle = sdk.metrics_lifecycle();
+        if lifecycle.shutdown_started {
+            return fail(
+                OtelStatus::AlreadyShutdown,
+                "cannot install a shut-down Metrics provider as global",
+            );
+        }
+        let ctx = crate::metrics_vtable::provider_ctx(sdk.meter_provider.clone());
+        let (status, registration_id) =
+            api_ffi::register_global_meter_provider(crate::metrics_vtable::vtable_ptr(), ctx);
+        if status != OtelStatus::Ok {
+            (crate::metrics_vtable::SDK_METRICS_VTABLE.provider_free)(ctx);
+        } else if registration_id == 0 {
+            return fail(
+                OtelStatus::InternalError,
+                "Metrics global registration returned an invalid zero token",
+            );
+        } else {
+            lifecycle.global_registration = Some(registration_id);
+        }
+        status
     })
 }
 
@@ -414,10 +597,84 @@ pub unsafe extern "C" fn otel_sdk_shutdown(sdk: *mut OtelSdk, timeout_millis: u6
                 "SDK has already been shut down",
             );
         }
+
         let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
         match sdk.provider.shutdown_with_timeout(timeout) {
             Ok(()) => OtelStatus::Ok,
             Err(err) => status_from_sdk_error(&err),
+        }
+    })
+}
+
+/// Flush all configured Metrics readers. The pinned Rust 0.32 PeriodicReader blocks without
+/// accepting a caller timeout, so `timeout_millis` is currently advisory and ignored.
+/// Force collection and export through all configured Metrics readers.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_metrics_force_flush(
+    sdk: *mut OtelSdk,
+    _timeout_millis: u64,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        if sdk.metrics_lifecycle().shutdown_started {
+            return fail(
+                OtelStatus::AlreadyShutdown,
+                "cannot force flush a shut-down Metrics provider",
+            );
+        }
+        map_flush_result(sdk.meter_provider.force_flush())
+    })
+}
+
+/// Shut down the Metrics provider exactly once. OpenTelemetry Rust 0.32 ignores the supplied
+/// provider shutdown timeout and PeriodicReader uses its own fixed five-second wait.
+/// Shut down the Metrics provider at most once.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_metrics_shutdown(
+    sdk: *mut OtelSdk,
+    timeout_millis: u64,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let registration_id = {
+            let mut lifecycle = sdk.metrics_lifecycle();
+            if lifecycle.shutdown_started {
+                return fail(
+                    OtelStatus::AlreadyShutdown,
+                    "Metrics provider has already been shut down",
+                );
+            }
+            lifecycle.shutdown_started = true;
+            lifecycle.global_registration.take()
+        };
+        let unregister_status = registration_id
+            .map(api_ffi::unregister_global_meter_provider)
+            .unwrap_or(OtelStatus::Ok);
+        let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
+        let shutdown_status = match sdk.meter_provider.shutdown_with_timeout(timeout) {
+            Ok(()) => OtelStatus::Ok,
+            Err(err) => status_from_sdk_error(&err),
+        };
+        if unregister_status != OtelStatus::Ok {
+            unregister_status
+        } else {
+            shutdown_status
         }
     })
 }
@@ -439,6 +696,7 @@ mod tests {
         otel_batch_span_processor_builder_build, otel_batch_span_processor_builder_destroy,
         otel_batch_span_processor_builder_new, otel_batch_span_processor_builder_set_exporter,
     };
+    use crate::metric_exporter::TestMetricExporterLifecycle;
     #[cfg(feature = "otlp")]
     use crate::otlp_exporter::{
         otel_otlp_trace_exporter_builder_build, otel_otlp_trace_exporter_builder_destroy,
@@ -446,6 +704,8 @@ mod tests {
     };
     #[cfg(feature = "otlp")]
     use crate::span_processor::otel_span_processor_destroy;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Barrier, Condvar};
 
     #[cfg(feature = "otlp")]
     fn sv(s: &str) -> OtelStringView {
@@ -487,6 +747,116 @@ mod tests {
             otel_batch_span_processor_builder_destroy(pb);
             assert!(!processor.is_null());
             processor
+        }
+    }
+
+    struct LifecycleReader {
+        handle: *mut OtelPeriodicMetricReader,
+        drops: Arc<AtomicUsize>,
+        shutdowns: Arc<AtomicUsize>,
+        dropped: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    fn lifecycle_reader() -> LifecycleReader {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new((Mutex::new(false), Condvar::new()));
+        let handle = crate::periodic_metric_reader::test_reader_with_lifecycle(
+            Arc::clone(&drops),
+            TestMetricExporterLifecycle {
+                shutdowns: Arc::clone(&shutdowns),
+                dropped: Arc::clone(&dropped),
+            },
+        );
+        LifecycleReader {
+            handle,
+            drops,
+            shutdowns,
+            dropped,
+        }
+    }
+
+    fn wait_for_exporter_drop(dropped: &Arc<(Mutex<bool>, Condvar)>) {
+        let (dropped, condition) = &**dropped;
+        let guard = dropped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = condition
+            .wait_timeout_while(guard, Duration::from_secs(5), |dropped| !*dropped)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            *guard,
+            "exporter was not dropped before the bounded deadline"
+        );
+    }
+
+    #[test]
+    fn metric_reader_transfer_and_sdk_destruction_release_exporter_once() {
+        unsafe {
+            let LifecycleReader {
+                handle: reader,
+                drops,
+                shutdowns,
+                dropped,
+            } = lifecycle_reader();
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            crate::periodic_metric_reader::otel_periodic_metric_reader_destroy(reader);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 0);
+
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 0);
+            otel_sdk_destroy(sdk);
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&dropped);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn failed_sdk_build_and_invalid_transfer_preserve_reader_ownership() {
+        unsafe {
+            let LifecycleReader {
+                handle: invalid_reader,
+                drops: invalid_drops,
+                shutdowns: invalid_shutdowns,
+                dropped: invalid_dropped,
+            } = lifecycle_reader();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(std::ptr::null_mut(), invalid_reader),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(invalid_drops.load(AtomicOrdering::SeqCst), 0);
+            crate::periodic_metric_reader::otel_periodic_metric_reader_destroy(invalid_reader);
+            assert_eq!(invalid_shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&invalid_dropped);
+            assert_eq!(invalid_drops.load(AtomicOrdering::SeqCst), 1);
+
+            let LifecycleReader {
+                handle: reader,
+                drops: build_drops,
+                shutdowns: build_shutdowns,
+                dropped: build_dropped,
+            } = lifecycle_reader();
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_sdk_build(builder, std::ptr::null_mut()),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(build_drops.load(AtomicOrdering::SeqCst), 0);
+            otel_sdk_builder_destroy(builder);
+            assert_eq!(build_shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&build_dropped);
+            assert_eq!(build_drops.load(AtomicOrdering::SeqCst), 1);
         }
     }
 
@@ -562,6 +932,225 @@ mod tests {
             otel_sdk_builder_destroy(b);
             otel_sdk_shutdown(sdk, 500);
             otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn metrics_shutdown_removes_its_global_registration() {
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+            assert_eq!(otel_sdk_set_metrics_as_global(sdk), OtelStatus::Ok);
+            assert!(crate::api_ffi::test_probe::metrics_registered());
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert!(!crate::api_ffi::test_probe::metrics_registered());
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    unsafe fn build_test_sdk() -> *mut OtelSdk {
+        let builder = otel_sdk_builder_new();
+        let mut sdk = std::ptr::null_mut();
+        assert_eq!(unsafe { otel_sdk_build(builder, &mut sdk) }, OtelStatus::Ok);
+        unsafe { otel_sdk_builder_destroy(builder) };
+        sdk
+    }
+
+    #[test]
+    fn metrics_shutdown_prevents_later_installation() {
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let sdk = build_test_sdk();
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert_eq!(
+                otel_sdk_set_metrics_as_global(sdk),
+                OtelStatus::AlreadyShutdown
+            );
+            assert!(!crate::api_ffi::test_probe::metrics_registered());
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn metrics_flush_and_shutdown_statuses_are_stable() {
+        unsafe {
+            assert_eq!(
+                otel_sdk_metrics_force_flush(std::ptr::null_mut(), 0),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_sdk_metrics_shutdown(std::ptr::null_mut(), 0),
+                OtelStatus::InvalidArgument
+            );
+
+            let dead = build_test_sdk();
+            (*dead).magic = 0;
+            assert_eq!(
+                otel_sdk_metrics_force_flush(dead, 0),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_sdk_metrics_shutdown(dead, 0),
+                OtelStatus::InvalidArgument
+            );
+            (*dead).magic = SDK_MAGIC;
+            otel_sdk_destroy(dead);
+
+            let sdk = build_test_sdk();
+            assert_eq!(otel_sdk_metrics_force_flush(sdk, 0), OtelStatus::Ok);
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert_eq!(
+                otel_sdk_metrics_force_flush(sdk, 0),
+                OtelStatus::AlreadyShutdown
+            );
+            assert_eq!(
+                otel_sdk_metrics_shutdown(sdk, 0),
+                OtelStatus::AlreadyShutdown
+            );
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn explicit_metrics_shutdown_does_not_release_pipeline_twice() {
+        unsafe {
+            let LifecycleReader {
+                handle: reader,
+                drops,
+                shutdowns,
+                dropped,
+            } = lifecycle_reader();
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(
+                otel_sdk_metrics_shutdown(sdk, 0),
+                OtelStatus::AlreadyShutdown
+            );
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            otel_sdk_destroy(sdk);
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&dropped);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn concurrent_metrics_install_and_shutdown_leave_no_registration() {
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for _ in 0..32 {
+            unsafe {
+                let sdk = build_test_sdk();
+                let barrier = Arc::new(Barrier::new(3));
+                let install_barrier = Arc::clone(&barrier);
+                let shutdown_barrier = Arc::clone(&barrier);
+                let sdk_addr = sdk as usize;
+                let install = std::thread::spawn(move || {
+                    install_barrier.wait();
+                    otel_sdk_set_metrics_as_global(sdk_addr as *mut OtelSdk)
+                });
+                let shutdown = std::thread::spawn(move || {
+                    shutdown_barrier.wait();
+                    otel_sdk_metrics_shutdown(sdk_addr as *mut OtelSdk, 0)
+                });
+                barrier.wait();
+                let install_status = install.join().unwrap();
+                assert!(matches!(
+                    install_status,
+                    OtelStatus::Ok | OtelStatus::AlreadyShutdown
+                ));
+                assert_eq!(shutdown.join().unwrap(), OtelStatus::Ok);
+                assert!(!crate::api_ffi::test_probe::metrics_registered());
+                otel_sdk_destroy(sdk);
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_same_sdk_installs_track_the_published_token() {
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let sdk = build_test_sdk();
+            let barrier = Arc::new(Barrier::new(3));
+            let first_barrier = Arc::clone(&barrier);
+            let second_barrier = Arc::clone(&barrier);
+            let sdk_addr = sdk as usize;
+            let first = std::thread::spawn(move || {
+                first_barrier.wait();
+                otel_sdk_set_metrics_as_global(sdk_addr as *mut OtelSdk)
+            });
+            let second = std::thread::spawn(move || {
+                second_barrier.wait();
+                otel_sdk_set_metrics_as_global(sdk_addr as *mut OtelSdk)
+            });
+            barrier.wait();
+            assert_eq!(first.join().unwrap(), OtelStatus::Ok);
+            assert_eq!(second.join().unwrap(), OtelStatus::Ok);
+            let published = crate::api_ffi::test_probe::metrics_registration_id().unwrap();
+            assert_eq!(
+                (*sdk).metrics_lifecycle().global_registration,
+                Some(published)
+            );
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert!(!crate::api_ffi::test_probe::metrics_registered());
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn older_sdk_shutdown_cannot_clear_newer_registration() {
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let older = build_test_sdk();
+            let newer = build_test_sdk();
+            assert_eq!(otel_sdk_set_metrics_as_global(older), OtelStatus::Ok);
+            assert_eq!(otel_sdk_set_metrics_as_global(newer), OtelStatus::Ok);
+            let newer_id = crate::api_ffi::test_probe::metrics_registration_id();
+            assert_eq!(otel_sdk_metrics_shutdown(older, 0), OtelStatus::Ok);
+            assert_eq!(
+                crate::api_ffi::test_probe::metrics_registration_id(),
+                newer_id
+            );
+            assert_eq!(otel_sdk_metrics_shutdown(newer, 0), OtelStatus::Ok);
+            assert!(!crate::api_ffi::test_probe::metrics_registered());
+            otel_sdk_destroy(older);
+            otel_sdk_destroy(newer);
+        }
+    }
+
+    #[test]
+    fn repeated_install_and_destroy_without_shutdown_are_safe() {
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let sdk = build_test_sdk();
+            assert_eq!(otel_sdk_set_metrics_as_global(sdk), OtelStatus::Ok);
+            assert_eq!(otel_sdk_set_metrics_as_global(sdk), OtelStatus::Ok);
+            assert!(crate::api_ffi::test_probe::metrics_registered());
+            otel_sdk_destroy(sdk);
+            assert!(!crate::api_ffi::test_probe::metrics_registered());
         }
     }
 

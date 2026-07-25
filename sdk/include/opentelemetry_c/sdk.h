@@ -5,8 +5,8 @@
  * exporter and a batch span processor, install it globally, flush, and shut down.
  *
  * The SDK owns all of its own threading (a dedicated batch-processor OS thread and the
- * blocking HTTP client). No user-managed async runtime is required, and the library
- * never invokes any C callback.
+ * blocking HTTP client). No user-managed async runtime is required. Metrics reader
+ * collection may invoke observable C callbacks on SDK-managed collection threads.
  *
  * Threading & lifecycle contract
  * ------------------------------
@@ -20,6 +20,13 @@
  *     order: set_as_global may still publish the provider if it observes the SDK as
  *     not-yet-shut-down (which then becomes a no-op once shutdown completes); once
  *     shutdown is observed, set_as_global returns OTEL_STATUS_ALREADY_SHUTDOWN.
+ *   - Metrics installation and Metrics shutdown are serialized per SDK. A concurrent
+ *     otel_sdk_set_metrics_as_global() and otel_sdk_metrics_shutdown() linearize in lock
+ *     acquisition order. If installation wins, shutdown removes that exact registration
+ *     before shutting down the MeterProvider. If shutdown wins, installation returns
+ *     OTEL_STATUS_ALREADY_SHUTDOWN and publishes nothing. Concurrent same-SDK installations
+ *     are serialized; the last successful installation is the token later removed by
+ *     shutdown or destroy.
  *   - A timed otel_sdk_force_flush() runs the flush on a helper thread; at most one such
  *     helper exists at a time (a concurrent timed flush returns OTEL_STATUS_TIMEOUT
  *     rather than spawning another). A blocking flush (timeout 0) uses the calling
@@ -55,6 +62,12 @@
  * replaces the global slot. Shutdown+destroy does NOT make unloading the SDK safe. Any live
  * SDK-backed handles (tracer provider, tracer, span) must also be destroyed before unload.
  *
+ * Metrics unregistration or shutdown alone also does NOT make unloading the SDK safe.
+ * Before unloading, ensure the SDK is no longer globally installed; destroy every SDK-backed
+ * MeterProvider, Meter, and instrument handle; wait for all observable callbacks to finish;
+ * and ensure no thread can call through an SDK Metrics vtable. Existing handles retain
+ * function pointers into `libopentelemetry_c_sdk`.
+ *
  * Typical lifecycle
  * -----------------
  *   Build an exporter, wrap it in a span processor, then hand the processor to the SDK
@@ -88,6 +101,9 @@
 #define OPENTELEMETRY_C_SDK_H
 
 #include <opentelemetry_c/common.h>
+#include <opentelemetry_c/metrics.h>
+#include <opentelemetry_c/metric_view.h>
+#include <opentelemetry_c/periodic_metric_reader.h>
 #include <opentelemetry_c/trace.h>
 #include <opentelemetry_c/span_processor.h>
 
@@ -135,6 +151,13 @@ otel_status_t otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t* builde
 otel_status_t otel_sdk_builder_add_span_processor(otel_sdk_builder_t* builder,
                                                   otel_span_processor_t* processor);
 
+/* Add a periodic Metrics reader. Ownership transfers only on OTEL_STATUS_OK. More than one
+ * reader may be added; each maintains independent aggregation/temporality state. */
+otel_status_t otel_sdk_builder_add_metric_reader(otel_sdk_builder_t* builder,
+                                                 otel_periodic_metric_reader_t* reader);
+otel_status_t otel_sdk_builder_add_metric_view(otel_sdk_builder_t* builder,
+                                               otel_metric_view_t* view);
+
 /* ---- Build ---------------------------------------------------------------- */
 
 /*
@@ -156,6 +179,7 @@ otel_status_t otel_sdk_build(otel_sdk_builder_t* builder, otel_sdk_t** out_sdk);
  * invalid.
  */
 otel_tracer_provider_t* otel_sdk_get_tracer_provider(const otel_sdk_t* sdk);
+otel_meter_provider_t* otel_sdk_get_meter_provider(const otel_sdk_t* sdk);
 
 /*
  * Install this SDK's provider as the process-global provider. May be called more than
@@ -168,6 +192,15 @@ otel_tracer_provider_t* otel_sdk_get_tracer_provider(const otel_sdk_t* sdk);
  * returns OTEL_STATUS_ALREADY_SHUTDOWN.
  */
 otel_status_t otel_sdk_set_as_global(otel_sdk_t* sdk);
+
+/*
+ * Install this SDK's MeterProvider as the process-global Metrics provider. Repeated and
+ * concurrent calls on one SDK are serialized; the most recent successful call wins.
+ * Concurrent Metrics shutdown either follows a completed installation and removes it, or
+ * precedes installation and causes OTEL_STATUS_ALREADY_SHUTDOWN. An older SDK's shutdown
+ * never removes a provider registered later by another SDK.
+ */
+otel_status_t otel_sdk_set_metrics_as_global(otel_sdk_t* sdk);
 
 /* ---- Lifecycle ------------------------------------------------------------ */
 
@@ -192,10 +225,21 @@ otel_status_t otel_sdk_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
  */
 otel_status_t otel_sdk_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
 
+/* Metrics force-flush currently blocks until all readers complete. Rust 0.32 does not
+ * honor a caller-supplied provider timeout, so timeout_millis is reserved/advisory. */
+otel_status_t otel_sdk_metrics_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
+
+/* Metrics shutdown is independent from trace shutdown and runs at most once. If this SDK
+ * still owns the API global Metrics slot, shutdown removes that registration before shutting
+ * down the provider; a newer SDK registration is never cleared by an older SDK. The pinned
+ * Rust provider ignores timeout_millis; PeriodicReader uses its own fixed five-second wait. */
+otel_status_t otel_sdk_metrics_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
+
 /*
  * Destroy an SDK handle (no-op on NULL). If not already shut down, dropping the SDK
- * triggers a best-effort shutdown; prefer calling otel_sdk_shutdown() explicitly. Must
- * not race with any other call on the same SDK handle.
+ * triggers a best-effort shutdown; prefer calling the signal-specific shutdown functions
+ * explicitly. Destroy also conditionally removes this SDK's global Metrics registration.
+ * Must not race with any other call on the same SDK handle.
  */
 void otel_sdk_destroy(otel_sdk_t* sdk);
 

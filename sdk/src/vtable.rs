@@ -27,13 +27,13 @@ use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider, Span as SdkOtelSpan
 
 use opentelemetry_c_abi::{
     OtelAttributeType, OtelImplVtable, OtelKeyValue, OtelSpanKind, OtelSpanStatusCode, OtelStatus,
-    OtelStringView, OTEL_IMPL_ABI_VERSION,
+    OtelStringView, OTEL_TRACE_IMPL_ABI_VERSION,
 };
 
 use crate::error::{fail, fail_abi};
 
-/// Upper bound on a C-provided event attribute count (protects the up-front `Vec`).
-const MAX_EVENT_ATTRIBUTES: usize = 1_048_576;
+/// Upper bound on a C-provided attribute count (protects the up-front `Vec`).
+const MAX_ATTRIBUTES: usize = 1_048_576;
 
 // ---- Context types (opaque `*mut c_void` on the wire) ----------------------
 
@@ -144,7 +144,7 @@ pub(crate) unsafe fn to_key_value(kv: &OtelKeyValue) -> Result<KeyValue, OtelSta
 ///
 /// # Safety
 /// `attributes` must point to `count` valid [`OtelKeyValue`]s, or be NULL when `count == 0`.
-unsafe fn collect_key_values(
+pub(crate) unsafe fn collect_key_values(
     attributes: *const OtelKeyValue,
     count: usize,
 ) -> Result<Vec<KeyValue>, OtelStatus> {
@@ -157,10 +157,10 @@ unsafe fn collect_key_values(
             "attribute array is NULL with non-zero count",
         ));
     }
-    if count > MAX_EVENT_ATTRIBUTES {
+    if count > MAX_ATTRIBUTES {
         return Err(fail(
             OtelStatus::InvalidArgument,
-            "event attribute count exceeds the maximum supported value",
+            "attribute count exceeds the maximum supported value",
         ));
     }
     let within_bounds = count
@@ -169,14 +169,14 @@ unsafe fn collect_key_values(
     if !within_bounds {
         return Err(fail(
             OtelStatus::InvalidArgument,
-            "event attribute count exceeds the maximum supported size",
+            "attribute array exceeds the maximum supported size",
         ));
     }
     let mut out: Vec<KeyValue> = Vec::new();
     if out.try_reserve(count).is_err() {
         return Err(fail(
             OtelStatus::InternalError,
-            "failed to allocate space for event attributes",
+            "failed to allocate space for attributes",
         ));
     }
     // SAFETY: non-NULL, `count` valid elements, total size within isize::MAX.
@@ -481,7 +481,7 @@ extern "C" fn vt_span_free(ctx: *mut c_void) {
 
 /// The single `'static` implementation vtable installed into the API global slot.
 pub(crate) static SDK_VTABLE: OtelImplVtable = OtelImplVtable {
-    abi_version: OTEL_IMPL_ABI_VERSION,
+    abi_version: OTEL_TRACE_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelImplVtable>(),
     provider_get_tracer: vt_provider_get_tracer,
     provider_retain: vt_provider_retain,
@@ -683,5 +683,64 @@ mod tests {
         (vt.span_free)(span);
         (vt.tracer_free)(tctx);
         (vt.provider_free)(pctx);
+    }
+
+    #[test]
+    fn metric_attribute_conversion_rejects_malformed_inputs() {
+        use opentelemetry_c_abi::OtelAttributeValue;
+
+        assert!(unsafe { collect_key_values(std::ptr::null(), 0) }
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            unsafe { collect_key_values(std::ptr::null(), 1) }.unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe {
+                collect_key_values(
+                    std::ptr::NonNull::<OtelKeyValue>::dangling().as_ptr(),
+                    usize::MAX,
+                )
+            }
+            .unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+
+        let empty_key = OtelKeyValue {
+            key: empty(),
+            value_type: 2,
+            value: OtelAttributeValue { int64_value: 1 },
+        };
+        assert_eq!(
+            unsafe { collect_key_values(&empty_key, 1) }.unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+
+        let invalid_type = OtelKeyValue {
+            key: sv("key"),
+            value_type: u32::MAX,
+            value: OtelAttributeValue { int64_value: 1 },
+        };
+        assert_eq!(
+            unsafe { collect_key_values(&invalid_type, 1) }.unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+
+        let invalid_utf8 = [0xff_u8];
+        let invalid_string = OtelKeyValue {
+            key: sv("key"),
+            value_type: 0,
+            value: OtelAttributeValue {
+                string_value: OtelStringView {
+                    ptr: invalid_utf8.as_ptr().cast(),
+                    len: invalid_utf8.len(),
+                },
+            },
+        };
+        assert_eq!(
+            unsafe { collect_key_values(&invalid_string, 1) }.unwrap_err(),
+            OtelStatus::InvalidUtf8
+        );
     }
 }

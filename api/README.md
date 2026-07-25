@@ -3,9 +3,9 @@
 [![Apache License][license-image]][license-url]
 
 The **C API facade** of the Rust-backed OpenTelemetry C binding. It exposes the public
-trace API (tracer providers, tracers, spans) as opaque C handles, **owns the single
-process-global provider slot**, and ships a **no-op default** so API-only instrumentation
-is safe with or without an SDK.
+trace and Metrics APIs as opaque C handles, **owns independent process-global provider
+slots for each signal**, and ships **no-op defaults** so API-only instrumentation is safe
+with or without an SDK.
 
 This crate depends only on an internal ABI-types crate — never on `opentelemetry_sdk`,
 `opentelemetry-otlp`, or `reqwest`.
@@ -18,18 +18,19 @@ This crate depends only on an internal ABI-types crate — never on `opentelemet
 
 | Library | Who links it | Contains |
 | --- | --- | --- |
-| **`libopentelemetry_c_api`** (this crate) | instrumentation **and** applications | trace API, global provider slot, no-op default |
-| **`libopentelemetry_c_sdk`** | applications only | OTLP exporter, batch processor, SDK lifecycle |
+| **`libopentelemetry_c_api`** (this crate) | instrumentation **and** applications | trace + Metrics APIs, global provider slots, no-op defaults |
+| **`libopentelemetry_c_sdk`** | applications only | OTLP exporters, processors/readers/views, SDK lifecycle |
 
-- **Instrumentation libraries** link **only** `libopentelemetry_c_api`. Their trace calls
-  are safe no-ops until an application installs an SDK, then they dispatch to it.
+- **Instrumentation libraries** link **only** `libopentelemetry_c_api`. Their trace and
+  Metrics calls are safe no-ops until an application installs the corresponding SDK
+  provider, then they dispatch to it.
 - **Applications** link **both** libraries. Installing the SDK
   (`otel_sdk_set_as_global`) registers it into *this* library's global provider slot
   (across the C ABI via the internal `otel_api_register_global_provider`), so it becomes
   visible to all API-only instrumentation.
 
-There is exactly **one** global provider slot in the process — owned here — so no
-duplicate global state exists across the two libraries.
+There is exactly **one trace slot and one Metrics slot** in the process — both owned here —
+so no duplicate global state exists across the two libraries.
 
 ### Linking & library lifetime (important)
 
@@ -37,23 +38,20 @@ The shared-global model is only guaranteed under **dynamic linking with exactly 
 `libopentelemetry_c_api`**:
 
 - **Dynamic linking (supported model).** Instrumentation and the application resolve the
-  same `libopentelemetry_c_api` at load time, so they share the one global provider slot.
+  same `libopentelemetry_c_api` at load time, so they share both global provider slots.
 - **Static linking into multiple artifacts is *not* the shared-global model.** If
   `opentelemetry-c-api` is statically linked into more than one artifact (e.g. an
   instrumentation library *and* the application each statically embed it), each copy gets
-  its **own** global provider slot and its own no-op default. An SDK installed into one slot
+  its **own** global provider slots and no-op defaults. An SDK installed into one copy
   is invisible to the other. Link the API as a single shared library so all callers observe
-  one slot.
-- **Keep the SDK loaded for the process lifetime after a global install.** Installing an
-  SDK (`otel_sdk_set_as_global`) publishes the SDK's `'static` implementation vtable and an
-  SDK-owned provider object into this library's global slot. **`otel_sdk_shutdown` and
-  `otel_sdk_destroy` do *not* clear that slot** — they stop and free the `otel_sdk_t` handle
-  but leave the slot pointing at the SDK's vtable/provider. The slot is only cleared when
-  **another provider replaces it** (a later `otel_sdk_set_as_global` / registration).
-  Therefore, once `otel_sdk_set_as_global` succeeds, **`libopentelemetry_c_sdk` must remain
-  loaded until process exit, or until another provider replaces the global slot** — shutting
-  down and destroying the SDK does **not** make unloading it safe. (Any live SDK-backed
-  tracer/span handles must also be destroyed before unload.)
+  the same slots.
+- **Keep the SDK loaded while any installed provider or backed handle can dispatch to it.**
+  The trace global remains installed until another trace provider replaces it, so trace
+  installation still requires the SDK library to remain loaded for that window. Metrics
+  installation receives a registration token: `otel_sdk_metrics_shutdown` and
+  `otel_sdk_destroy` remove the Metrics global only if that SDK still owns the slot, without
+  clearing a newer installation. Explicitly acquired trace/Metrics handles must also be
+  destroyed before unloading the SDK library.
 
 ## Headers
 
@@ -61,7 +59,8 @@ Under [`include/opentelemetry_c/`](include/opentelemetry_c):
 
 - `common.h` — status codes, string views, typed attributes, version/error queries.
 - `trace.h` — tracer provider, tracer, and span handles.
-- `api.h` — umbrella (`common.h` + `trace.h`).
+- `metrics.h` — typed synchronous/observable instruments, callbacks, and observations.
+- `api.h` — umbrella (`common.h` + `trace.h` + `metrics.h`).
 
 ### Optional convenience helpers
 

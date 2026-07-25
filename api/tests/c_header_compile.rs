@@ -125,3 +125,37 @@ int main(void) {
 "#,
     );
 }
+
+#[test]
+fn metrics_header_complete_family_compiles() {
+    let cc = match find_cc() {
+        Some(cc) => cc,
+        None => return,
+    };
+    syntax_check(
+        &cc,
+        &include_dir(),
+        r#"#include <opentelemetry_c/metrics.h>
+static void observe(otel_observer_u64_t* observer, void* data) {
+    (void)data;
+    (void)otel_observer_u64_observe(observer, 1, NULL, 0);
+}
+int main(void) {
+    otel_meter_provider_t* provider = otel_global_meter_provider();
+    otel_meter_t* meter = otel_meter_provider_get_meter(
+        provider, otel_cstr("scope"), otel_string_view_empty(), otel_string_view_empty());
+    otel_instrument_options_t options = OTEL_INSTRUMENT_OPTIONS_INIT;
+    otel_counter_u64_t* counter = NULL;
+    otel_observable_gauge_u64_t* observable = NULL;
+    (void)otel_meter_create_u64_counter(meter, otel_cstr("counter"), &options, &counter);
+    (void)otel_meter_create_u64_observable_gauge(
+        meter, otel_cstr("observable"), &options, observe, NULL, NULL, &observable);
+    otel_observable_gauge_u64_destroy(observable);
+    otel_counter_u64_destroy(counter);
+    otel_meter_destroy(meter);
+    otel_meter_provider_destroy(provider);
+    return 0;
+}
+"#,
+    );
+}
