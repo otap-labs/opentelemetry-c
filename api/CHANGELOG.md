@@ -8,8 +8,8 @@
   behavior, all nine synchronous numeric instrument combinations, all seven observable
   combinations, typed observer callbacks, strict instrument validation, and callback-scoped
   observer lifetime enforcement.
-- Versioned, signal-specific internal Metrics vtable with version/size compatibility
-  rejection and race-safe provider replacement.
+- Versioned, signal-namespaced internal Metrics vtable with kind/version and size compatibility
+  checks that reject trace vtables before dispatch, plus race-safe provider replacement.
 - Prefix-only ABI validation rejects truncated vtables before forming a full Rust reference.
   Observable callback state ownership is consumed exactly once even when SDK construction
   panics, and token-based Metrics deregistration releases the global provider on Metrics
