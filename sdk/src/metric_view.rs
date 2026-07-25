@@ -537,3 +537,340 @@ pub unsafe extern "C" fn otel_metric_view_builder_build(
 pub unsafe extern "C" fn otel_metric_view_destroy(view: *mut OtelMetricView) {
     guard_unit(|| unsafe { destroy(view) });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry::{KeyValue, Value};
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    fn collect_with_views(
+        views: Vec<MetricViewConfig>,
+        record: impl FnOnce(&SdkMeterProvider),
+    ) -> Vec<ResourceMetrics> {
+        let exporter = InMemoryMetricExporter::default();
+        let reader = PeriodicReader::builder(exporter.clone()).build();
+        let mut builder = SdkMeterProvider::builder().with_reader(reader);
+        for view in views {
+            builder = builder.with_view(move |instrument| view.apply(instrument));
+        }
+        let provider = builder.build();
+        record(&provider);
+        provider.force_flush().unwrap();
+        let metrics = exporter.get_finished_metrics().unwrap();
+        provider.shutdown().unwrap();
+        metrics
+    }
+
+    fn find_metric<'a>(
+        metrics: &'a [ResourceMetrics],
+        scope_name: &str,
+        name: &str,
+    ) -> &'a opentelemetry_sdk::metrics::data::Metric {
+        metrics
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .filter(|scope| scope.scope().name() == scope_name)
+            .flat_map(|scope| scope.metrics())
+            .find(|metric| metric.name() == name)
+            .unwrap_or_else(|| panic!("missing metric {scope_name}/{name}"))
+    }
+
+    #[test]
+    fn matcher_selection_stream_overrides_and_attribute_allow_list_apply() {
+        let mut view = default_config();
+        view.name_pattern = Some("requests_*".to_string());
+        view.meter_name = Some("matching_meter".to_string());
+        view.unit = Some("ms".to_string());
+        view.kind = OtelMetricInstrumentKind::Counter as u32;
+        view.output_name = Some("renamed_requests".to_string());
+        view.output_description = Some("renamed description".to_string());
+        view.output_unit = Some("requests".to_string());
+        view.attribute_filter_enabled = true;
+        view.allowed_attributes = vec!["route".to_string()];
+        view.aggregation = AggregationConfig::Sum;
+
+        let metrics = collect_with_views(vec![view], |provider| {
+            let matching = provider.meter("matching_meter");
+            matching
+                .u64_counter("requests_total")
+                .with_unit("ms")
+                .build()
+                .add(
+                    5,
+                    &[
+                        KeyValue::new("route", "/items"),
+                        KeyValue::new("ignored", "value"),
+                    ],
+                );
+            provider
+                .meter("other_meter")
+                .u64_counter("requests_total")
+                .with_unit("ms")
+                .build()
+                .add(7, &[]);
+            matching
+                .u64_counter("requests_wrong_unit")
+                .with_unit("s")
+                .build()
+                .add(9, &[]);
+            matching
+                .u64_gauge("requests_gauge")
+                .with_unit("ms")
+                .build()
+                .record(11, &[]);
+        });
+
+        let renamed = find_metric(&metrics, "matching_meter", "renamed_requests");
+        assert_eq!(renamed.description(), "renamed description");
+        assert_eq!(renamed.unit(), "requests");
+        match renamed.data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                let point = sum.data_points().next().unwrap();
+                assert_eq!(point.value(), 5);
+                assert_eq!(
+                    point.attributes().cloned().collect::<Vec<_>>(),
+                    vec![KeyValue::new("route", "/items")]
+                );
+            }
+            data => panic!("unexpected renamed stream data: {data:?}"),
+        }
+        assert_eq!(
+            match find_metric(&metrics, "other_meter", "requests_total").data() {
+                AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                    sum.data_points().next().unwrap().value()
+                }
+                data => panic!("unexpected non-matching data: {data:?}"),
+            },
+            7
+        );
+        assert_eq!(
+            match find_metric(&metrics, "matching_meter", "requests_wrong_unit").data() {
+                AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                    sum.data_points().next().unwrap().value()
+                }
+                data => panic!("unexpected wrong-unit data: {data:?}"),
+            },
+            9
+        );
+        match find_metric(&metrics, "matching_meter", "requests_gauge").data() {
+            AggregatedMetrics::U64(MetricData::Gauge(gauge)) => {
+                assert_eq!(gauge.data_points().next().unwrap().value(), 11);
+            }
+            data => panic!("unexpected wrong-kind data: {data:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_allow_list_and_cardinality_overflow_are_exported() {
+        let mut empty_filter = default_config();
+        empty_filter.name_pattern = Some("drop_attributes".to_string());
+        empty_filter.attribute_filter_enabled = true;
+
+        let mut cardinality = default_config();
+        cardinality.name_pattern = Some("limited_counter".to_string());
+        cardinality.cardinality_limit = Some(2);
+
+        let metrics = collect_with_views(vec![empty_filter, cardinality], |provider| {
+            let meter = provider.meter("views");
+            meter.u64_gauge("drop_attributes").build().record(
+                3,
+                &[
+                    KeyValue::new("route", "/items"),
+                    KeyValue::new("status", 200_i64),
+                ],
+            );
+            let counter = meter.u64_counter("limited_counter").build();
+            counter.add(1, &[KeyValue::new("id", 1_i64)]);
+            counter.add(2, &[KeyValue::new("id", 2_i64)]);
+            counter.add(3, &[KeyValue::new("id", 3_i64)]);
+        });
+
+        match find_metric(&metrics, "views", "drop_attributes").data() {
+            AggregatedMetrics::U64(MetricData::Gauge(gauge)) => {
+                assert_eq!(gauge.data_points().next().unwrap().attributes().count(), 0);
+            }
+            data => panic!("unexpected filtered gauge data: {data:?}"),
+        }
+        match find_metric(&metrics, "views", "limited_counter").data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                let points: Vec<_> = sum.data_points().collect();
+                assert_eq!(points.len(), 3);
+                let overflow = points
+                    .iter()
+                    .find(|point| {
+                        point.attributes().any(|attribute| {
+                            attribute.key.as_str() == "otel.metric.overflow"
+                                && attribute.value == Value::Bool(true)
+                        })
+                    })
+                    .expect("overflow series");
+                assert_eq!(overflow.value(), 3);
+            }
+            data => panic!("unexpected limited counter data: {data:?}"),
+        }
+    }
+
+    #[test]
+    fn aggregation_variants_produce_expected_data() {
+        let mut drop_view = default_config();
+        drop_view.name_pattern = Some("dropped_counter".to_string());
+        drop_view.aggregation = AggregationConfig::Drop;
+
+        let mut sum_view = default_config();
+        sum_view.name_pattern = Some("summed_up_down".to_string());
+        sum_view.aggregation = AggregationConfig::Sum;
+
+        let mut last_value_view = default_config();
+        last_value_view.name_pattern = Some("last_value_gauge".to_string());
+        last_value_view.aggregation = AggregationConfig::LastValue;
+
+        let mut explicit_view = default_config();
+        explicit_view.name_pattern = Some("explicit_histogram".to_string());
+        explicit_view.aggregation = AggregationConfig::ExplicitHistogram {
+            boundaries: vec![1.0, 5.0, 10.0],
+            record_min_max: true,
+        };
+
+        let mut exponential_view = default_config();
+        exponential_view.name_pattern = Some("exponential_histogram".to_string());
+        exponential_view.aggregation = AggregationConfig::ExponentialHistogram {
+            max_size: 8,
+            max_scale: 4,
+            record_min_max: true,
+        };
+
+        let metrics = collect_with_views(
+            vec![
+                drop_view,
+                sum_view,
+                last_value_view,
+                explicit_view,
+                exponential_view,
+            ],
+            |provider| {
+                let meter = provider.meter("aggregations");
+                meter.u64_counter("dropped_counter").build().add(1, &[]);
+                let up_down = meter.i64_up_down_counter("summed_up_down").build();
+                up_down.add(8, &[]);
+                up_down.add(-3, &[]);
+                let gauge = meter.f64_gauge("last_value_gauge").build();
+                gauge.record(9.0, &[]);
+                gauge.record(2.5, &[]);
+                let explicit = meter.f64_histogram("explicit_histogram").build();
+                explicit.record(2.0, &[]);
+                explicit.record(7.0, &[]);
+                let exponential = meter.f64_histogram("exponential_histogram").build();
+                exponential.record(2.0, &[]);
+                exponential.record(8.0, &[]);
+            },
+        );
+
+        assert!(metrics
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .all(|metric| metric.name() != "dropped_counter"));
+        match find_metric(&metrics, "aggregations", "summed_up_down").data() {
+            AggregatedMetrics::I64(MetricData::Sum(sum)) => {
+                assert_eq!(sum.data_points().next().unwrap().value(), 5);
+            }
+            data => panic!("unexpected sum data: {data:?}"),
+        }
+        match find_metric(&metrics, "aggregations", "last_value_gauge").data() {
+            AggregatedMetrics::F64(MetricData::Gauge(gauge)) => {
+                assert_eq!(gauge.data_points().next().unwrap().value(), 2.5);
+            }
+            data => panic!("unexpected last-value data: {data:?}"),
+        }
+        match find_metric(&metrics, "aggregations", "explicit_histogram").data() {
+            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                let point = histogram.data_points().next().unwrap();
+                assert_eq!(point.count(), 2);
+                assert_eq!(point.sum(), 9.0);
+                assert_eq!(point.min(), Some(2.0));
+                assert_eq!(point.max(), Some(7.0));
+                assert_eq!(point.bounds().collect::<Vec<_>>(), [1.0, 5.0, 10.0]);
+                assert_eq!(point.bucket_counts().collect::<Vec<_>>(), [0, 1, 1, 0]);
+            }
+            data => panic!("unexpected explicit histogram data: {data:?}"),
+        }
+        match find_metric(&metrics, "aggregations", "exponential_histogram").data() {
+            AggregatedMetrics::F64(MetricData::ExponentialHistogram(histogram)) => {
+                let point = histogram.data_points().next().unwrap();
+                assert_eq!(point.count(), 2);
+                assert_eq!(point.sum(), 10.0);
+                assert_eq!(point.min(), Some(2.0));
+                assert_eq!(point.max(), Some(8.0));
+                assert!(point.scale() <= 4);
+                assert!(point.positive_bucket().counts().sum::<u64>() + point.zero_count() == 2);
+            }
+            data => panic!("unexpected exponential histogram data: {data:?}"),
+        }
+    }
+
+    #[test]
+    fn view_validation_rejects_invalid_histogram_configuration() {
+        unsafe {
+            let builder = otel_metric_view_builder_new();
+            let invalid_order = [2.0, 1.0];
+            assert_eq!(
+                otel_metric_view_builder_set_explicit_histogram(
+                    builder,
+                    invalid_order.as_ptr(),
+                    invalid_order.len(),
+                    1,
+                ),
+                OtelStatus::InvalidConfig
+            );
+            assert!(crate::api_ffi::test_probe::last_error().contains("strictly increasing"));
+
+            let invalid_nan = [1.0, f64::NAN];
+            assert_eq!(
+                otel_metric_view_builder_set_explicit_histogram(
+                    builder,
+                    invalid_nan.as_ptr(),
+                    invalid_nan.len(),
+                    1,
+                ),
+                OtelStatus::InvalidConfig
+            );
+            let invalid_infinity = [1.0, f64::INFINITY];
+            assert_eq!(
+                otel_metric_view_builder_set_explicit_histogram(
+                    builder,
+                    invalid_infinity.as_ptr(),
+                    invalid_infinity.len(),
+                    1,
+                ),
+                OtelStatus::InvalidConfig
+            );
+            assert_eq!(
+                otel_metric_view_builder_set_exponential_histogram(builder, 0, 4, 1),
+                OtelStatus::InvalidConfig
+            );
+            assert_eq!(
+                otel_metric_view_builder_set_exponential_histogram(builder, 8, 21, 1),
+                OtelStatus::InvalidConfig
+            );
+            assert_eq!(
+                otel_metric_view_builder_set_exponential_histogram(builder, 8, -11, 1),
+                OtelStatus::InvalidConfig
+            );
+            otel_metric_view_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn wildcard_matching_supports_documented_single_star_patterns() {
+        assert!(wildcard_matches("*", "anything"));
+        assert!(wildcard_matches("requests_*", "requests_total"));
+        assert!(wildcard_matches("*_duration", "http_duration"));
+        assert!(wildcard_matches("http_*_seconds", "http_server_seconds"));
+        assert!(wildcard_matches("exact", "exact"));
+        assert!(!wildcard_matches("requests_*", "http_requests"));
+        assert!(!wildcard_matches("exact", "exact_suffix"));
+    }
+}

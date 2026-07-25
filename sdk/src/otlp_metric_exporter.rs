@@ -200,13 +200,9 @@ fn build_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
         let headers: HashMap<String, String> = config.headers.iter().cloned().collect();
         builder = builder.with_headers(headers);
     }
-    builder = match config.temporality {
-        0 => builder,
-        1 => builder.with_temporality(Temporality::Cumulative),
-        2 => builder.with_temporality(Temporality::Delta),
-        3 => builder.with_temporality(Temporality::LowMemory),
-        _ => unreachable!(),
-    };
+    if let Some(temporality) = configured_temporality(config.temporality) {
+        builder = builder.with_temporality(temporality);
+    }
     builder
         .build()
         .map(MetricExporterImpl::Otlp)
@@ -216,6 +212,17 @@ fn build_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
                 format!("failed to build OTLP metric exporter: {err}"),
             )
         })
+}
+
+#[cfg(feature = "otlp")]
+fn configured_temporality(preference: u32) -> Option<Temporality> {
+    match preference {
+        0 => None,
+        1 => Some(Temporality::Cumulative),
+        2 => Some(Temporality::Delta),
+        3 => Some(Temporality::LowMemory),
+        _ => unreachable!("validated by the public setter"),
+    }
 }
 
 #[cfg(not(feature = "otlp"))]
@@ -253,4 +260,108 @@ pub unsafe extern "C" fn otel_otlp_metric_exporter_builder_build(
         unsafe { *out = into_raw(OtelMetricExporter::new(exporter)) };
         OtelStatus::Ok
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "otlp")]
+    use opentelemetry::metrics::MeterProvider;
+    #[cfg(feature = "otlp")]
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    #[cfg(feature = "otlp")]
+    use opentelemetry_sdk::metrics::{
+        InMemoryMetricExporterBuilder, PeriodicReader, SdkMeterProvider,
+    };
+
+    #[test]
+    fn setters_validate_temporality_and_duplicate_headers() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_temporality(builder, 4),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_add_header(
+                    builder,
+                    OtelStringView {
+                        ptr: b"x-test".as_ptr().cast(),
+                        len: 6,
+                    },
+                    OtelStringView {
+                        ptr: b"one".as_ptr().cast(),
+                        len: 3,
+                    },
+                ),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_add_header(
+                    builder,
+                    OtelStringView {
+                        ptr: b"X-Test".as_ptr().cast(),
+                        len: 6,
+                    },
+                    OtelStringView {
+                        ptr: b"two".as_ptr().cast(),
+                        len: 3,
+                    },
+                ),
+                OtelStatus::InvalidArgument
+            );
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(feature = "otlp")]
+    fn exported_temporalities(preference: u32) -> (Temporality, Temporality) {
+        let selected = configured_temporality(preference).unwrap_or_default();
+        let exporter = InMemoryMetricExporterBuilder::new()
+            .with_temporality(selected)
+            .build();
+        let reader = PeriodicReader::builder(exporter.clone()).build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
+        let meter = provider.meter("temporality");
+        meter.u64_counter("counter").build().add(3, &[]);
+        meter.i64_up_down_counter("up_down").build().add(-2, &[]);
+        provider.force_flush().unwrap();
+        let metrics = exporter.get_finished_metrics().unwrap();
+        let mut counter = None;
+        let mut up_down = None;
+        for metric in metrics
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+        {
+            match (metric.name(), metric.data()) {
+                ("counter", AggregatedMetrics::U64(MetricData::Sum(sum))) => {
+                    counter = Some(sum.temporality())
+                }
+                ("up_down", AggregatedMetrics::I64(MetricData::Sum(sum))) => {
+                    up_down = Some(sum.temporality())
+                }
+                _ => {}
+            }
+        }
+        provider.shutdown().unwrap();
+        (counter.unwrap(), up_down.unwrap())
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn configured_temporality_drives_exported_aggregation() {
+        assert_eq!(
+            exported_temporalities(1),
+            (Temporality::Cumulative, Temporality::Cumulative)
+        );
+        assert_eq!(
+            exported_temporalities(2),
+            (Temporality::Delta, Temporality::Cumulative)
+        );
+        assert_eq!(
+            exported_temporalities(3),
+            (Temporality::Delta, Temporality::Cumulative)
+        );
+    }
 }

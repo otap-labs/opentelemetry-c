@@ -684,4 +684,57 @@ mod tests {
         (vt.tracer_free)(tctx);
         (vt.provider_free)(pctx);
     }
+
+    #[test]
+    fn metric_attribute_conversion_rejects_malformed_inputs() {
+        use opentelemetry_c_abi::OtelAttributeValue;
+
+        assert!(unsafe { collect_key_values(std::ptr::null(), 0) }
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            unsafe { collect_key_values(std::ptr::null(), 1) }.unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { collect_key_values(std::ptr::dangling(), usize::MAX) }.unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+
+        let empty_key = OtelKeyValue {
+            key: empty(),
+            value_type: 2,
+            value: OtelAttributeValue { int64_value: 1 },
+        };
+        assert_eq!(
+            unsafe { collect_key_values(&empty_key, 1) }.unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+
+        let invalid_type = OtelKeyValue {
+            key: sv("key"),
+            value_type: u32::MAX,
+            value: OtelAttributeValue { int64_value: 1 },
+        };
+        assert_eq!(
+            unsafe { collect_key_values(&invalid_type, 1) }.unwrap_err(),
+            OtelStatus::InvalidArgument
+        );
+
+        let invalid_utf8 = [0xff_u8];
+        let invalid_string = OtelKeyValue {
+            key: sv("key"),
+            value_type: 0,
+            value: OtelAttributeValue {
+                string_value: OtelStringView {
+                    ptr: invalid_utf8.as_ptr().cast(),
+                    len: invalid_utf8.len(),
+                },
+            },
+        };
+        assert_eq!(
+            unsafe { collect_key_values(&invalid_string, 1) }.unwrap_err(),
+            OtelStatus::InvalidUtf8
+        );
+    }
 }

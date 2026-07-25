@@ -250,3 +250,112 @@ fn invalid_configuration_is_rejected_even_without_sdk() {
         otel_meter_provider_destroy(provider);
     }
 }
+
+#[test]
+fn instrument_options_prefix_and_input_boundaries_are_validated() {
+    unsafe {
+        let provider = otel_global_meter_provider();
+        let meter = otel_meter_provider_get_meter(provider, sv("scope"), empty(), empty());
+        let mut counter = std::ptr::null_mut();
+
+        let mut oversized = options();
+        oversized.struct_size += 32;
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, sv("oversized"), &oversized, &mut counter),
+            OtelStatus::Ok
+        );
+        otel_counter_u64_destroy(counter);
+
+        let valid_name = "a".repeat(255);
+        let valid_name = OtelStringView {
+            ptr: valid_name.as_ptr().cast(),
+            len: valid_name.len(),
+        };
+        counter = std::ptr::null_mut();
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, valid_name, std::ptr::null(), &mut counter),
+            OtelStatus::Ok
+        );
+        otel_counter_u64_destroy(counter);
+
+        let invalid_name = "a".repeat(256);
+        let invalid_name = OtelStringView {
+            ptr: invalid_name.as_ptr().cast(),
+            len: invalid_name.len(),
+        };
+        counter = std::ptr::null_mut();
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, invalid_name, std::ptr::null(), &mut counter),
+            OtelStatus::InvalidConfig
+        );
+        assert!(counter.is_null());
+
+        let unit_63 = "u".repeat(63);
+        let mut opts = options();
+        opts.unit = OtelStringView {
+            ptr: unit_63.as_ptr().cast(),
+            len: unit_63.len(),
+        };
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, sv("unit_63"), &opts, &mut counter),
+            OtelStatus::Ok
+        );
+        otel_counter_u64_destroy(counter);
+
+        let unit_64 = "u".repeat(64);
+        opts.unit = OtelStringView {
+            ptr: unit_64.as_ptr().cast(),
+            len: unit_64.len(),
+        };
+        counter = std::ptr::null_mut();
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, sv("unit_64"), &opts, &mut counter),
+            OtelStatus::InvalidConfig
+        );
+        assert!(counter.is_null());
+
+        let invalid_utf8 = [0xff_u8];
+        opts = options();
+        opts.description = OtelStringView {
+            ptr: invalid_utf8.as_ptr().cast(),
+            len: invalid_utf8.len(),
+        };
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, sv("bad_description"), &opts, &mut counter),
+            OtelStatus::InvalidUtf8
+        );
+        opts = options();
+        opts.unit = OtelStringView {
+            ptr: invalid_utf8.as_ptr().cast(),
+            len: invalid_utf8.len(),
+        };
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, sv("bad_unit"), &opts, &mut counter),
+            OtelStatus::InvalidUtf8
+        );
+
+        opts = options();
+        opts.boundary_count = 1;
+        let mut histogram = std::ptr::null_mut();
+        assert_eq!(
+            otel_meter_create_f64_histogram(meter, sv("null_bounds"), &opts, &mut histogram),
+            OtelStatus::InvalidArgument
+        );
+        opts.boundary_count = 65_537;
+        assert_eq!(
+            otel_meter_create_f64_histogram(meter, sv("many_bounds"), &opts, &mut histogram),
+            OtelStatus::InvalidConfig
+        );
+
+        let boundary = 1.0;
+        opts = options();
+        opts.boundaries = &boundary;
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, sv("non_hist_bounds"), &opts, &mut counter),
+            OtelStatus::InvalidConfig
+        );
+
+        otel_meter_destroy(meter);
+        otel_meter_provider_destroy(provider);
+    }
+}

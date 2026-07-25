@@ -659,7 +659,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    use opentelemetry::KeyValue;
+    use opentelemetry_c_abi::{OtelAttributeType, OtelAttributeValue, OtelKeyValue};
     use opentelemetry_c_api as api;
+    use opentelemetry_sdk::metrics::data::{
+        AggregatedMetrics, Metric, MetricData, ResourceMetrics,
+    };
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader};
 
     fn sv(value: &'static str) -> OtelStringView {
@@ -686,6 +691,23 @@ mod tests {
             callback_state: std::ptr::null_mut(),
             callback_state_free: None,
         }
+    }
+
+    fn metric<'a>(metrics: &'a [ResourceMetrics], name: &str) -> &'a Metric {
+        metrics
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .find(|metric| metric.name() == name)
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+    }
+
+    fn assert_attributes<'a>(actual: impl Iterator<Item = &'a KeyValue>) {
+        let actual: Vec<_> = actual.cloned().collect();
+        assert!(actual.contains(&KeyValue::new("route", "/items")));
+        assert!(actual.contains(&KeyValue::new("cached", true)));
+        assert!(actual.contains(&KeyValue::new("status", 201_i64)));
+        assert!(actual.contains(&KeyValue::new("ratio", 0.75_f64)));
     }
 
     #[test]
@@ -783,6 +805,270 @@ mod tests {
 
         for instrument in instruments {
             (SDK_METRICS_VTABLE.instrument_free)(instrument);
+        }
+        (SDK_METRICS_VTABLE.meter_free)(meter);
+        provider.shutdown().unwrap();
+        (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
+    }
+
+    #[test]
+    fn synchronous_values_metadata_attributes_and_scope_are_exported() {
+        let exporter = InMemoryMetricExporter::default();
+        let reader = PeriodicReader::builder(exporter.clone()).build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
+        let provider_ctx_raw = provider_ctx(provider.clone());
+        let meter = (SDK_METRICS_VTABLE.provider_get_meter)(
+            provider_ctx_raw,
+            sv("semantic_scope"),
+            sv("2.1.0"),
+            sv("https://example.test/schema"),
+        );
+        let attributes = [
+            OtelKeyValue {
+                key: sv("route"),
+                value_type: OtelAttributeType::String as u32,
+                value: OtelAttributeValue {
+                    string_value: sv("/items"),
+                },
+            },
+            OtelKeyValue {
+                key: sv("cached"),
+                value_type: OtelAttributeType::Bool as u32,
+                value: OtelAttributeValue { bool_value: 1 },
+            },
+            OtelKeyValue {
+                key: sv("status"),
+                value_type: OtelAttributeType::Int64 as u32,
+                value: OtelAttributeValue { int64_value: 201 },
+            },
+            OtelKeyValue {
+                key: sv("ratio"),
+                value_type: OtelAttributeType::Double as u32,
+                value: OtelAttributeValue { double_value: 0.75 },
+            },
+        ];
+        let boundaries = [1.0, 5.0, 10.0];
+        let mut handles = Vec::new();
+        let mut create = |kind, number, name, histogram: bool| {
+            let mut config = config(kind, number, name);
+            config.description = sv("semantic description");
+            config.unit = sv("widgets");
+            if histogram {
+                config.boundaries = boundaries.as_ptr();
+                config.boundary_count = boundaries.len();
+            }
+            let handle = (SDK_METRICS_VTABLE.meter_create_instrument)(meter, &config);
+            assert!(!handle.is_null(), "{name}");
+            handles.push(handle);
+            handle
+        };
+
+        let counter_u64 = create(
+            OtelMetricInstrumentKind::Counter,
+            OtelMetricNumberKind::U64,
+            "value_counter_u64",
+            false,
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_u64)(
+                counter_u64,
+                3,
+                attributes.as_ptr(),
+                attributes.len(),
+            ),
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_u64)(
+                counter_u64,
+                4,
+                attributes.as_ptr(),
+                attributes.len(),
+            ),
+            OtelStatus::Ok
+        );
+
+        let counter_f64 = create(
+            OtelMetricInstrumentKind::Counter,
+            OtelMetricNumberKind::F64,
+            "value_counter_f64",
+            false,
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_f64)(counter_f64, 1.25, std::ptr::null(), 0,),
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_f64)(counter_f64, 2.5, std::ptr::null(), 0,),
+            OtelStatus::Ok
+        );
+
+        let up_down_i64 = create(
+            OtelMetricInstrumentKind::UpDownCounter,
+            OtelMetricNumberKind::I64,
+            "value_up_down_i64",
+            false,
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_i64)(up_down_i64, 5, std::ptr::null(), 0),
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_i64)(up_down_i64, -8, std::ptr::null(), 0),
+            OtelStatus::Ok
+        );
+
+        let up_down_f64 = create(
+            OtelMetricInstrumentKind::UpDownCounter,
+            OtelMetricNumberKind::F64,
+            "value_up_down_f64",
+            false,
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_f64)(up_down_f64, 4.5, std::ptr::null(), 0,),
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_f64)(up_down_f64, -1.25, std::ptr::null(), 0,),
+            OtelStatus::Ok
+        );
+
+        let gauge_u64 = create(
+            OtelMetricInstrumentKind::Gauge,
+            OtelMetricNumberKind::U64,
+            "value_gauge_u64",
+            false,
+        );
+        (SDK_METRICS_VTABLE.instrument_record_u64)(gauge_u64, 10, std::ptr::null(), 0);
+        (SDK_METRICS_VTABLE.instrument_record_u64)(gauge_u64, 3, std::ptr::null(), 0);
+        let gauge_i64 = create(
+            OtelMetricInstrumentKind::Gauge,
+            OtelMetricNumberKind::I64,
+            "value_gauge_i64",
+            false,
+        );
+        (SDK_METRICS_VTABLE.instrument_record_i64)(gauge_i64, 4, std::ptr::null(), 0);
+        (SDK_METRICS_VTABLE.instrument_record_i64)(gauge_i64, -2, std::ptr::null(), 0);
+        let gauge_f64 = create(
+            OtelMetricInstrumentKind::Gauge,
+            OtelMetricNumberKind::F64,
+            "value_gauge_f64",
+            false,
+        );
+        (SDK_METRICS_VTABLE.instrument_record_f64)(gauge_f64, 8.0, std::ptr::null(), 0);
+        (SDK_METRICS_VTABLE.instrument_record_f64)(gauge_f64, 2.25, std::ptr::null(), 0);
+
+        let histogram_u64 = create(
+            OtelMetricInstrumentKind::Histogram,
+            OtelMetricNumberKind::U64,
+            "value_histogram_u64",
+            true,
+        );
+        for value in [0, 3, 7, 12] {
+            (SDK_METRICS_VTABLE.instrument_record_u64)(histogram_u64, value, std::ptr::null(), 0);
+        }
+        let histogram_f64 = create(
+            OtelMetricInstrumentKind::Histogram,
+            OtelMetricNumberKind::F64,
+            "value_histogram_f64",
+            true,
+        );
+        for value in [2.5, 6.5] {
+            (SDK_METRICS_VTABLE.instrument_record_f64)(histogram_f64, value, std::ptr::null(), 0);
+        }
+
+        provider.force_flush().unwrap();
+        let metrics = exporter.get_finished_metrics().unwrap();
+        let scope = metrics
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .find(|scope| scope.scope().name() == "semantic_scope")
+            .expect("semantic scope");
+        assert_eq!(scope.scope().version(), Some("2.1.0"));
+        assert_eq!(
+            scope.scope().schema_url(),
+            Some("https://example.test/schema")
+        );
+        for metric in scope.metrics() {
+            assert_eq!(metric.description(), "semantic description");
+            assert_eq!(metric.unit(), "widgets");
+        }
+
+        match metric(&metrics, "value_counter_u64").data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                assert!(sum.is_monotonic());
+                let point = sum.data_points().next().unwrap();
+                assert_eq!(point.value(), 7);
+                assert_attributes(point.attributes());
+            }
+            data => panic!("unexpected counter data: {data:?}"),
+        }
+        match metric(&metrics, "value_counter_f64").data() {
+            AggregatedMetrics::F64(MetricData::Sum(sum)) => {
+                assert!(sum.is_monotonic());
+                assert_eq!(sum.data_points().next().unwrap().value(), 3.75);
+            }
+            data => panic!("unexpected counter data: {data:?}"),
+        }
+        match metric(&metrics, "value_up_down_i64").data() {
+            AggregatedMetrics::I64(MetricData::Sum(sum)) => {
+                assert!(!sum.is_monotonic());
+                assert_eq!(sum.data_points().next().unwrap().value(), -3);
+            }
+            data => panic!("unexpected up-down data: {data:?}"),
+        }
+        match metric(&metrics, "value_up_down_f64").data() {
+            AggregatedMetrics::F64(MetricData::Sum(sum)) => {
+                assert!(!sum.is_monotonic());
+                assert_eq!(sum.data_points().next().unwrap().value(), 3.25);
+            }
+            data => panic!("unexpected up-down data: {data:?}"),
+        }
+        match metric(&metrics, "value_gauge_u64").data() {
+            AggregatedMetrics::U64(MetricData::Gauge(gauge)) => {
+                assert_eq!(gauge.data_points().next().unwrap().value(), 3);
+            }
+            data => panic!("unexpected gauge data: {data:?}"),
+        }
+        match metric(&metrics, "value_gauge_i64").data() {
+            AggregatedMetrics::I64(MetricData::Gauge(gauge)) => {
+                assert_eq!(gauge.data_points().next().unwrap().value(), -2);
+            }
+            data => panic!("unexpected gauge data: {data:?}"),
+        }
+        match metric(&metrics, "value_gauge_f64").data() {
+            AggregatedMetrics::F64(MetricData::Gauge(gauge)) => {
+                assert_eq!(gauge.data_points().next().unwrap().value(), 2.25);
+            }
+            data => panic!("unexpected gauge data: {data:?}"),
+        }
+        match metric(&metrics, "value_histogram_u64").data() {
+            AggregatedMetrics::U64(MetricData::Histogram(histogram)) => {
+                let point = histogram.data_points().next().unwrap();
+                assert_eq!(point.count(), 4);
+                assert_eq!(point.sum(), 22);
+                assert_eq!(point.min(), Some(0));
+                assert_eq!(point.max(), Some(12));
+                assert_eq!(point.bounds().collect::<Vec<_>>(), boundaries);
+                assert_eq!(point.bucket_counts().collect::<Vec<_>>(), [1, 1, 1, 1]);
+            }
+            data => panic!("unexpected histogram data: {data:?}"),
+        }
+        match metric(&metrics, "value_histogram_f64").data() {
+            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                let point = histogram.data_points().next().unwrap();
+                assert_eq!(point.count(), 2);
+                assert_eq!(point.sum(), 9.0);
+                assert_eq!(point.min(), Some(2.5));
+                assert_eq!(point.max(), Some(6.5));
+                assert_eq!(point.bounds().collect::<Vec<_>>(), boundaries);
+                assert_eq!(point.bucket_counts().collect::<Vec<_>>(), [0, 1, 1, 0]);
+            }
+            data => panic!("unexpected histogram data: {data:?}"),
+        }
+
+        for handle in handles {
+            (SDK_METRICS_VTABLE.instrument_free)(handle);
         }
         (SDK_METRICS_VTABLE.meter_free)(meter);
         provider.shutdown().unwrap();
@@ -898,19 +1184,127 @@ mod tests {
         provider.force_flush().unwrap();
         assert_eq!(count.load(Ordering::SeqCst), cases.len());
         let metrics = exporter.get_finished_metrics().unwrap();
-        let names: Vec<_> = metrics
-            .iter()
-            .flat_map(|resource| resource.scope_metrics())
-            .flat_map(|scope| scope.metrics())
-            .map(|metric| metric.name())
-            .collect();
-        for (_, _, name) in cases {
-            assert!(names.contains(&name), "missing {name}: {names:?}");
+        for (kind, number, name) in cases {
+            match (kind, number, metric(&metrics, name).data()) {
+                (
+                    OtelMetricInstrumentKind::ObservableCounter,
+                    OtelMetricNumberKind::U64,
+                    AggregatedMetrics::U64(MetricData::Sum(sum)),
+                ) => {
+                    assert!(sum.is_monotonic());
+                    assert_eq!(sum.data_points().next().unwrap().value(), 9);
+                }
+                (
+                    OtelMetricInstrumentKind::ObservableCounter,
+                    OtelMetricNumberKind::F64,
+                    AggregatedMetrics::F64(MetricData::Sum(sum)),
+                ) => {
+                    assert!(sum.is_monotonic());
+                    assert_eq!(sum.data_points().next().unwrap().value(), 9.5);
+                }
+                (
+                    OtelMetricInstrumentKind::ObservableUpDownCounter,
+                    OtelMetricNumberKind::I64,
+                    AggregatedMetrics::I64(MetricData::Sum(sum)),
+                ) => {
+                    assert!(!sum.is_monotonic());
+                    assert_eq!(sum.data_points().next().unwrap().value(), -9);
+                }
+                (
+                    OtelMetricInstrumentKind::ObservableUpDownCounter,
+                    OtelMetricNumberKind::F64,
+                    AggregatedMetrics::F64(MetricData::Sum(sum)),
+                ) => {
+                    assert!(!sum.is_monotonic());
+                    assert_eq!(sum.data_points().next().unwrap().value(), 9.5);
+                }
+                (
+                    OtelMetricInstrumentKind::ObservableGauge,
+                    OtelMetricNumberKind::U64,
+                    AggregatedMetrics::U64(MetricData::Gauge(gauge)),
+                ) => assert_eq!(gauge.data_points().next().unwrap().value(), 9),
+                (
+                    OtelMetricInstrumentKind::ObservableGauge,
+                    OtelMetricNumberKind::I64,
+                    AggregatedMetrics::I64(MetricData::Gauge(gauge)),
+                ) => assert_eq!(gauge.data_points().next().unwrap().value(), -9),
+                (
+                    OtelMetricInstrumentKind::ObservableGauge,
+                    OtelMetricNumberKind::F64,
+                    AggregatedMetrics::F64(MetricData::Gauge(gauge)),
+                ) => assert_eq!(gauge.data_points().next().unwrap().value(), 9.5),
+                (_, _, data) => panic!("unexpected observable data for {name}: {data:?}"),
+            }
         }
 
         for instrument in instruments {
             (SDK_METRICS_VTABLE.instrument_free)(instrument);
         }
+        (SDK_METRICS_VTABLE.meter_free)(meter);
+        provider.shutdown().unwrap();
+        (SDK_METRICS_VTABLE.provider_free)(provider_ctx);
+        drop(provider);
+        assert_eq!(Arc::strong_count(&count), 1);
+    }
+
+    #[test]
+    fn multiple_readers_collect_independently_and_invoke_observables() {
+        let first_exporter = InMemoryMetricExporter::default();
+        let second_exporter = InMemoryMetricExporter::default();
+        let first_reader = PeriodicReader::builder(first_exporter.clone()).build();
+        let second_reader = PeriodicReader::builder(second_exporter.clone()).build();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(first_reader)
+            .with_reader(second_reader)
+            .build();
+        let provider_ctx = provider_ctx(provider.clone());
+        let meter = (SDK_METRICS_VTABLE.provider_get_meter)(
+            provider_ctx,
+            sv("multiple_readers"),
+            OtelStringView::empty(),
+            OtelStringView::empty(),
+        );
+        let count = Arc::new(AtomicUsize::new(0));
+        let observable_config = callback_config(
+            &count,
+            OtelMetricInstrumentKind::ObservableGauge,
+            OtelMetricNumberKind::U64,
+            "reader_observable",
+        );
+        let observable = (SDK_METRICS_VTABLE.meter_create_instrument)(meter, &observable_config);
+        assert!(!observable.is_null());
+        let counter_config = config(
+            OtelMetricInstrumentKind::Counter,
+            OtelMetricNumberKind::U64,
+            "reader_counter",
+        );
+        let counter = (SDK_METRICS_VTABLE.meter_create_instrument)(meter, &counter_config);
+        assert!(!counter.is_null());
+        assert_eq!(
+            (SDK_METRICS_VTABLE.instrument_record_u64)(counter, 6, std::ptr::null(), 0),
+            OtelStatus::Ok
+        );
+
+        provider.force_flush().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        for exporter in [&first_exporter, &second_exporter] {
+            let metrics = exporter.get_finished_metrics().unwrap();
+            match metric(&metrics, "reader_counter").data() {
+                AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                    assert_eq!(sum.data_points().next().unwrap().value(), 6);
+                }
+                data => panic!("unexpected counter data: {data:?}"),
+            }
+            match metric(&metrics, "reader_observable").data() {
+                AggregatedMetrics::U64(MetricData::Gauge(gauge)) => {
+                    assert_eq!(gauge.data_points().next().unwrap().value(), 9);
+                }
+                data => panic!("unexpected observable data: {data:?}"),
+            }
+        }
+
+        (SDK_METRICS_VTABLE.instrument_free)(observable);
+        (SDK_METRICS_VTABLE.instrument_free)(counter);
         (SDK_METRICS_VTABLE.meter_free)(meter);
         provider.shutdown().unwrap();
         (SDK_METRICS_VTABLE.provider_free)(provider_ctx);
