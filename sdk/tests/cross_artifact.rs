@@ -39,8 +39,10 @@ use tokio::net::TcpListener as TokioTcpListener;
 use tokio::sync::oneshot;
 #[cfg(feature = "otlp-grpc")]
 use tokio_stream::wrappers::TcpListenerStream;
+#[cfg(feature = "otlp-grpc-gzip")]
+use tonic::codec::CompressionEncoding;
 #[cfg(feature = "otlp-grpc")]
-use tonic::{codec::CompressionEncoding, Request, Response, Status};
+use tonic::{Request, Response, Status};
 
 fn find_cc() -> Option<String> {
     if let Ok(cc) = std::env::var("CC") {
@@ -82,22 +84,42 @@ fn is_ci() -> bool {
 fn output_with_timeout(command: &mut Command, timeout: Duration) -> Output {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().expect("spawn child process");
+    let mut stdout = child.stdout.take().expect("capture child stdout");
+    let mut stderr = child.stderr.take().expect("capture child stderr");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).expect("read child stdout");
+        output
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stderr.read_to_end(&mut output).expect("read child stderr");
+        output
+    });
     let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if child.try_wait().expect("query child status").is_some() {
-            return child.wait_with_output().expect("collect child output");
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().expect("query child status") {
+            break (status, false);
         }
         if std::time::Instant::now() >= deadline {
             child.kill().expect("terminate timed-out child");
-            let output = child.wait_with_output().expect("collect timed-out output");
-            panic!(
-                "child process timed out after {timeout:?}:\nstdout: {}\nstderr: {}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+            break (child.wait().expect("reap timed-out child"), true);
         }
         std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = Output {
+        status,
+        stdout: stdout_thread.join().expect("join stdout reader"),
+        stderr: stderr_thread.join().expect("join stderr reader"),
+    };
+    if timed_out {
+        panic!(
+            "child process timed out after {timeout:?}:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
+    output
 }
 
 /// Find a target profile dir that contains BOTH cdylibs.
@@ -656,15 +678,14 @@ fn start_grpc_collector() -> GrpcCollector {
                         .port(),
                 )
                 .expect("publish gRPC collector port");
+            let service = MetricsServiceServer::new(GrpcMetricsService {
+                requests: server_requests,
+                metadata_verified: server_metadata_verified,
+            });
+            #[cfg(feature = "otlp-grpc-gzip")]
+            let service = service.accept_compressed(CompressionEncoding::Gzip);
             tonic::transport::Server::builder()
-                .add_service(
-                    MetricsServiceServer::new(GrpcMetricsService {
-                        requests: server_requests,
-                        metadata_verified: server_metadata_verified,
-                    })
-                    .accept_compressed(CompressionEncoding::Gzip)
-                    .accept_compressed(CompressionEncoding::Zstd),
-                )
+                .add_service(service)
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = shutdown_rx.await;
                 })
@@ -1015,27 +1036,32 @@ fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
     );
     drop(requests);
 
-    let mut compressed_command = Command::new(&out);
-    compressed_command
-        .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &trace_endpoint)
-        .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
-        .env("OTEL_TEST_METRICS_GRPC", "1")
-        .env("OTEL_TEST_METRICS_COMPRESSION", "1")
-        .env("DYLD_LIBRARY_PATH", &lib_dir)
-        .env("LD_LIBRARY_PATH", &lib_dir);
-    let compressed_run = output_with_timeout(&mut compressed_command, Duration::from_secs(10));
-    let (requests, compressed_wait) = arrived
-        .wait_timeout_while(
-            request_mutex.lock().unwrap(),
-            Duration::from_secs(5),
-            |requests| requests.len() < 3,
-        )
-        .expect("wait for compressed gRPC Metrics request");
-    assert!(
-        !compressed_wait.timed_out(),
-        "gzip gRPC Metrics export timed out"
-    );
-    let requests = requests.clone();
+    #[cfg(feature = "otlp-grpc-gzip")]
+    let compressed_run = {
+        let mut compressed_command = Command::new(&out);
+        compressed_command
+            .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &trace_endpoint)
+            .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+            .env("OTEL_TEST_METRICS_GRPC", "1")
+            .env("OTEL_TEST_METRICS_COMPRESSION", "1")
+            .env("DYLD_LIBRARY_PATH", &lib_dir)
+            .env("LD_LIBRARY_PATH", &lib_dir);
+        let run = output_with_timeout(&mut compressed_command, Duration::from_secs(10));
+        let (requests, compressed_wait) = arrived
+            .wait_timeout_while(
+                request_mutex.lock().unwrap(),
+                Duration::from_secs(5),
+                |requests| requests.len() < 3,
+            )
+            .expect("wait for compressed gRPC Metrics request");
+        assert!(
+            !compressed_wait.timed_out(),
+            "gzip gRPC Metrics export timed out"
+        );
+        drop(requests);
+        run
+    };
+    let requests = request_mutex.lock().unwrap().clone();
     assert!(
         metrics_collector.metadata_verified.load(Ordering::Acquire),
         "configured gRPC metadata did not reach the collector"
@@ -1069,6 +1095,7 @@ fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
         String::from_utf8_lossy(&run_without_shutdown.stdout),
         String::from_utf8_lossy(&run_without_shutdown.stderr),
     );
+    #[cfg(feature = "otlp-grpc-gzip")]
     assert!(
         compressed_run.status.success(),
         "gzip gRPC harness failed ({:?}):\nstdout: {}\nstderr: {}",
