@@ -1423,6 +1423,50 @@ mod tests {
         drop(unsafe { Arc::from_raw(user_data as *const ApiCallbackState) });
     }
 
+    struct MultiObservationState {
+        calls: AtomicUsize,
+    }
+
+    extern "C" fn multi_observation_callback(
+        observer: *mut api::OtelObserverU64,
+        user_data: *mut c_void,
+    ) {
+        let state = unsafe { &*(user_data as *const MultiObservationState) };
+        state.calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            unsafe { api::otel_observer_u64_observe(std::ptr::null_mut(), 1, std::ptr::null(), 0) },
+            OtelStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe {
+                api::otel_observer_i64_observe(
+                    observer.cast::<api::OtelObserverI64>(),
+                    -1,
+                    std::ptr::null(),
+                    0,
+                )
+            },
+            OtelStatus::InvalidArgument
+        );
+        for (route, value) in [("first", 4), ("second", 7)] {
+            let attribute = OtelKeyValue {
+                key: sv("route"),
+                value_type: OtelAttributeType::String as u32,
+                value: OtelAttributeValue {
+                    string_value: sv(route),
+                },
+            };
+            assert_eq!(
+                unsafe { api::otel_observer_u64_observe(observer, value, &attribute, 1) },
+                OtelStatus::Ok
+            );
+        }
+    }
+
+    extern "C" fn multi_observation_state_destroy(user_data: *mut c_void) {
+        drop(unsafe { Arc::from_raw(user_data as *const MultiObservationState) });
+    }
+
     struct PanicUserData {
         destroyed: Arc<AtomicUsize>,
     }
@@ -1509,6 +1553,94 @@ mod tests {
         );
         provider.shutdown().unwrap();
         (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
+    }
+
+    #[test]
+    fn public_observer_validates_type_and_exports_multiple_observations() {
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let exporter = InMemoryMetricExporter::default();
+        let reader = PeriodicReader::builder(exporter.clone()).build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
+        let global_ctx = provider_ctx(provider.clone());
+        let mut registration_id = 0;
+        assert_eq!(
+            unsafe {
+                api::otel_api_register_global_meter_provider_with_token(
+                    &SDK_METRICS_VTABLE,
+                    global_ctx,
+                    &mut registration_id,
+                )
+            },
+            OtelStatus::Ok
+        );
+
+        let api_provider = api::otel_global_meter_provider();
+        let meter = unsafe {
+            api::otel_meter_provider_get_meter(
+                api_provider,
+                sv("multi_observation_scope"),
+                OtelStringView::empty(),
+                OtelStringView::empty(),
+            )
+        };
+        let state = Arc::new(MultiObservationState {
+            calls: AtomicUsize::new(0),
+        });
+        let mut observable = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                api::otel_meter_create_u64_observable_counter(
+                    meter,
+                    sv("multi_observation"),
+                    std::ptr::null(),
+                    Some(multi_observation_callback),
+                    Arc::into_raw(Arc::clone(&state)) as *mut c_void,
+                    Some(multi_observation_state_destroy),
+                    &mut observable,
+                )
+            },
+            OtelStatus::Ok
+        );
+
+        provider.force_flush().unwrap();
+        assert_eq!(state.calls.load(Ordering::SeqCst), 1);
+        let metrics = exporter.get_finished_metrics().unwrap();
+        match metric(&metrics, "multi_observation").data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                assert!(sum.is_monotonic());
+                let mut points = sum
+                    .data_points()
+                    .map(|point| {
+                        let route = point
+                            .attributes()
+                            .find(|attribute| attribute.key.as_str() == "route")
+                            .expect("route attribute")
+                            .value
+                            .as_str()
+                            .into_owned();
+                        (route, point.value())
+                    })
+                    .collect::<Vec<_>>();
+                points.sort();
+                assert_eq!(points, [("first".to_owned(), 4), ("second".to_owned(), 7)]);
+            }
+            data => panic!("unexpected multi-observation data: {data:?}"),
+        }
+
+        unsafe {
+            api::otel_observable_counter_u64_destroy(observable);
+            api::otel_meter_destroy(meter);
+            api::otel_meter_provider_destroy(api_provider);
+        }
+        assert_eq!(Arc::strong_count(&state), 1);
+        assert_eq!(
+            api::otel_api_unregister_global_meter_provider(registration_id),
+            OtelStatus::Ok
+        );
+        provider.shutdown().unwrap();
+        drop(provider);
     }
 
     #[test]

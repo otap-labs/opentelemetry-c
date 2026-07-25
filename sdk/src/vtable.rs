@@ -697,7 +697,13 @@ mod tests {
             OtelStatus::InvalidArgument
         );
         assert_eq!(
-            unsafe { collect_key_values(std::ptr::dangling(), usize::MAX) }.unwrap_err(),
+            unsafe {
+                collect_key_values(
+                    std::ptr::NonNull::<OtelKeyValue>::dangling().as_ptr(),
+                    usize::MAX,
+                )
+            }
+            .unwrap_err(),
             OtelStatus::InvalidArgument
         );
 

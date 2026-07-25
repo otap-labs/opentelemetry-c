@@ -922,6 +922,24 @@ mod tests {
     }
 
     #[test]
+    fn metrics_flush_and_shutdown_statuses_are_stable() {
+        unsafe {
+            let sdk = build_test_sdk();
+            assert_eq!(otel_sdk_metrics_force_flush(sdk, 0), OtelStatus::Ok);
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert_eq!(
+                otel_sdk_metrics_force_flush(sdk, 0),
+                OtelStatus::AlreadyShutdown
+            );
+            assert_eq!(
+                otel_sdk_metrics_shutdown(sdk, 0),
+                OtelStatus::AlreadyShutdown
+            );
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
     fn concurrent_metrics_install_and_shutdown_leave_no_registration() {
         let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
             .lock()

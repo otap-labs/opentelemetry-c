@@ -1113,3 +1113,218 @@ define_observable_instrument!(
     F64,
     callback_trampoline_f64
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex, OnceLock};
+    use std::time::Duration;
+
+    use opentelemetry_c_abi::OTEL_IMPL_ABI_VERSION;
+
+    struct MockInstrument {
+        callback: extern "C" fn(*mut c_void, *mut c_void),
+        state: *mut c_void,
+        state_free: extern "C" fn(*mut c_void),
+    }
+
+    fn free_reached() -> &'static (Mutex<bool>, Condvar) {
+        static FREE_REACHED: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
+        FREE_REACHED.get_or_init(|| (Mutex::new(false), Condvar::new()))
+    }
+
+    extern "C" fn mock_provider_get_meter(
+        _provider_ctx: *mut c_void,
+        _name: OtelStringView,
+        _version: OtelStringView,
+        _schema_url: OtelStringView,
+    ) -> *mut c_void {
+        std::ptr::NonNull::<c_void>::dangling().as_ptr()
+    }
+
+    extern "C" fn mock_provider_retain(provider_ctx: *mut c_void) -> *mut c_void {
+        provider_ctx
+    }
+
+    extern "C" fn mock_free(_ctx: *mut c_void) {}
+
+    extern "C" fn mock_meter_create_instrument(
+        _meter_ctx: *mut c_void,
+        config: *const OtelMetricInstrumentConfig,
+    ) -> *mut c_void {
+        let config = unsafe { &*config };
+        let Some(callback) = config.callback else {
+            return std::ptr::null_mut();
+        };
+        let Some(state_free) = config.callback_state_free else {
+            return std::ptr::null_mut();
+        };
+        Box::into_raw(Box::new(MockInstrument {
+            callback,
+            state: config.callback_state,
+            state_free,
+        }))
+        .cast()
+    }
+
+    extern "C" fn mock_record_u64(
+        _ctx: *mut c_void,
+        _value: u64,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+    ) -> OtelStatus {
+        OtelStatus::Ok
+    }
+
+    extern "C" fn mock_record_i64(
+        _ctx: *mut c_void,
+        _value: i64,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+    ) -> OtelStatus {
+        OtelStatus::Ok
+    }
+
+    extern "C" fn mock_record_f64(
+        _ctx: *mut c_void,
+        _value: f64,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+    ) -> OtelStatus {
+        OtelStatus::Ok
+    }
+
+    extern "C" fn mock_instrument_free(ctx: *mut c_void) {
+        let instrument = unsafe { Box::from_raw(ctx.cast::<MockInstrument>()) };
+        (instrument.state_free)(instrument.state);
+        let (reached, condition) = free_reached();
+        *reached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        condition.notify_all();
+    }
+
+    static MOCK_METRICS_VTABLE: OtelMetricsVtable = OtelMetricsVtable {
+        abi_version: OTEL_IMPL_ABI_VERSION,
+        struct_size: std::mem::size_of::<OtelMetricsVtable>(),
+        provider_get_meter: mock_provider_get_meter,
+        provider_retain: mock_provider_retain,
+        provider_free: mock_free,
+        meter_create_instrument: mock_meter_create_instrument,
+        meter_free: mock_free,
+        instrument_record_u64: mock_record_u64,
+        instrument_record_i64: mock_record_i64,
+        instrument_record_f64: mock_record_f64,
+        observer_observe_u64: mock_record_u64,
+        observer_observe_i64: mock_record_i64,
+        observer_observe_f64: mock_record_f64,
+        instrument_free: mock_instrument_free,
+    };
+
+    struct InFlightUserData {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+        completed: Arc<AtomicUsize>,
+        destroyed: Arc<AtomicUsize>,
+    }
+
+    extern "C" fn in_flight_callback(observer: *mut OtelObserverU64, user_data: *mut c_void) {
+        let state = unsafe { &*(user_data.cast::<InFlightUserData>()) };
+        state.entered.wait();
+        state.release.wait();
+        assert_eq!(
+            unsafe { otel_observer_u64_observe(observer, 23, std::ptr::null(), 0) },
+            OtelStatus::Ok
+        );
+        state.completed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    extern "C" fn in_flight_user_data_destroy(user_data: *mut c_void) {
+        let state = unsafe { Box::from_raw(user_data.cast::<InFlightUserData>()) };
+        state.destroyed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn observable_destroy_defers_user_data_until_in_flight_callback_completes() {
+        let (reached, _) = free_reached();
+        *reached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
+
+        let meter = OtelMeter {
+            magic: METER_MAGIC,
+            vtable: &MOCK_METRICS_VTABLE,
+            ctx: std::ptr::NonNull::<c_void>::dangling().as_ptr(),
+        };
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let user_data = Box::into_raw(Box::new(InFlightUserData {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+            completed: Arc::clone(&completed),
+            destroyed: Arc::clone(&destroyed),
+        }))
+        .cast();
+        let mut observable = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_meter_create_u64_observable_gauge(
+                    &meter,
+                    OtelStringView {
+                        ptr: b"observable".as_ptr().cast(),
+                        len: 10,
+                    },
+                    std::ptr::null(),
+                    Some(in_flight_callback),
+                    user_data,
+                    Some(in_flight_user_data_destroy),
+                    &mut observable,
+                )
+            },
+            OtelStatus::Ok
+        );
+
+        let instrument = unsafe { &*((*observable).ctx.cast::<MockInstrument>()) };
+        let callback = instrument.callback;
+        let callback_state = instrument.state as usize;
+        let callback_thread = std::thread::spawn(move || {
+            callback(
+                std::ptr::NonNull::<c_void>::dangling().as_ptr(),
+                callback_state as *mut c_void,
+            );
+        });
+        entered.wait();
+
+        let observable_addr = observable as usize;
+        let (destroy_done_tx, destroy_done_rx) = mpsc::channel();
+        let destroy_thread = std::thread::spawn(move || {
+            unsafe {
+                otel_observable_gauge_u64_destroy(observable_addr as *mut OtelObservableGaugeU64)
+            };
+            destroy_done_tx.send(()).unwrap();
+        });
+
+        let (reached, condition) = free_reached();
+        let guard = reached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = condition
+            .wait_timeout_while(guard, Duration::from_secs(5), |reached| !*reached)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(*guard, "instrument destruction did not reach the SDK");
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+        destroy_done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("observable destruction did not complete");
+
+        release.wait();
+        callback_thread.join().unwrap();
+        destroy_thread.join().unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+    }
+}
