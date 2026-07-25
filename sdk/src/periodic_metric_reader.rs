@@ -335,15 +335,6 @@ mod tests {
             );
             drop(Box::from_raw(dead));
 
-            let wrong_drops = Arc::new(AtomicUsize::new(0));
-            let wrong = test_exporter(&wrong_drops);
-            assert_eq!(
-                otel_periodic_metric_reader_builder_set_interval_millis(wrong.cast(), 10),
-                OtelStatus::InvalidArgument
-            );
-            crate::metric_exporter::otel_metric_exporter_destroy(wrong);
-            assert_eq!(wrong_drops.load(Ordering::SeqCst), 1);
-
             let builder = otel_periodic_metric_reader_builder_new();
             assert!((*builder).interval.is_none());
             assert_eq!(

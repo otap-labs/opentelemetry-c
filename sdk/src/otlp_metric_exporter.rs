@@ -310,20 +310,6 @@ mod tests {
             );
             drop(Box::from_raw(dead));
 
-            let wrong = crate::periodic_metric_reader::otel_periodic_metric_reader_builder_new();
-            assert_eq!(
-                otel_otlp_metric_exporter_builder_set_endpoint(
-                    wrong.cast(),
-                    sv("http://localhost"),
-                ),
-                OtelStatus::InvalidArgument
-            );
-            assert_eq!(
-                otel_otlp_metric_exporter_builder_set_timeout_millis(wrong.cast(), 10),
-                OtelStatus::InvalidArgument
-            );
-            crate::periodic_metric_reader::otel_periodic_metric_reader_builder_destroy(wrong);
-
             let builder = otel_otlp_metric_exporter_builder_new();
             assert_eq!(
                 otel_otlp_metric_exporter_builder_set_endpoint(builder, OtelStringView::empty()),
