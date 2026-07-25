@@ -259,9 +259,13 @@ mod tests {
     use super::*;
     #[cfg(feature = "otlp")]
     use crate::metric_exporter::otel_metric_exporter_destroy;
+    #[cfg(feature = "otlp")]
+    use crate::metric_exporter::TestMetricExporterLifecycle;
     use crate::metric_exporter::{OtelMetricExporter, TestMetricExporter};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    #[cfg(feature = "otlp")]
+    use std::sync::{Condvar, Mutex};
 
     fn test_exporter(drops: &Arc<AtomicUsize>) -> *mut OtelMetricExporter {
         into_raw(OtelMetricExporter::new(MetricExporterImpl::Test(
@@ -270,13 +274,47 @@ mod tests {
     }
 
     #[cfg(feature = "otlp")]
+    fn lifecycle_exporter(
+        drops: &Arc<AtomicUsize>,
+        shutdowns: &Arc<AtomicUsize>,
+        dropped: &Arc<(Mutex<bool>, Condvar)>,
+    ) -> *mut OtelMetricExporter {
+        into_raw(OtelMetricExporter::new(MetricExporterImpl::Test(
+            TestMetricExporter::with_lifecycle(
+                Arc::clone(drops),
+                TestMetricExporterLifecycle {
+                    shutdowns: Arc::clone(shutdowns),
+                    dropped: Arc::clone(dropped),
+                },
+            ),
+        )))
+    }
+
+    #[cfg(feature = "otlp")]
+    fn wait_for_drop(dropped: &Arc<(Mutex<bool>, Condvar)>) {
+        let (dropped, condition) = &**dropped;
+        let guard = dropped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = condition
+            .wait_timeout_while(guard, Duration::from_secs(5), |dropped| !*dropped)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            *guard,
+            "exporter was not dropped before the bounded deadline"
+        );
+    }
+
+    #[cfg(feature = "otlp")]
     #[test]
     fn exporter_transfer_duplicate_rejection_and_reader_destruction_are_exactly_once() {
         unsafe {
             let first_drops = Arc::new(AtomicUsize::new(0));
+            let first_shutdowns = Arc::new(AtomicUsize::new(0));
+            let first_dropped = Arc::new((Mutex::new(false), Condvar::new()));
             let second_drops = Arc::new(AtomicUsize::new(0));
             let builder = otel_periodic_metric_reader_builder_new();
-            let first = test_exporter(&first_drops);
+            let first = lifecycle_exporter(&first_drops, &first_shutdowns, &first_dropped);
             assert_eq!(
                 otel_periodic_metric_reader_builder_set_exporter(builder, first),
                 OtelStatus::Ok
@@ -302,6 +340,8 @@ mod tests {
             otel_periodic_metric_reader_builder_destroy(builder);
             assert_eq!(first_drops.load(Ordering::SeqCst), 0);
             otel_periodic_metric_reader_destroy(reader);
+            assert_eq!(first_shutdowns.load(Ordering::SeqCst), 1);
+            wait_for_drop(&first_dropped);
             assert_eq!(first_drops.load(Ordering::SeqCst), 1);
         }
     }

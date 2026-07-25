@@ -14,12 +14,34 @@ pub(crate) enum MetricExporterImpl {
 #[derive(Debug)]
 pub(crate) struct TestMetricExporter {
     drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    lifecycle: Option<TestMetricExporterLifecycle>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct TestMetricExporterLifecycle {
+    pub(crate) shutdowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) dropped: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 }
 
 #[cfg(test)]
 impl TestMetricExporter {
     pub(crate) fn new(drops: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        Self { drops }
+        Self {
+            drops,
+            lifecycle: None,
+        }
+    }
+
+    #[cfg(feature = "otlp")]
+    pub(crate) fn with_lifecycle(
+        drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        lifecycle: TestMetricExporterLifecycle,
+    ) -> Self {
+        Self {
+            drops,
+            lifecycle: Some(lifecycle),
+        }
     }
 }
 
@@ -27,6 +49,13 @@ impl TestMetricExporter {
 impl Drop for TestMetricExporter {
     fn drop(&mut self) {
         self.drops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(lifecycle) = &self.lifecycle {
+            let (dropped, condition) = &*lifecycle.dropped;
+            *dropped
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            condition.notify_all();
+        }
     }
 }
 
@@ -47,6 +76,11 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for TestMetricExpo
         &self,
         _timeout: std::time::Duration,
     ) -> opentelemetry_sdk::error::OTelSdkResult {
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle
+                .shutdowns
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         Ok(())
     }
 
