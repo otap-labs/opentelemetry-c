@@ -96,10 +96,26 @@ impl Drop for GrpcMetricExporter {
 
 #[cfg(feature = "otlp-grpc")]
 fn dispose_grpc_runtime(runtime: tokio::runtime::Runtime) {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        runtime.shutdown_background();
-    } else {
-        drop(runtime);
+    match tokio::runtime::Handle::try_current() {
+        Ok(current) if current.id() == runtime.handle().id() => {
+            // The runtime handle is private and the exporter is never moved into its tasks,
+            // so public C destruction cannot reach this branch. Joining a disposer thread
+            // from the runtime's own worker would deadlock; retain a non-panicking fail-safe
+            // for an internal ownership violation.
+            runtime.shutdown_background();
+        }
+        Ok(_) => {
+            // Tokio forbids blocking Runtime destruction inside an entered runtime. Move
+            // disposal to a neutral thread and join it so no SDK runtime work survives the
+            // C destruction call or the documented dynamic-library unload boundary.
+            std::thread::Builder::new()
+                .name("otel-c-otlp-grpc-shutdown".to_owned())
+                .spawn(move || drop(runtime))
+                .expect("spawn OTLP gRPC runtime disposer")
+                .join()
+                .expect("OTLP gRPC runtime disposer panicked");
+        }
+        Err(_) => drop(runtime),
     }
 }
 

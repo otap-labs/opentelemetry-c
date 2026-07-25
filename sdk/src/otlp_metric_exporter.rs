@@ -48,6 +48,8 @@ struct Config {
     temporality: u32,
     transport: Transport,
     compression: Compression,
+    #[cfg(test)]
+    runtime_thread_stops: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 pub struct OtelOtlpMetricExporterBuilder {
@@ -333,20 +335,26 @@ fn build_grpc_metadata(headers: &[(String, String)]) -> Result<MetadataMap, Otel
 #[cfg(feature = "otlp-grpc")]
 fn build_grpc_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
     let metadata = build_grpc_metadata(&config.headers)?;
-    let runtime = crate::metric_exporter::GrpcRuntimeGuard::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .max_blocking_threads(2)
-            .thread_name("otel-c-otlp-grpc")
-            .enable_all()
-            .build()
-            .map_err(|err| {
-                fail_owned(
-                    OtelStatus::InternalError,
-                    format!("failed to create OTLP gRPC runtime: {err}"),
-                )
-            })?,
-    );
+    let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+    runtime_builder
+        .worker_threads(1)
+        .max_blocking_threads(2)
+        .thread_name("otel-c-otlp-grpc")
+        .enable_all();
+    #[cfg(test)]
+    if let Some(stops) = &config.runtime_thread_stops {
+        let stops = std::sync::Arc::clone(stops);
+        runtime_builder.on_thread_stop(move || {
+            stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    let runtime =
+        crate::metric_exporter::GrpcRuntimeGuard::new(runtime_builder.build().map_err(|err| {
+            fail_owned(
+                OtelStatus::InternalError,
+                format!("failed to create OTLP gRPC runtime: {err}"),
+            )
+        })?);
 
     let exporter = {
         let _runtime_guard = runtime.runtime().enter();
@@ -916,7 +924,24 @@ mod tests {
     #[test]
     fn grpc_exporter_can_be_destroyed_inside_another_tokio_runtime() {
         unsafe {
-            let exporter = build_test_grpc_exporter();
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv("http://127.0.0.1:9"),),
+                OtelStatus::Ok
+            );
+            let runtime_thread_stops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (*builder).config.runtime_thread_stops =
+                Some(std::sync::Arc::clone(&runtime_thread_stops));
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::Ok
+            );
+            otel_otlp_metric_exporter_builder_destroy(builder);
             let exporter = crate::handle::take(exporter).expect("take gRPC exporter handle");
             let host_runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -925,6 +950,11 @@ mod tests {
             host_runtime.block_on(async move {
                 drop(exporter);
             });
+            assert_eq!(
+                runtime_thread_stops.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "gRPC runtime worker must stop before exporter destruction returns"
+            );
         }
     }
 
