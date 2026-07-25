@@ -600,6 +600,7 @@ enum UserCallback {
 
 struct CallbackState {
     enabled: AtomicBool,
+    vtable: *const OtelMetricsVtable,
     callback: UserCallback,
     user_data: Mutex<Option<Arc<UserData>>>,
 }
@@ -715,63 +716,51 @@ fn callback_state_clone(state: *mut c_void) -> Option<Arc<CallbackState>> {
 }
 
 extern "C" fn callback_trampoline_u64(observer_ctx: *mut c_void, state: *mut c_void) {
-    let Some(state) = callback_state_clone(state) else {
-        return;
-    };
-    let Some(user_data) = state.acquire_user_data() else {
-        return;
-    };
-    let registration = ObserverRegistration::new(
-        state_vtable(observer_ctx),
-        observer_ctx,
-        OtelMetricNumberKind::U64,
-    );
-    if let UserCallback::U64(callback) = state.callback {
-        callback(registration.token as *mut OtelObserverU64, user_data.ptr);
-    }
+    guard_unit(|| {
+        let Some(state) = callback_state_clone(state) else {
+            return;
+        };
+        let Some(user_data) = state.acquire_user_data() else {
+            return;
+        };
+        let registration =
+            ObserverRegistration::new(state.vtable, observer_ctx, OtelMetricNumberKind::U64);
+        if let UserCallback::U64(callback) = state.callback {
+            callback(registration.token as *mut OtelObserverU64, user_data.ptr);
+        }
+    });
 }
 
 extern "C" fn callback_trampoline_i64(observer_ctx: *mut c_void, state: *mut c_void) {
-    let Some(state) = callback_state_clone(state) else {
-        return;
-    };
-    let Some(user_data) = state.acquire_user_data() else {
-        return;
-    };
-    let registration = ObserverRegistration::new(
-        state_vtable(observer_ctx),
-        observer_ctx,
-        OtelMetricNumberKind::I64,
-    );
-    if let UserCallback::I64(callback) = state.callback {
-        callback(registration.token as *mut OtelObserverI64, user_data.ptr);
-    }
+    guard_unit(|| {
+        let Some(state) = callback_state_clone(state) else {
+            return;
+        };
+        let Some(user_data) = state.acquire_user_data() else {
+            return;
+        };
+        let registration =
+            ObserverRegistration::new(state.vtable, observer_ctx, OtelMetricNumberKind::I64);
+        if let UserCallback::I64(callback) = state.callback {
+            callback(registration.token as *mut OtelObserverI64, user_data.ptr);
+        }
+    });
 }
 
 extern "C" fn callback_trampoline_f64(observer_ctx: *mut c_void, state: *mut c_void) {
-    let Some(state) = callback_state_clone(state) else {
-        return;
-    };
-    let Some(user_data) = state.acquire_user_data() else {
-        return;
-    };
-    let registration = ObserverRegistration::new(
-        state_vtable(observer_ctx),
-        observer_ctx,
-        OtelMetricNumberKind::F64,
-    );
-    if let UserCallback::F64(callback) = state.callback {
-        callback(registration.token as *mut OtelObserverF64, user_data.ptr);
-    }
-}
-
-// The SDK observer context begins with the Metrics vtable pointer so the API callback
-// trampoline can dispatch observations without retaining SDK Rust types.
-fn state_vtable(observer_ctx: *mut c_void) -> *const OtelMetricsVtable {
-    if observer_ctx.is_null() {
-        return std::ptr::null();
-    }
-    unsafe { *(observer_ctx as *const *const OtelMetricsVtable) }
+    guard_unit(|| {
+        let Some(state) = callback_state_clone(state) else {
+            return;
+        };
+        let Some(user_data) = state.acquire_user_data() else {
+            return;
+        };
+        let registration =
+            ObserverRegistration::new(state.vtable, observer_ctx, OtelMetricNumberKind::F64);
+        if let UserCallback::F64(callback) = state.callback {
+            callback(registration.token as *mut OtelObserverF64, user_data.ptr);
+        }
+    });
 }
 
 fn observe<T>(
@@ -996,6 +985,7 @@ macro_rules! define_observable_instrument {
                 };
                 let state = Arc::new(CallbackState {
                     enabled: AtomicBool::new(true),
+                    vtable: meter.vtable,
                     callback: UserCallback::$callback_variant(callback),
                     user_data: Mutex::new(Some(Arc::new(UserData {
                         ptr: user_data,

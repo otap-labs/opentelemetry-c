@@ -122,7 +122,9 @@ void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
  * Destroying the public observable handle disables future callback work and releases its
  * user-data ownership. user_data_destroy runs exactly once after any callback already in
  * flight releases its temporary reference; it does not depend on the SDK pipeline closure
- * being unregistered or dropped.
+ * being unregistered or dropped. The library contains panics from its own Rust trampoline
+ * logic before they can unwind across the ABI. This does not make unwinding or exceptions
+ * from a user callback across its C function boundary safe.
  */
 #define OTEL_DECLARE_OBSERVABLE_CREATE(fn, type, callback_type) \
     otel_status_t fn(const otel_meter_t* meter, otel_string_view_t name, \

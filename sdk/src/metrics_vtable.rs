@@ -42,21 +42,15 @@ impl Drop for CallbackLease {
     }
 }
 
-#[repr(C)]
 struct ObserverCtxU64<'a> {
-    vtable: *const OtelMetricsVtable,
     observer: &'a dyn AsyncInstrument<u64>,
 }
 
-#[repr(C)]
 struct ObserverCtxI64<'a> {
-    vtable: *const OtelMetricsVtable,
     observer: &'a dyn AsyncInstrument<i64>,
 }
 
-#[repr(C)]
 struct ObserverCtxF64<'a> {
-    vtable: *const OtelMetricsVtable,
     observer: &'a dyn AsyncInstrument<f64>,
 }
 
@@ -240,14 +234,13 @@ extern "C" fn meter_create_instrument(
     config: *const OtelMetricInstrumentConfig,
 ) -> *mut c_void {
     guard_ptr(|| {
-        if meter_ctx.is_null() || config.is_null() {
+        if config.is_null() {
             fail(
                 OtelStatus::InvalidArgument,
-                "metric instrument creation received a NULL context or config",
+                "metric instrument creation received a NULL config",
             );
             return std::ptr::null_mut();
         }
-        let meter = unsafe { &*(meter_ctx as *const Meter) };
         let config = unsafe { &*config };
         // The Metrics ABI transfers callback-state ownership on entry whenever a release
         // function is present. Keeping the lease in this outer scope guarantees one release
@@ -257,6 +250,14 @@ extern "C" fn meter_create_instrument(
             Ok(lease) => lease,
             Err(_) => return std::ptr::null_mut(),
         };
+        if meter_ctx.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "metric instrument creation received a NULL meter context",
+            );
+            return std::ptr::null_mut();
+        }
+        let meter = unsafe { &*(meter_ctx as *const Meter) };
         let kind = match OtelMetricInstrumentKind::from_u32(config.kind) {
             Some(kind) => kind,
             None => {
@@ -385,10 +386,7 @@ extern "C" fn meter_create_instrument(
                     configure_async_builder(meter.u64_observable_counter(name), description, unit)
                         .with_callback(move |observer| {
                             let _keep_alive = &lease;
-                            let mut ctx = ObserverCtxU64 {
-                                vtable: &SDK_METRICS_VTABLE,
-                                observer,
-                            };
+                            let mut ctx = ObserverCtxU64 { observer };
                             callback((&mut ctx as *mut ObserverCtxU64<'_>).cast(), lease.state);
                         })
                         .build();
@@ -403,10 +401,7 @@ extern "C" fn meter_create_instrument(
                     configure_async_builder(meter.f64_observable_counter(name), description, unit)
                         .with_callback(move |observer| {
                             let _keep_alive = &lease;
-                            let mut ctx = ObserverCtxF64 {
-                                vtable: &SDK_METRICS_VTABLE,
-                                observer,
-                            };
+                            let mut ctx = ObserverCtxF64 { observer };
                             callback((&mut ctx as *mut ObserverCtxF64<'_>).cast(), lease.state);
                         })
                         .build();
@@ -424,10 +419,7 @@ extern "C" fn meter_create_instrument(
                 )
                 .with_callback(move |observer| {
                     let _keep_alive = &lease;
-                    let mut ctx = ObserverCtxI64 {
-                        vtable: &SDK_METRICS_VTABLE,
-                        observer,
-                    };
+                    let mut ctx = ObserverCtxI64 { observer };
                     callback((&mut ctx as *mut ObserverCtxI64<'_>).cast(), lease.state);
                 })
                 .build();
@@ -445,10 +437,7 @@ extern "C" fn meter_create_instrument(
                 )
                 .with_callback(move |observer| {
                     let _keep_alive = &lease;
-                    let mut ctx = ObserverCtxF64 {
-                        vtable: &SDK_METRICS_VTABLE,
-                        observer,
-                    };
+                    let mut ctx = ObserverCtxF64 { observer };
                     callback((&mut ctx as *mut ObserverCtxF64<'_>).cast(), lease.state);
                 })
                 .build();
@@ -463,10 +452,7 @@ extern "C" fn meter_create_instrument(
                     configure_async_builder(meter.u64_observable_gauge(name), description, unit)
                         .with_callback(move |observer| {
                             let _keep_alive = &lease;
-                            let mut ctx = ObserverCtxU64 {
-                                vtable: &SDK_METRICS_VTABLE,
-                                observer,
-                            };
+                            let mut ctx = ObserverCtxU64 { observer };
                             callback((&mut ctx as *mut ObserverCtxU64<'_>).cast(), lease.state);
                         })
                         .build();
@@ -481,10 +467,7 @@ extern "C" fn meter_create_instrument(
                     configure_async_builder(meter.i64_observable_gauge(name), description, unit)
                         .with_callback(move |observer| {
                             let _keep_alive = &lease;
-                            let mut ctx = ObserverCtxI64 {
-                                vtable: &SDK_METRICS_VTABLE,
-                                observer,
-                            };
+                            let mut ctx = ObserverCtxI64 { observer };
                             callback((&mut ctx as *mut ObserverCtxI64<'_>).cast(), lease.state);
                         })
                         .build();
@@ -499,10 +482,7 @@ extern "C" fn meter_create_instrument(
                     configure_async_builder(meter.f64_observable_gauge(name), description, unit)
                         .with_callback(move |observer| {
                             let _keep_alive = &lease;
-                            let mut ctx = ObserverCtxF64 {
-                                vtable: &SDK_METRICS_VTABLE,
-                                observer,
-                            };
+                            let mut ctx = ObserverCtxF64 { observer };
                             callback((&mut ctx as *mut ObserverCtxF64<'_>).cast(), lease.state);
                         })
                         .build();
@@ -677,12 +657,10 @@ mod tests {
     use super::*;
     use std::os::raw::c_char;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use opentelemetry_c_api as api;
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader};
-
-    static API_GLOBAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn sv(value: &'static str) -> OtelStringView {
         OtelStringView {
@@ -814,15 +792,178 @@ mod tests {
     extern "C" fn observable_callback(observer_ctx: *mut c_void, state: *mut c_void) {
         let count = unsafe { &*(state as *const AtomicUsize) };
         count.fetch_add(1, Ordering::SeqCst);
-        let vtable = unsafe { *(observer_ctx as *const *const OtelMetricsVtable) };
         assert_eq!(
-            unsafe { ((*vtable).observer_observe_u64)(observer_ctx, 9, std::ptr::null(), 0) },
+            (SDK_METRICS_VTABLE.observer_observe_u64)(observer_ctx, 9, std::ptr::null(), 0),
+            OtelStatus::Ok
+        );
+    }
+
+    extern "C" fn observable_callback_i64(observer_ctx: *mut c_void, state: *mut c_void) {
+        let count = unsafe { &*(state as *const AtomicUsize) };
+        count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            (SDK_METRICS_VTABLE.observer_observe_i64)(observer_ctx, -9, std::ptr::null(), 0),
+            OtelStatus::Ok
+        );
+    }
+
+    extern "C" fn observable_callback_f64(observer_ctx: *mut c_void, state: *mut c_void) {
+        let count = unsafe { &*(state as *const AtomicUsize) };
+        count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            (SDK_METRICS_VTABLE.observer_observe_f64)(observer_ctx, 9.5, std::ptr::null(), 0),
             OtelStatus::Ok
         );
     }
 
     extern "C" fn release_count(state: *mut c_void) {
         drop(unsafe { Arc::from_raw(state as *const AtomicUsize) });
+    }
+
+    fn callback_config(
+        count: &Arc<AtomicUsize>,
+        kind: OtelMetricInstrumentKind,
+        number: OtelMetricNumberKind,
+        name: &'static str,
+    ) -> OtelMetricInstrumentConfig {
+        let mut config = config(kind, number, name);
+        config.callback = Some(match number {
+            OtelMetricNumberKind::U64 => observable_callback,
+            OtelMetricNumberKind::I64 => observable_callback_i64,
+            OtelMetricNumberKind::F64 => observable_callback_f64,
+        });
+        config.callback_state = Arc::into_raw(Arc::clone(count)) as *mut c_void;
+        config.callback_state_free = Some(release_count);
+        config
+    }
+
+    #[test]
+    fn observable_family_dispatches_each_number_kind() {
+        let exporter = InMemoryMetricExporter::default();
+        let reader = PeriodicReader::builder(exporter.clone()).build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
+        let provider_ctx = provider_ctx(provider.clone());
+        let meter = (SDK_METRICS_VTABLE.provider_get_meter)(
+            provider_ctx,
+            sv("observable_scope"),
+            OtelStringView::empty(),
+            OtelStringView::empty(),
+        );
+        let cases = [
+            (
+                OtelMetricInstrumentKind::ObservableCounter,
+                OtelMetricNumberKind::U64,
+                "observable_counter_u64",
+            ),
+            (
+                OtelMetricInstrumentKind::ObservableCounter,
+                OtelMetricNumberKind::F64,
+                "observable_counter_f64",
+            ),
+            (
+                OtelMetricInstrumentKind::ObservableUpDownCounter,
+                OtelMetricNumberKind::I64,
+                "observable_up_down_i64",
+            ),
+            (
+                OtelMetricInstrumentKind::ObservableUpDownCounter,
+                OtelMetricNumberKind::F64,
+                "observable_up_down_f64",
+            ),
+            (
+                OtelMetricInstrumentKind::ObservableGauge,
+                OtelMetricNumberKind::U64,
+                "observable_gauge_u64",
+            ),
+            (
+                OtelMetricInstrumentKind::ObservableGauge,
+                OtelMetricNumberKind::I64,
+                "observable_gauge_i64",
+            ),
+            (
+                OtelMetricInstrumentKind::ObservableGauge,
+                OtelMetricNumberKind::F64,
+                "observable_gauge_f64",
+            ),
+        ];
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut instruments = Vec::new();
+        for (kind, number, name) in cases {
+            let config = callback_config(&count, kind, number, name);
+            let instrument = (SDK_METRICS_VTABLE.meter_create_instrument)(meter, &config);
+            assert!(!instrument.is_null(), "{name}");
+            instruments.push(instrument);
+        }
+
+        provider.force_flush().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), cases.len());
+        let metrics = exporter.get_finished_metrics().unwrap();
+        let names: Vec<_> = metrics
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .map(|metric| metric.name())
+            .collect();
+        for (_, _, name) in cases {
+            assert!(names.contains(&name), "missing {name}: {names:?}");
+        }
+
+        for instrument in instruments {
+            (SDK_METRICS_VTABLE.instrument_free)(instrument);
+        }
+        (SDK_METRICS_VTABLE.meter_free)(meter);
+        provider.shutdown().unwrap();
+        (SDK_METRICS_VTABLE.provider_free)(provider_ctx);
+        drop(provider);
+        assert_eq!(Arc::strong_count(&count), 1);
+    }
+
+    #[test]
+    fn null_config_is_rejected_without_dereference() {
+        assert!((SDK_METRICS_VTABLE.meter_create_instrument)(
+            std::ptr::null_mut(),
+            std::ptr::null()
+        )
+        .is_null());
+    }
+
+    #[test]
+    fn null_meter_releases_transferred_callback_state_once() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let config = callback_config(
+            &count,
+            OtelMetricInstrumentKind::ObservableGauge,
+            OtelMetricNumberKind::U64,
+            "null_meter",
+        );
+        assert!(
+            (SDK_METRICS_VTABLE.meter_create_instrument)(std::ptr::null_mut(), &config).is_null()
+        );
+        assert_eq!(Arc::strong_count(&count), 1);
+    }
+
+    #[test]
+    fn validation_failure_releases_transferred_callback_state_once() {
+        let provider = SdkMeterProvider::builder().build();
+        let provider_ctx = provider_ctx(provider.clone());
+        let meter = (SDK_METRICS_VTABLE.provider_get_meter)(
+            provider_ctx,
+            sv("scope"),
+            OtelStringView::empty(),
+            OtelStringView::empty(),
+        );
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut config = callback_config(
+            &count,
+            OtelMetricInstrumentKind::ObservableGauge,
+            OtelMetricNumberKind::U64,
+            "invalid_kind",
+        );
+        config.kind = u32::MAX;
+        assert!((SDK_METRICS_VTABLE.meter_create_instrument)(meter, &config).is_null());
+        assert_eq!(Arc::strong_count(&count), 1);
+        (SDK_METRICS_VTABLE.meter_free)(meter);
+        (SDK_METRICS_VTABLE.provider_free)(provider_ctx);
     }
 
     #[test]
@@ -905,7 +1046,7 @@ mod tests {
 
     #[test]
     fn callback_state_is_released_once_when_sdk_creation_panics() {
-        let _global_guard = API_GLOBAL_TEST_LOCK
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let exporter = InMemoryMetricExporter::default();
@@ -924,11 +1065,13 @@ mod tests {
             boundaries: std::ptr::null(),
             boundary_count: 0,
         };
+        let mut registration_id = 0;
         assert_eq!(
             unsafe {
-                api::otel_api_register_global_meter_provider(
+                api::otel_api_register_global_meter_provider_with_token(
                     &SDK_METRICS_VTABLE,
                     provider_ctx(provider.clone()),
+                    &mut registration_id,
                 )
             },
             OtelStatus::Ok
@@ -966,22 +1109,31 @@ mod tests {
             api::otel_meter_destroy(api_meter);
             api::otel_meter_provider_destroy(api_provider);
         }
+        assert_eq!(
+            api::otel_api_unregister_global_meter_provider(registration_id),
+            OtelStatus::Ok
+        );
         provider.shutdown().unwrap();
         (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
     }
 
     #[test]
     fn public_observer_token_expires_and_destroy_disables_callback() {
-        let _global_guard = API_GLOBAL_TEST_LOCK
+        let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let exporter = InMemoryMetricExporter::default();
         let reader = PeriodicReader::builder(exporter).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
         let global_ctx = provider_ctx(provider.clone());
+        let mut registration_id = 0;
         assert_eq!(
             unsafe {
-                api::otel_api_register_global_meter_provider(&SDK_METRICS_VTABLE, global_ctx)
+                api::otel_api_register_global_meter_provider_with_token(
+                    &SDK_METRICS_VTABLE,
+                    global_ctx,
+                    &mut registration_id,
+                )
             },
             OtelStatus::Ok
         );
@@ -1040,6 +1192,10 @@ mod tests {
             api::otel_meter_destroy(meter);
             api::otel_meter_provider_destroy(api_provider);
         }
+        assert_eq!(
+            api::otel_api_unregister_global_meter_provider(registration_id),
+            OtelStatus::Ok
+        );
         provider.shutdown().unwrap();
         drop(provider);
 
