@@ -471,7 +471,7 @@ fn start_mock() -> MockCollector {
                     let mut buf = Vec::new();
                     let mut tmp = [0u8; 4096];
                     // Read headers to find Content-Length, then the body.
-                    let mut content_len = 0usize;
+                    let mut content_len = None;
                     let mut header_end = None;
                     loop {
                         match sock.read(&mut tmp) {
@@ -486,13 +486,13 @@ fn start_mock() -> MockCollector {
                                             String::from_utf8_lossy(&buf[..pos]).to_lowercase();
                                         for line in headers.lines() {
                                             if let Some(v) = line.strip_prefix("content-length:") {
-                                                content_len = v.trim().parse().unwrap_or(0);
+                                                content_len = v.trim().parse().ok();
                                             }
                                         }
                                     }
                                 }
-                                if let Some(he) = header_end {
-                                    if buf.len() >= he + content_len {
+                                if let (Some(he), Some(content_len)) = (header_end, content_len) {
+                                    if buf.len().saturating_sub(he) >= content_len {
                                         break;
                                     }
                                 }
@@ -500,14 +500,15 @@ fn start_mock() -> MockCollector {
                             Err(_) => break,
                         }
                     }
-                    if let Some(he) = header_end {
-                        let body_len = content_len.min(buf.len().saturating_sub(he));
-                        b2.fetch_add(body_len, Ordering::Relaxed);
-                        if String::from_utf8_lossy(&buf[..he]).contains("POST /v1/metrics") {
-                            bodies2
-                                .lock()
-                                .unwrap()
-                                .push(buf[he..he + body_len].to_vec());
+                    if let (Some(he), Some(content_len)) = (header_end, content_len) {
+                        if buf.len().saturating_sub(he) >= content_len {
+                            b2.fetch_add(content_len, Ordering::Relaxed);
+                            if String::from_utf8_lossy(&buf[..he]).contains("POST /v1/metrics") {
+                                bodies2
+                                    .lock()
+                                    .unwrap()
+                                    .push(buf[he..he + content_len].to_vec());
+                            }
                         }
                     }
                     let _ = sock.write_all(

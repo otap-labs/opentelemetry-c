@@ -512,6 +512,17 @@ pub unsafe extern "C" fn otel_metric_view_builder_build(
             Some(builder) => builder,
             None => return OtelStatus::InvalidArgument,
         };
+        if builder
+            .config
+            .name_pattern
+            .as_ref()
+            .is_some_and(|pattern| pattern.bytes().filter(|byte| *byte == b'*').count() > 1)
+        {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "metric view name pattern supports at most one '*'",
+            );
+        }
         if let Err(err) = stream(&builder.config) {
             return fail_owned(
                 OtelStatus::InvalidConfig,
@@ -872,5 +883,49 @@ mod tests {
         assert!(wildcard_matches("exact", "exact"));
         assert!(!wildcard_matches("requests_*", "http_requests"));
         assert!(!wildcard_matches("exact", "exact_suffix"));
+    }
+
+    #[test]
+    fn view_build_rejects_multiple_wildcards_without_consuming_builder() {
+        unsafe {
+            let builder = otel_metric_view_builder_new();
+            let invalid = b"http_*_*";
+            assert_eq!(
+                otel_metric_view_builder_set_name_pattern(
+                    builder,
+                    OtelStringView {
+                        ptr: invalid.as_ptr().cast(),
+                        len: invalid.len(),
+                    },
+                ),
+                OtelStatus::Ok
+            );
+            let mut view = std::ptr::NonNull::<OtelMetricView>::dangling().as_ptr();
+            assert_eq!(
+                otel_metric_view_builder_build(builder, &mut view),
+                OtelStatus::InvalidConfig
+            );
+            assert!(view.is_null());
+            assert!(crate::api_ffi::test_probe::last_error().contains("at most one '*'"));
+
+            let valid = b"http_*";
+            assert_eq!(
+                otel_metric_view_builder_set_name_pattern(
+                    builder,
+                    OtelStringView {
+                        ptr: valid.as_ptr().cast(),
+                        len: valid.len(),
+                    },
+                ),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_metric_view_builder_build(builder, &mut view),
+                OtelStatus::Ok
+            );
+            assert!(!view.is_null());
+            otel_metric_view_destroy(view);
+            otel_metric_view_builder_destroy(builder);
+        }
     }
 }

@@ -32,8 +32,8 @@ use opentelemetry_c_abi::{
 
 use crate::error::{fail, fail_abi};
 
-/// Upper bound on a C-provided event attribute count (protects the up-front `Vec`).
-const MAX_EVENT_ATTRIBUTES: usize = 1_048_576;
+/// Upper bound on a C-provided attribute count (protects the up-front `Vec`).
+const MAX_ATTRIBUTES: usize = 1_048_576;
 
 // ---- Context types (opaque `*mut c_void` on the wire) ----------------------
 
@@ -157,10 +157,10 @@ pub(crate) unsafe fn collect_key_values(
             "attribute array is NULL with non-zero count",
         ));
     }
-    if count > MAX_EVENT_ATTRIBUTES {
+    if count > MAX_ATTRIBUTES {
         return Err(fail(
             OtelStatus::InvalidArgument,
-            "event attribute count exceeds the maximum supported value",
+            "attribute count exceeds the maximum supported value",
         ));
     }
     let within_bounds = count
@@ -169,14 +169,14 @@ pub(crate) unsafe fn collect_key_values(
     if !within_bounds {
         return Err(fail(
             OtelStatus::InvalidArgument,
-            "event attribute count exceeds the maximum supported size",
+            "attribute array exceeds the maximum supported size",
         ));
     }
     let mut out: Vec<KeyValue> = Vec::new();
     if out.try_reserve(count).is_err() {
         return Err(fail(
             OtelStatus::InternalError,
-            "failed to allocate space for event attributes",
+            "failed to allocate space for attributes",
         ));
     }
     // SAFETY: non-NULL, `count` valid elements, total size within isize::MAX.
