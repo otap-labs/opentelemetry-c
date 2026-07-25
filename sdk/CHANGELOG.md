@@ -4,6 +4,13 @@
 
 ### Added
 
+- Optional OTLP/gRPC Metrics export with explicit additive C transport and compression
+  selectors. HTTP/protobuf remains the default. The gRPC path owns one bounded Tokio runtime
+  per exporter, maps existing string headers to validated ASCII tonic metadata, supports
+  transport-specific gzip/zstd features and opt-in tonic TLS, and requires no Rust runtime
+  management by C applications. HTTP-only builds exclude tonic and all gRPC exporter
+  dependencies; gRPC-only builds exclude reqwest. Reqwest's pre-existing blocking client
+  continues to resolve its own transitive Tokio dependency.
 - Experimental Metrics SDK: OTLP HTTP/protobuf exporter, periodic reader, multiple-reader
   pipelines, independent Metrics global install/flush/shutdown, cumulative/delta/low-memory
   temporality, declarative views, attribute allow-lists, cardinality limits, explicit and
