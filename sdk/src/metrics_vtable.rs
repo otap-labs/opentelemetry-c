@@ -677,10 +677,12 @@ mod tests {
     use super::*;
     use std::os::raw::c_char;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use opentelemetry_c_api as api;
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader};
+
+    static API_GLOBAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn sv(value: &'static str) -> OtelStringView {
         OtelStringView {
@@ -903,6 +905,9 @@ mod tests {
 
     #[test]
     fn callback_state_is_released_once_when_sdk_creation_panics() {
+        let _global_guard = API_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let exporter = InMemoryMetricExporter::default();
         let reader = PeriodicReader::builder(exporter).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
@@ -967,6 +972,9 @@ mod tests {
 
     #[test]
     fn public_observer_token_expires_and_destroy_disables_callback() {
+        let _global_guard = API_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let exporter = InMemoryMetricExporter::default();
         let reader = PeriodicReader::builder(exporter).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
