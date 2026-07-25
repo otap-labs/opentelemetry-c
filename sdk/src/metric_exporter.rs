@@ -1,13 +1,93 @@
 //! Opaque Metrics exporter handle.
 
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use std::time::Duration;
+
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::error::OTelSdkResult;
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::metrics::data::ResourceMetrics;
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::metrics::Temporality;
+
 use crate::handle::{destroy, guard_unit, HasMagic};
 
 pub(crate) enum MetricExporterImpl {
-    #[cfg(feature = "otlp")]
-    Otlp(opentelemetry_otlp::MetricExporter),
+    #[cfg(feature = "otlp-http")]
+    OtlpHttp(opentelemetry_otlp::MetricExporter),
+    #[cfg(feature = "otlp-grpc")]
+    OtlpGrpc(GrpcMetricExporter),
     #[cfg(test)]
     #[allow(dead_code)]
     Test(TestMetricExporter),
+}
+
+#[cfg(feature = "otlp-grpc")]
+pub(crate) struct GrpcMetricExporter {
+    // Field order is intentional: the channel/exporter is dropped before its runtime.
+    exporter: opentelemetry_otlp::MetricExporter,
+    runtime: tokio::runtime::Runtime,
+}
+
+#[cfg(feature = "otlp-grpc")]
+impl GrpcMetricExporter {
+    pub(crate) fn new(
+        exporter: opentelemetry_otlp::MetricExporter,
+        runtime: tokio::runtime::Runtime,
+    ) -> Self {
+        Self { exporter, runtime }
+    }
+}
+
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+impl PushMetricExporter for MetricExporterImpl {
+    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.export(metrics).await,
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => {
+                exporter.runtime.block_on(exporter.exporter.export(metrics))
+            }
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.export(metrics).await,
+        }
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.force_flush(),
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => exporter.exporter.force_flush(),
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.force_flush(),
+        }
+    }
+
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.shutdown_with_timeout(timeout),
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => exporter.exporter.shutdown_with_timeout(timeout),
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.shutdown_with_timeout(timeout),
+        }
+    }
+
+    fn temporality(&self) -> Temporality {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.temporality(),
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => exporter.exporter.temporality(),
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.temporality(),
+        }
+    }
 }
 
 #[cfg(test)]

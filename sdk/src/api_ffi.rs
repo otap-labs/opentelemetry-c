@@ -190,9 +190,9 @@ pub(crate) mod test_probe {
 
     pub static METRICS_GLOBAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    // Only the OTLP-backed `set_as_global` unit test drives this probe; without the `otlp`
+    // Only the OTLP-backed `set_as_global` unit test drives this probe; without `otlp-http`
     // feature that test is compiled out, so gate the helper to match (avoids dead_code).
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     pub fn registered() -> Option<(*const OtelImplVtable, *mut c_void)> {
         imp::REGISTERED
             .lock()

@@ -10,20 +10,20 @@ use crate::handle::{
 };
 use crate::metric_exporter::{MetricExporterImpl, OtelMetricExporter};
 
-#[cfg(feature = "otlp")]
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
 use opentelemetry_sdk::metrics::PeriodicReaderBuilder;
-#[cfg(any(feature = "otlp", test))]
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 
 const BUILDER_MAGIC: u64 = 0x4F54_4C43_4D52_4442;
 const READER_MAGIC: u64 = 0x4F54_4C43_4D52_4452;
 
 pub(crate) enum PeriodicMetricReaderImpl {
-    #[cfg(feature = "otlp")]
-    Otlp(PeriodicReader<opentelemetry_otlp::MetricExporter>),
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
+    Otlp(PeriodicReader<MetricExporterImpl>),
     #[cfg(test)]
     Test {
-        reader: PeriodicReader<crate::metric_exporter::TestMetricExporter>,
+        reader: PeriodicReader<MetricExporterImpl>,
         #[allow(dead_code)]
         configured_interval: Option<Duration>,
     },
@@ -32,7 +32,7 @@ pub(crate) enum PeriodicMetricReaderImpl {
 impl PeriodicMetricReaderImpl {
     pub(crate) fn shutdown(self) {
         match self {
-            #[cfg(feature = "otlp")]
+            #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
             Self::Otlp(reader) => {
                 let provider = SdkMeterProvider::builder().with_reader(reader).build();
                 let _ = provider.shutdown();
@@ -154,23 +154,15 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_set_exporter(
     })
 }
 
-#[cfg(feature = "otlp")]
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
 fn build_reader(
     exporter: MetricExporterImpl,
     interval: Option<Duration>,
 ) -> PeriodicMetricReaderImpl {
     match exporter {
-        MetricExporterImpl::Otlp(exporter) => {
-            let builder: PeriodicReaderBuilder<_> = PeriodicReader::builder(exporter);
-            let builder = match interval {
-                Some(interval) => builder.with_interval(interval),
-                None => builder,
-            };
-            PeriodicMetricReaderImpl::Otlp(builder.build())
-        }
         #[cfg(test)]
         MetricExporterImpl::Test(exporter) => {
-            let builder = PeriodicReader::builder(exporter);
+            let builder = PeriodicReader::builder(MetricExporterImpl::Test(exporter));
             let builder = match interval {
                 Some(interval) => builder.with_interval(interval),
                 None => builder,
@@ -179,6 +171,14 @@ fn build_reader(
                 reader: builder.build(),
                 configured_interval: interval,
             }
+        }
+        exporter => {
+            let builder: PeriodicReaderBuilder<_> = PeriodicReader::builder(exporter);
+            let builder = match interval {
+                Some(interval) => builder.with_interval(interval),
+                None => builder,
+            };
+            PeriodicMetricReaderImpl::Otlp(builder.build())
         }
     }
 }
@@ -212,7 +212,7 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_build(
                 )
             }
         };
-        #[cfg(feature = "otlp")]
+        #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
         {
             let reader = build_reader(exporter, builder.interval);
             unsafe {
@@ -223,12 +223,12 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_build(
             };
             OtelStatus::Ok
         }
-        #[cfg(not(feature = "otlp"))]
+        #[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc")))]
         {
             let _ = exporter;
             fail(
                 OtelStatus::InvalidConfig,
-                "periodic metric reader is unavailable without the `otlp` feature",
+                "periodic metric reader is unavailable without an OTLP transport feature",
             )
         }
     })
@@ -259,7 +259,7 @@ pub(crate) fn test_reader_with_lifecycle(
     into_raw(OtelPeriodicMetricReader {
         magic: READER_MAGIC,
         reader: PeriodicMetricReaderImpl::Test {
-            reader: PeriodicReader::builder(exporter).build(),
+            reader: PeriodicReader::builder(MetricExporterImpl::Test(exporter)).build(),
             configured_interval: None,
         },
     })
@@ -268,14 +268,14 @@ pub(crate) fn test_reader_with_lifecycle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     use crate::metric_exporter::otel_metric_exporter_destroy;
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     use crate::metric_exporter::TestMetricExporterLifecycle;
     use crate::metric_exporter::{OtelMetricExporter, TestMetricExporter};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     use std::sync::{Condvar, Mutex};
 
     fn test_exporter(drops: &Arc<AtomicUsize>) -> *mut OtelMetricExporter {
@@ -284,7 +284,7 @@ mod tests {
         )))
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     fn lifecycle_exporter(
         drops: &Arc<AtomicUsize>,
         shutdowns: &Arc<AtomicUsize>,
@@ -301,7 +301,7 @@ mod tests {
         )))
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     fn wait_for_drop(dropped: &Arc<(Mutex<bool>, Condvar)>) {
         let (dropped, condition) = &**dropped;
         let guard = dropped
@@ -364,7 +364,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     #[test]
     fn exporter_transfer_duplicate_rejection_and_reader_destruction_are_exactly_once() {
         unsafe {
@@ -409,7 +409,7 @@ mod tests {
                     configured_interval,
                     ..
                 } => assert_eq!(*configured_interval, Some(Duration::from_millis(250))),
-                #[cfg(feature = "otlp")]
+                #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
                 PeriodicMetricReaderImpl::Otlp(_) => panic!("expected test reader"),
             }
             otel_periodic_metric_reader_builder_destroy(builder);
@@ -454,7 +454,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "otlp"))]
+    #[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc")))]
     #[test]
     fn unavailable_reader_build_releases_transferred_exporter_once() {
         unsafe {

@@ -302,19 +302,19 @@ pub unsafe extern "C" fn otel_batch_span_processor_builder_build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use crate::otlp_exporter::{
         otel_otlp_trace_exporter_builder_build, otel_otlp_trace_exporter_builder_destroy,
         otel_otlp_trace_exporter_builder_new, otel_otlp_trace_exporter_builder_set_endpoint,
     };
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use crate::span_processor::otel_span_processor_destroy;
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use crate::trace_exporter::otel_trace_exporter_destroy;
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use opentelemetry_c_abi::OtelStringView;
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     fn sv(s: &str) -> OtelStringView {
         OtelStringView {
             ptr: s.as_ptr().cast::<std::os::raw::c_char>(),
@@ -323,7 +323,7 @@ mod tests {
     }
 
     /// Build a valid exporter handle (constructing it does not connect).
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     fn make_exporter() -> *mut OtelTraceExporter {
         unsafe {
             let eb = otel_otlp_trace_exporter_builder_new();
@@ -345,7 +345,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     #[test]
     fn set_exporter_failure_leaves_exporter_caller_owned() {
         unsafe {
@@ -360,7 +360,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     #[test]
     fn set_exporter_success_transfers_ownership() {
         unsafe {
@@ -391,7 +391,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     #[test]
     fn build_success_consumes_exporter() {
         unsafe {
