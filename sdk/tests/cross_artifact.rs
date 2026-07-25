@@ -19,8 +19,13 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+use opentelemetry_proto::tonic::common::v1::{any_value, KeyValue};
+use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point};
+use prost::Message;
 
 fn find_cc() -> Option<String> {
     if let Ok(cc) = std::env::var("CC") {
@@ -94,6 +99,24 @@ const HARNESS_C: &str = r#"
 #include <stddef.h>
 #include <stdlib.h>
 typedef struct { const char* ptr; size_t len; } otel_string_view_t;
+typedef union {
+    otel_string_view_t string_value;
+    uint8_t bool_value;
+    int64_t int64_value;
+    double double_value;
+} otel_attribute_value_t;
+typedef struct {
+    otel_string_view_t key;
+    uint32_t value_type;
+    otel_attribute_value_t value;
+} otel_key_value_t;
+typedef struct {
+    uint64_t struct_size;
+    otel_string_view_t description;
+    otel_string_view_t unit;
+    const double* boundaries;
+    size_t boundary_count;
+} otel_instrument_options_t;
 typedef struct otel_sdk_builder_t otel_sdk_builder_t;
 typedef struct otel_sdk_t otel_sdk_t;
 typedef struct otel_tracer_provider_t otel_tracer_provider_t;
@@ -163,6 +186,7 @@ extern void otel_periodic_metric_reader_builder_destroy(otel_periodic_metric_rea
 extern void otel_periodic_metric_reader_destroy(otel_periodic_metric_reader_t*);
 extern otel_sdk_builder_t* otel_sdk_builder_new(void);
 extern int otel_sdk_builder_set_service_name(otel_sdk_builder_t*, otel_string_view_t);
+extern int otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t*, otel_key_value_t);
 extern int otel_sdk_builder_add_span_processor(otel_sdk_builder_t*, otel_span_processor_t*);
 extern int otel_sdk_builder_add_metric_reader(otel_sdk_builder_t*, otel_periodic_metric_reader_t*);
 extern int otel_sdk_build(otel_sdk_builder_t*, otel_sdk_t**);
@@ -182,8 +206,12 @@ static int observable_destroyed=0;
 static otel_observable_gauge_u64_t* observable=(void*)0;
 static void observe_queue(otel_observer_u64_t* observer, void* user_data){
     (void)user_data;
+    otel_key_value_t attr;
+    attr.key=cs("route");
+    attr.value_type=0;
+    attr.value.string_value=cs("checkout");
     observable_calls++;
-    otel_observer_u64_observe(observer,17,(void*)0,0);
+    otel_observer_u64_observe(observer,17,&attr,1);
 }
 static void destroy_observable_state(void* user_data){
     observable_destroyed++;
@@ -207,23 +235,38 @@ static int metrics_work(void){
     otel_counter_u64_t* c=(void*)0;
     otel_gauge_f64_t* g=(void*)0;
     otel_histogram_f64_t* h=(void*)0;
+    double boundaries[2]={5.0,10.0};
+    otel_instrument_options_t counter_options={
+        sizeof(otel_instrument_options_t),cs("completed requests"),cs("{request}"),(void*)0,0
+    };
+    otel_instrument_options_t gauge_options={
+        sizeof(otel_instrument_options_t),cs("queued work"),cs("{item}"),(void*)0,0
+    };
+    otel_instrument_options_t histogram_options={
+        sizeof(otel_instrument_options_t),cs("request duration"),cs("ms"),boundaries,2
+    };
+    otel_key_value_t attr;
+    attr.key=cs("route");
+    attr.value_type=0;
+    attr.value.string_value=cs("checkout");
 
     p=otel_global_meter_provider();
     if (!p){ result=1; goto cleanup; }
-    m=otel_meter_provider_get_meter(p,cs("metric-instr"),cs("1.0"),emp());
+    m=otel_meter_provider_get_meter(
+        p,cs("metric-instr"),cs("1.2.3"),cs("https://schema.example/metrics/1.0"));
     if (!m){ result=2; goto cleanup; }
-    if (otel_meter_create_u64_counter(m,cs("requests"),(void*)0,&c)!=0||!c){
+    if (otel_meter_create_u64_counter(m,cs("requests"),&counter_options,&c)!=0||!c){
         result=3; goto cleanup;
     }
-    if (otel_meter_create_f64_gauge(m,cs("queue_depth"),(void*)0,&g)!=0||!g){
+    if (otel_meter_create_f64_gauge(m,cs("queue_depth"),&gauge_options,&g)!=0||!g){
         result=4; goto cleanup;
     }
-    if (otel_meter_create_f64_histogram(m,cs("duration"),(void*)0,&h)!=0||!h){
+    if (otel_meter_create_f64_histogram(m,cs("duration"),&histogram_options,&h)!=0||!h){
         result=5; goto cleanup;
     }
-    if (otel_counter_u64_add(c,3,(void*)0,0)!=0){ result=6; goto cleanup; }
-    if (otel_gauge_f64_record(g,2.5,(void*)0,0)!=0){ result=7; goto cleanup; }
-    if (otel_histogram_f64_record(h,7.5,(void*)0,0)!=0){ result=8; goto cleanup; }
+    if (otel_counter_u64_add(c,3,&attr,1)!=0){ result=6; goto cleanup; }
+    if (otel_gauge_f64_record(g,2.5,&attr,1)!=0){ result=7; goto cleanup; }
+    if (otel_histogram_f64_record(h,7.5,&attr,1)!=0){ result=8; goto cleanup; }
 
 cleanup:
     if (h) otel_histogram_f64_destroy(h);
@@ -240,16 +283,20 @@ static int observable_setup(void){
     otel_meter_t* m=(void*)0;
     otel_observable_gauge_u64_t* created=(void*)0;
     void* state=(void*)0;
+    otel_instrument_options_t options={
+        sizeof(otel_instrument_options_t),cs("observable queue"),cs("{item}"),(void*)0,0
+    };
 
     p=otel_global_meter_provider();
     if (!p){ result=1; goto cleanup; }
-    m=otel_meter_provider_get_meter(p,cs("observable-instr"),cs("1.0"),emp());
+    m=otel_meter_provider_get_meter(
+        p,cs("observable-instr"),cs("2.0"),cs("https://schema.example/observable/1.0"));
     if (!m){ result=2; goto cleanup; }
     state=malloc(1);
     if (!state){ result=3; goto cleanup; }
 
     create_status=otel_meter_create_u64_observable_gauge(
-        m,cs("observable_queue"),(void*)0,observe_queue,state,
+        m,cs("observable_queue"),&options,observe_queue,state,
         destroy_observable_state,&created);
     /*
      * The non-NULL out/callback/meter and fixed valid name/options above satisfy all
@@ -316,6 +363,15 @@ int main(void){
     if (!b){ result=9; goto cleanup; }
     if (otel_sdk_builder_set_service_name(b,cs("cross-artifact"))!=0){
         result=10; goto cleanup;
+    }
+    {
+        otel_key_value_t attr;
+        attr.key=cs("deployment.environment");
+        attr.value_type=0;
+        attr.value.string_value=cs("integration");
+        if (otel_sdk_builder_add_resource_attribute(b,attr)!=0){
+            result=74; goto cleanup;
+        }
     }
     if (otel_sdk_builder_add_span_processor(b,processor)!=0){
         result=11; goto cleanup;
@@ -386,20 +442,28 @@ cleanup:
 }
 "#;
 
-/// Minimal mock OTLP/HTTP collector: accepts POSTs and accumulates total body bytes.
-fn start_mock() -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicBool>) {
+struct MockCollector {
+    port: u16,
+    bytes: Arc<AtomicUsize>,
+    metric_bodies: Arc<Mutex<Vec<Vec<u8>>>>,
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+/// Minimal mock OTLP/HTTP collector: accepts POSTs and retains complete Metrics bodies.
+fn start_mock() -> MockCollector {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
     let bytes = Arc::new(AtomicUsize::new(0));
-    let metric_bytes = Arc::new(AtomicUsize::new(0));
+    let metric_bodies = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(AtomicBool::new(false));
-    let (b2, mb2, s2) = (
+    let (b2, bodies2, s2) = (
         Arc::clone(&bytes),
-        Arc::clone(&metric_bytes),
+        Arc::clone(&metric_bodies),
         Arc::clone(&stop),
     );
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         while !s2.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((mut sock, _)) => {
@@ -437,10 +501,13 @@ fn start_mock() -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicBool>) {
                         }
                     }
                     if let Some(he) = header_end {
-                        let body_len = buf.len().saturating_sub(he);
+                        let body_len = content_len.min(buf.len().saturating_sub(he));
                         b2.fetch_add(body_len, Ordering::Relaxed);
                         if String::from_utf8_lossy(&buf[..he]).contains("POST /v1/metrics") {
-                            mb2.fetch_add(body_len, Ordering::Relaxed);
+                            bodies2
+                                .lock()
+                                .unwrap()
+                                .push(buf[he..he + body_len].to_vec());
                         }
                     }
                     let _ = sock.write_all(
@@ -454,7 +521,138 @@ fn start_mock() -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicBool>) {
             }
         }
     });
-    (port, bytes, metric_bytes, stop)
+    MockCollector {
+        port,
+        bytes,
+        metric_bodies,
+        stop,
+        thread,
+    }
+}
+
+fn has_string_attribute(attributes: &[KeyValue], key: &str, expected: &str) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.key == key
+            && matches!(
+                attribute.value.as_ref().and_then(|value| value.value.as_ref()),
+                Some(any_value::Value::StringValue(value)) if value == expected
+            )
+    })
+}
+
+fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
+    let requests = bodies
+        .iter()
+        .map(|body| ExportMetricsServiceRequest::decode(body.as_slice()).expect("decode OTLP"))
+        .collect::<Vec<_>>();
+
+    let mut resource_verified = false;
+    let mut scope_verified = false;
+    let mut counter_verified = false;
+    let mut gauge_verified = false;
+    let mut histogram_verified = false;
+    let mut observable_verified = false;
+
+    for request in &requests {
+        for resource_metrics in &request.resource_metrics {
+            if let Some(resource) = &resource_metrics.resource {
+                resource_verified |=
+                    has_string_attribute(&resource.attributes, "service.name", "cross-artifact")
+                        && has_string_attribute(
+                            &resource.attributes,
+                            "deployment.environment",
+                            "integration",
+                        );
+            }
+            for scope_metrics in &resource_metrics.scope_metrics {
+                if let Some(scope) = &scope_metrics.scope {
+                    if scope.name == "metric-instr" {
+                        scope_verified |= scope.version == "1.2.3"
+                            && scope_metrics.schema_url == "https://schema.example/metrics/1.0";
+                    }
+                }
+                for metric in &scope_metrics.metrics {
+                    match (&*metric.name, metric.data.as_ref()) {
+                        ("requests", Some(metric::Data::Sum(sum))) => {
+                            counter_verified |= metric.description == "completed requests"
+                                && metric.unit == "{request}"
+                                && sum.is_monotonic
+                                && sum.data_points.iter().any(|point| {
+                                    matches!(point.value, Some(number_data_point::Value::AsInt(3)))
+                                        && has_string_attribute(
+                                            &point.attributes,
+                                            "route",
+                                            "checkout",
+                                        )
+                                });
+                        }
+                        ("queue_depth", Some(metric::Data::Gauge(gauge))) => {
+                            gauge_verified |= metric.description == "queued work"
+                                && metric.unit == "{item}"
+                                && gauge.data_points.iter().any(|point| {
+                                    matches!(
+                                        point.value,
+                                        Some(number_data_point::Value::AsDouble(value))
+                                            if value == 2.5
+                                    ) && has_string_attribute(
+                                        &point.attributes,
+                                        "route",
+                                        "checkout",
+                                    )
+                                });
+                        }
+                        ("duration", Some(metric::Data::Histogram(histogram))) => {
+                            histogram_verified |= metric.description == "request duration"
+                                && metric.unit == "ms"
+                                && histogram.data_points.iter().any(|point| {
+                                    point.count == 1
+                                        && point.sum == Some(7.5)
+                                        && point.explicit_bounds == [5.0, 10.0]
+                                        && point.bucket_counts == [0, 1, 0]
+                                        && has_string_attribute(
+                                            &point.attributes,
+                                            "route",
+                                            "checkout",
+                                        )
+                                });
+                        }
+                        ("observable_queue", Some(metric::Data::Gauge(gauge))) => {
+                            observable_verified |= metric.description == "observable queue"
+                                && metric.unit == "{item}"
+                                && gauge.data_points.iter().any(|point| {
+                                    matches!(point.value, Some(number_data_point::Value::AsInt(17)))
+                                        && has_string_attribute(
+                                            &point.attributes,
+                                            "route",
+                                            "checkout",
+                                        )
+                                });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(resource_verified, "resource attributes were not exported");
+    assert!(
+        scope_verified,
+        "instrumentation scope name, version, or schema URL was not exported"
+    );
+    assert!(
+        counter_verified,
+        "counter metadata/value/attributes missing"
+    );
+    assert!(gauge_verified, "gauge metadata/value/attributes missing");
+    assert!(
+        histogram_verified,
+        "histogram metadata/value/boundaries/attributes missing"
+    );
+    assert!(
+        observable_verified,
+        "observable metric metadata/value/attributes missing"
+    );
 }
 
 #[test]
@@ -530,9 +728,9 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         String::from_utf8_lossy(&compile.stderr)
     );
 
-    let (port, bytes, metric_bytes, stop) = start_mock();
-    let endpoint = format!("http://127.0.0.1:{port}/v1/traces");
-    let metrics_endpoint = format!("http://127.0.0.1:{port}/v1/metrics");
+    let collector = start_mock();
+    let endpoint = format!("http://127.0.0.1:{}/v1/traces", collector.port);
+    let metrics_endpoint = format!("http://127.0.0.1:{}/v1/metrics", collector.port);
     let run = Command::new(&out)
         .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &endpoint)
         .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
@@ -543,10 +741,11 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     // Wait (bounded) for the collector to receive the export. This avoids a fixed sleep that can
     // stop the mock too early under slow CI while still failing promptly if no POST arrives.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while bytes.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+    while collector.bytes.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    stop.store(true, Ordering::Release);
+    collector.stop.store(true, Ordering::Release);
+    collector.thread.join().expect("join mock collector");
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
@@ -558,15 +757,17 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr),
     );
-    let received = bytes.load(Ordering::Relaxed);
+    let received = collector.bytes.load(Ordering::Relaxed);
     assert!(
         received > 0,
         "the mock collector received no exported span bytes — API-only calls after SDK \
          install did NOT reach the SDK across the artifact boundary"
     );
+    let metric_bodies = collector.metric_bodies.lock().unwrap();
     assert!(
-        metric_bytes.load(Ordering::Relaxed) > 0,
-        "the mock collector received no OTLP metric bytes through the API-owned Metrics slot"
+        !metric_bodies.is_empty(),
+        "the mock collector received no OTLP metric requests through the API-owned Metrics slot"
     );
+    assert_decoded_metrics(&metric_bodies);
     eprintln!("cross-artifact export OK: {received} protobuf bytes via API-only path");
 }

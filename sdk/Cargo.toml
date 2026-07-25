@@ -41,6 +41,8 @@ opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "testing
 # slot, span/tracer ops). Linking the API rlib here also resolves this crate's `api_ffi`
 # extern `otel_api_*` imports for the bench binary. Benchmark/test only — never a runtime dep.
 opentelemetry-c-api = { path = "../api" }
+opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics"] }
+prost = "=0.14.4"
 criterion = { workspace = true }
 
 [[bench]]
