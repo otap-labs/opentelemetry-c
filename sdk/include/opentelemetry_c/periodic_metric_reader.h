@@ -11,6 +11,11 @@ extern "C" {
 typedef struct otel_periodic_metric_reader_builder_t otel_periodic_metric_reader_builder_t;
 typedef struct otel_periodic_metric_reader_t otel_periodic_metric_reader_t;
 
+/*
+ * The pinned OpenTelemetry Rust 0.32 PeriodicReader uses a fixed five-second exporter
+ * timeout while shutting down. otel_sdk_metrics_shutdown() cannot override that reader
+ * timeout; its timeout_millis argument is currently advisory for Metrics.
+ */
 otel_periodic_metric_reader_builder_t* otel_periodic_metric_reader_builder_new(void);
 void otel_periodic_metric_reader_builder_destroy(otel_periodic_metric_reader_builder_t* builder);
 otel_status_t otel_periodic_metric_reader_builder_set_interval_millis(
