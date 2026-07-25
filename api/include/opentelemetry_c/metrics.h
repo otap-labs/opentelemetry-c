@@ -119,9 +119,10 @@ void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
 /*
  * Observable callbacks run during reader collection and may be invoked concurrently by
  * different readers. They must finish in finite time and must not retain the observer.
- * Destroying the public observable handle disables future callback work but callback state
- * remains owned by the SDK pipeline until provider shutdown/drop. user_data_destroy runs
- * exactly once when that final state reference is released.
+ * Destroying the public observable handle disables future callback work and releases its
+ * user-data ownership. user_data_destroy runs exactly once after any callback already in
+ * flight releases its temporary reference; it does not depend on the SDK pipeline closure
+ * being unregistered or dropped.
  */
 #define OTEL_DECLARE_OBSERVABLE_CREATE(fn, type, callback_type) \
     otel_status_t fn(const otel_meter_t* meter, otel_string_view_t name, \

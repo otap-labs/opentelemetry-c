@@ -358,6 +358,8 @@ pub struct OtelMetricInstrumentConfig {
     pub boundaries: *const f64,
     pub boundary_count: usize,
     pub callback: Option<extern "C" fn(observer_ctx: *mut c_void, state: *mut c_void)>,
+    /// For observable creation, ownership transfers to `meter_create_instrument` on entry
+    /// when this pointer and `callback_state_free` are present, even if creation fails.
     pub callback_state: *mut c_void,
     pub callback_state_free: Option<extern "C" fn(state: *mut c_void)>,
 }
@@ -521,14 +523,35 @@ pub struct OtelMetricsVtable {
 /// Minimum Metrics vtable size required by this API version.
 pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelMetricsVtable>();
 
-pub fn trace_vtable_compatible(vtable: &OtelImplVtable) -> bool {
-    vtable.abi_version == OTEL_IMPL_ABI_VERSION
-        && vtable.struct_size >= OTEL_IMPL_VTABLE_REQUIRED_SIZE
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelVtableHeader {
+    pub abi_version: u32,
+    pub struct_size: usize,
 }
 
-pub fn metrics_vtable_compatible(vtable: &OtelMetricsVtable) -> bool {
-    vtable.abi_version == OTEL_IMPL_ABI_VERSION
-        && vtable.struct_size >= OTEL_METRICS_VTABLE_REQUIRED_SIZE
+/// Validate the stable prefix of a trace implementation vtable.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for at least
+/// [`OtelVtableHeader`]. No bytes beyond that prefix are read until the size check succeeds.
+pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
+    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    header.abi_version == OTEL_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_IMPL_VTABLE_REQUIRED_SIZE
+}
+
+/// Validate the stable prefix of a Metrics implementation vtable.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for at least
+/// [`OtelVtableHeader`]. No bytes beyond that prefix are read until the size check succeeds.
+pub unsafe fn metrics_vtable_compatible(vtable: *const OtelMetricsVtable) -> bool {
+    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    header.abi_version == OTEL_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_METRICS_VTABLE_REQUIRED_SIZE
 }
 
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.

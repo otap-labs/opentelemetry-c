@@ -91,6 +91,17 @@ pub struct OtelInstrumentOptions {
     pub boundary_count: usize,
 }
 
+#[repr(C)]
+struct OtelInstrumentOptionsV1 {
+    struct_size: u64,
+    description: OtelStringView,
+    unit: OtelStringView,
+    boundaries: *const f64,
+    boundary_count: usize,
+}
+
+const OTEL_INSTRUMENT_OPTIONS_V1_SIZE: u64 = std::mem::size_of::<OtelInstrumentOptionsV1>() as u64;
+
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(std::mem::size_of::<OtelInstrumentOptions>() == 56);
@@ -139,13 +150,17 @@ unsafe fn validate_instrument_config(
     let mut boundaries = std::ptr::null();
     let mut boundary_count = 0;
     if !options.is_null() {
-        let options = unsafe { &*options };
-        if options.struct_size < std::mem::size_of::<OtelInstrumentOptions>() as u64 {
+        // `struct_size` is the stable prefix. Read it without forming a reference to the
+        // current full structure, so a future API can safely reject a genuinely shorter V1
+        // caller before accessing fields that are not present.
+        let struct_size = unsafe { options.cast::<u64>().read() };
+        if struct_size < OTEL_INSTRUMENT_OPTIONS_V1_SIZE {
             return Err(fail(
                 OtelStatus::InvalidConfig,
                 "instrument options struct_size is too small",
             ));
         }
+        let options = unsafe { &*options.cast::<OtelInstrumentOptionsV1>() };
         unsafe { options.description.as_str() }.map_err(fail_abi)?;
         let unit_str = unsafe { options.unit.as_str() }.map_err(fail_abi)?;
         if unit_str.len() > 63 || !unit_str.is_ascii() {
@@ -325,10 +340,12 @@ fn create_instrument(
     Ok((meter.vtable, ctx))
 }
 
+#[allow(unknown_lints)]
+#[allow(edition_2024_expr_fragment_specifier)]
 macro_rules! define_sync_instrument {
     (
-        $handle:ident, $magic:expr_2021, $create:ident, $record:ident, $destroy_fn:ident,
-        $kind:ident, $number:ident, $value:ty, $vtable_record:ident, $histogram:expr_2021
+        $handle:ident, $magic:expr, $create:ident, $record:ident, $destroy_fn:ident,
+        $kind:ident, $number:ident, $value:ty, $vtable_record:ident, $histogram:expr
     ) => {
         pub struct $handle {
             magic: u64,
@@ -584,18 +601,51 @@ enum UserCallback {
 struct CallbackState {
     enabled: AtomicBool,
     callback: UserCallback,
-    user_data: *mut c_void,
-    destroy: OtelUserDataDestroy,
+    user_data: Mutex<Option<Arc<UserData>>>,
 }
 
 unsafe impl Send for CallbackState {}
 unsafe impl Sync for CallbackState {}
 
-impl Drop for CallbackState {
+struct UserData {
+    ptr: *mut c_void,
+    destroy: OtelUserDataDestroy,
+}
+
+unsafe impl Send for UserData {}
+unsafe impl Sync for UserData {}
+
+impl Drop for UserData {
     fn drop(&mut self) {
         if let Some(destroy) = self.destroy {
-            destroy(self.user_data);
+            destroy(self.ptr);
         }
+    }
+}
+
+impl CallbackState {
+    fn acquire_user_data(&self) -> Option<Arc<UserData>> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        let user_data = self
+            .user_data
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !self.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        user_data.as_ref().map(Arc::clone)
+    }
+
+    fn disable_and_release_user_data(&self) {
+        self.enabled.store(false, Ordering::Release);
+        let user_data = self
+            .user_data
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        drop(user_data);
     }
 }
 
@@ -668,16 +718,16 @@ extern "C" fn callback_trampoline_u64(observer_ctx: *mut c_void, state: *mut c_v
     let Some(state) = callback_state_clone(state) else {
         return;
     };
-    if !state.enabled.load(Ordering::Acquire) {
+    let Some(user_data) = state.acquire_user_data() else {
         return;
-    }
+    };
     let registration = ObserverRegistration::new(
         state_vtable(observer_ctx),
         observer_ctx,
         OtelMetricNumberKind::U64,
     );
     if let UserCallback::U64(callback) = state.callback {
-        callback(registration.token as *mut OtelObserverU64, state.user_data);
+        callback(registration.token as *mut OtelObserverU64, user_data.ptr);
     }
 }
 
@@ -685,16 +735,16 @@ extern "C" fn callback_trampoline_i64(observer_ctx: *mut c_void, state: *mut c_v
     let Some(state) = callback_state_clone(state) else {
         return;
     };
-    if !state.enabled.load(Ordering::Acquire) {
+    let Some(user_data) = state.acquire_user_data() else {
         return;
-    }
+    };
     let registration = ObserverRegistration::new(
         state_vtable(observer_ctx),
         observer_ctx,
         OtelMetricNumberKind::I64,
     );
     if let UserCallback::I64(callback) = state.callback {
-        callback(registration.token as *mut OtelObserverI64, state.user_data);
+        callback(registration.token as *mut OtelObserverI64, user_data.ptr);
     }
 }
 
@@ -702,16 +752,16 @@ extern "C" fn callback_trampoline_f64(observer_ctx: *mut c_void, state: *mut c_v
     let Some(state) = callback_state_clone(state) else {
         return;
     };
-    if !state.enabled.load(Ordering::Acquire) {
+    let Some(user_data) = state.acquire_user_data() else {
         return;
-    }
+    };
     let registration = ObserverRegistration::new(
         state_vtable(observer_ctx),
         observer_ctx,
         OtelMetricNumberKind::F64,
     );
     if let UserCallback::F64(callback) = state.callback {
-        callback(registration.token as *mut OtelObserverF64, state.user_data);
+        callback(registration.token as *mut OtelObserverF64, user_data.ptr);
     }
 }
 
@@ -865,7 +915,6 @@ fn create_observable(
     config.callback_state_free = Some(callback_state_free);
     let ctx = unsafe { ((*meter.vtable).meter_create_instrument)(meter.ctx, &config) };
     if ctx.is_null() {
-        callback_state_free(config.callback_state);
         if !has_last_error() {
             set_last_error("backed observable metric instrument creation failed");
         }
@@ -874,9 +923,11 @@ fn create_observable(
     Ok((meter.vtable, ctx))
 }
 
+#[allow(unknown_lints)]
+#[allow(edition_2024_expr_fragment_specifier)]
 macro_rules! define_observable_instrument {
     (
-        $handle:ident, $magic:expr_2021, $create:ident, $destroy_fn:ident,
+        $handle:ident, $magic:expr, $create:ident, $destroy_fn:ident,
         $kind:ident, $number:ident, $callback_ty:ty, $callback_variant:ident,
         $trampoline:ident
     ) => {
@@ -946,8 +997,10 @@ macro_rules! define_observable_instrument {
                 let state = Arc::new(CallbackState {
                     enabled: AtomicBool::new(true),
                     callback: UserCallback::$callback_variant(callback),
-                    user_data,
-                    destroy: user_data_destroy,
+                    user_data: Mutex::new(Some(Arc::new(UserData {
+                        ptr: user_data,
+                        destroy: user_data_destroy,
+                    }))),
                 });
                 let (vtable, ctx) = match create_observable(
                     meter,
@@ -982,7 +1035,7 @@ macro_rules! define_observable_instrument {
         pub unsafe extern "C" fn $destroy_fn(instrument: *mut $handle) {
             guard_unit(|| {
                 if let Some(instrument) = unsafe { checked_ref::<$handle>(instrument) } {
-                    instrument.state.enabled.store(false, Ordering::Release);
+                    instrument.state.disable_and_release_user_data();
                     if !instrument.vtable.is_null() {
                         unsafe { ((*instrument.vtable).instrument_free)(instrument.ctx) };
                     }

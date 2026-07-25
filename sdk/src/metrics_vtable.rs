@@ -185,24 +185,55 @@ fn configure_async_builder<I, M>(
     }
 }
 
-fn callback_lease(config: &OtelMetricInstrumentConfig) -> Result<CallbackLease, OtelStatus> {
+fn callback_lease(
+    config: &OtelMetricInstrumentConfig,
+) -> Result<Option<CallbackLease>, OtelStatus> {
+    if config.callback_state.is_null() && config.callback_state_free.is_none() {
+        return Ok(None);
+    }
     let release = config.callback_state_free.ok_or_else(|| {
         fail(
             OtelStatus::InvalidArgument,
             "observable callback state release function is NULL",
         )
     })?;
-    if config.callback.is_none() || config.callback_state.is_null() {
+    if config.callback_state.is_null() {
         return Err(fail(
             OtelStatus::InvalidArgument,
-            "observable callback or callback state is NULL",
+            "observable callback state is NULL",
         ));
     }
-    Ok(CallbackLease {
+    Ok(Some(CallbackLease {
         state: config.callback_state,
         release,
-    })
+    }))
 }
+
+fn observable_parts(
+    config: &OtelMetricInstrumentConfig,
+    lease: &mut Option<CallbackLease>,
+) -> Result<
+    (
+        extern "C" fn(observer_ctx: *mut c_void, state: *mut c_void),
+        CallbackLease,
+    ),
+    OtelStatus,
+> {
+    let callback = config
+        .callback
+        .ok_or_else(|| fail(OtelStatus::InvalidArgument, "observable callback is NULL"))?;
+    let lease = lease.take().ok_or_else(|| {
+        fail(
+            OtelStatus::InvalidArgument,
+            "observable callback state is missing",
+        )
+    })?;
+    Ok((callback, lease))
+}
+
+#[cfg(test)]
+static PANIC_AFTER_CALLBACK_TRANSFER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 extern "C" fn meter_create_instrument(
     meter_ctx: *mut c_void,
@@ -218,6 +249,14 @@ extern "C" fn meter_create_instrument(
         }
         let meter = unsafe { &*(meter_ctx as *const Meter) };
         let config = unsafe { &*config };
+        // The Metrics ABI transfers callback-state ownership on entry whenever a release
+        // function is present. Keeping the lease in this outer scope guarantees one release
+        // on every validation error or caught panic; successful observable builders move it
+        // into the SDK callback closure.
+        let mut callback_lease = match callback_lease(config) {
+            Ok(lease) => lease,
+            Err(_) => return std::ptr::null_mut(),
+        };
         let kind = match OtelMetricInstrumentKind::from_u32(config.kind) {
             Some(kind) => kind,
             None => {
@@ -242,6 +281,12 @@ extern "C" fn meter_create_instrument(
                 return std::ptr::null_mut();
             }
         };
+        #[cfg(test)]
+        if name == "panic_observable"
+            && PANIC_AFTER_CALLBACK_TRANSFER.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            panic!("test panic after callback-state ownership transfer");
+        }
         let description = match unsafe { config.description.to_string_strict() } {
             Ok(description) => description,
             Err(err) => {
@@ -332,9 +377,8 @@ extern "C" fn meter_create_instrument(
                 )
             }
             (OtelMetricInstrumentKind::ObservableCounter, OtelMetricNumberKind::U64) => {
-                let callback = config.callback.unwrap();
-                let lease = match callback_lease(config) {
-                    Ok(lease) => lease,
+                let (callback, lease) = match observable_parts(config, &mut callback_lease) {
+                    Ok(parts) => parts,
                     Err(_) => return std::ptr::null_mut(),
                 };
                 let _instrument =
@@ -351,9 +395,8 @@ extern "C" fn meter_create_instrument(
                 SdkMetricInstrument::Observable
             }
             (OtelMetricInstrumentKind::ObservableCounter, OtelMetricNumberKind::F64) => {
-                let callback = config.callback.unwrap();
-                let lease = match callback_lease(config) {
-                    Ok(lease) => lease,
+                let (callback, lease) = match observable_parts(config, &mut callback_lease) {
+                    Ok(parts) => parts,
                     Err(_) => return std::ptr::null_mut(),
                 };
                 let _instrument =
@@ -370,9 +413,8 @@ extern "C" fn meter_create_instrument(
                 SdkMetricInstrument::Observable
             }
             (OtelMetricInstrumentKind::ObservableUpDownCounter, OtelMetricNumberKind::I64) => {
-                let callback = config.callback.unwrap();
-                let lease = match callback_lease(config) {
-                    Ok(lease) => lease,
+                let (callback, lease) = match observable_parts(config, &mut callback_lease) {
+                    Ok(parts) => parts,
                     Err(_) => return std::ptr::null_mut(),
                 };
                 let _instrument = configure_async_builder(
@@ -392,9 +434,8 @@ extern "C" fn meter_create_instrument(
                 SdkMetricInstrument::Observable
             }
             (OtelMetricInstrumentKind::ObservableUpDownCounter, OtelMetricNumberKind::F64) => {
-                let callback = config.callback.unwrap();
-                let lease = match callback_lease(config) {
-                    Ok(lease) => lease,
+                let (callback, lease) = match observable_parts(config, &mut callback_lease) {
+                    Ok(parts) => parts,
                     Err(_) => return std::ptr::null_mut(),
                 };
                 let _instrument = configure_async_builder(
@@ -414,9 +455,8 @@ extern "C" fn meter_create_instrument(
                 SdkMetricInstrument::Observable
             }
             (OtelMetricInstrumentKind::ObservableGauge, OtelMetricNumberKind::U64) => {
-                let callback = config.callback.unwrap();
-                let lease = match callback_lease(config) {
-                    Ok(lease) => lease,
+                let (callback, lease) = match observable_parts(config, &mut callback_lease) {
+                    Ok(parts) => parts,
                     Err(_) => return std::ptr::null_mut(),
                 };
                 let _instrument =
@@ -433,9 +473,8 @@ extern "C" fn meter_create_instrument(
                 SdkMetricInstrument::Observable
             }
             (OtelMetricInstrumentKind::ObservableGauge, OtelMetricNumberKind::I64) => {
-                let callback = config.callback.unwrap();
-                let lease = match callback_lease(config) {
-                    Ok(lease) => lease,
+                let (callback, lease) = match observable_parts(config, &mut callback_lease) {
+                    Ok(parts) => parts,
                     Err(_) => return std::ptr::null_mut(),
                 };
                 let _instrument =
@@ -452,9 +491,8 @@ extern "C" fn meter_create_instrument(
                 SdkMetricInstrument::Observable
             }
             (OtelMetricInstrumentKind::ObservableGauge, OtelMetricNumberKind::F64) => {
-                let callback = config.callback.unwrap();
-                let lease = match callback_lease(config) {
-                    Ok(lease) => lease,
+                let (callback, lease) = match observable_parts(config, &mut callback_lease) {
+                    Ok(parts) => parts,
                     Err(_) => return std::ptr::null_mut(),
                 };
                 let _instrument =
@@ -675,9 +713,9 @@ mod tests {
         let exporter = InMemoryMetricExporter::default();
         let reader = PeriodicReader::builder(exporter.clone()).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
-        let provider_ctx = provider_ctx(provider.clone());
+        let provider_ctx_raw = provider_ctx(provider.clone());
         let meter = (SDK_METRICS_VTABLE.provider_get_meter)(
-            provider_ctx,
+            provider_ctx_raw,
             sv("scope"),
             OtelStringView::empty(),
             OtelStringView::empty(),
@@ -768,7 +806,7 @@ mod tests {
         }
         (SDK_METRICS_VTABLE.meter_free)(meter);
         provider.shutdown().unwrap();
-        (SDK_METRICS_VTABLE.provider_free)(provider_ctx);
+        (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
     }
 
     extern "C" fn observable_callback(observer_ctx: *mut c_void, state: *mut c_void) {
@@ -848,6 +886,85 @@ mod tests {
         drop(unsafe { Arc::from_raw(user_data as *const ApiCallbackState) });
     }
 
+    struct PanicUserData {
+        destroyed: Arc<AtomicUsize>,
+    }
+
+    extern "C" fn panic_test_callback(
+        _observer: *mut api::OtelObserverU64,
+        _user_data: *mut c_void,
+    ) {
+    }
+
+    extern "C" fn panic_user_data_destroy(user_data: *mut c_void) {
+        let state = unsafe { Box::from_raw(user_data as *mut PanicUserData) };
+        state.destroyed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn callback_state_is_released_once_when_sdk_creation_panics() {
+        let exporter = InMemoryMetricExporter::default();
+        let reader = PeriodicReader::builder(exporter).build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
+        let provider_ctx_raw = provider_ctx(provider.clone());
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let user_data = Box::into_raw(Box::new(PanicUserData {
+            destroyed: Arc::clone(&destroyed),
+        }))
+        .cast();
+        let options = api::OtelInstrumentOptions {
+            struct_size: std::mem::size_of::<api::OtelInstrumentOptions>() as u64,
+            description: OtelStringView::empty(),
+            unit: OtelStringView::empty(),
+            boundaries: std::ptr::null(),
+            boundary_count: 0,
+        };
+        assert_eq!(
+            unsafe {
+                api::otel_api_register_global_meter_provider(
+                    &SDK_METRICS_VTABLE,
+                    provider_ctx(provider.clone()),
+                )
+            },
+            OtelStatus::Ok
+        );
+        let api_provider = api::otel_global_meter_provider();
+        let api_meter = unsafe {
+            api::otel_meter_provider_get_meter(
+                api_provider,
+                sv("panic_scope"),
+                OtelStringView::empty(),
+                OtelStringView::empty(),
+            )
+        };
+        let mut observable = std::ptr::null_mut();
+
+        PANIC_AFTER_CALLBACK_TRANSFER.store(true, Ordering::SeqCst);
+        assert_eq!(
+            unsafe {
+                api::otel_meter_create_u64_observable_gauge(
+                    api_meter,
+                    sv("panic_observable"),
+                    &options,
+                    Some(panic_test_callback),
+                    user_data,
+                    Some(panic_user_data_destroy),
+                    &mut observable,
+                )
+            },
+            OtelStatus::InvalidConfig
+        );
+        assert!(observable.is_null());
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+
+        unsafe {
+            api::otel_meter_destroy(api_meter);
+            api::otel_meter_provider_destroy(api_provider);
+        }
+        provider.shutdown().unwrap();
+        (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
+    }
+
     #[test]
     fn public_observer_token_expires_and_destroy_disables_callback() {
         let exporter = InMemoryMetricExporter::default();
@@ -907,6 +1024,7 @@ mod tests {
         );
 
         unsafe { api::otel_observable_gauge_u64_destroy(observable) };
+        assert_eq!(Arc::strong_count(&state), 1);
         provider.force_flush().unwrap();
         assert_eq!(state.calls.load(Ordering::SeqCst), 1);
 

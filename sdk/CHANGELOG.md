@@ -11,6 +11,10 @@
   benchmarks.
 - Cross-artifact C integration now proves API-only Metrics export through separately linked
   API and SDK shared libraries; C11/C++17 header compilation covers all Metrics headers.
+- Metrics global installation now uses conditional registration tokens so shutdown/destroy
+  releases the current global provider without clearing a newer SDK. Observable callback
+  state is consumed exactly once across success, validation failure, and caught construction
+  panics.
 - Exporter/processor separation of concerns with **optional OTLP**. The generic
   `otel_trace_exporter_t` / `otel_span_processor_t` handles now wrap internal enums
   (`TraceExporterImpl: SpanExporter`, `SpanProcessorImpl: SpanProcessor`), and the SDK builder

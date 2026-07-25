@@ -1,7 +1,7 @@
 //! Declarative Metrics view builder.
 
 use opentelemetry::Key;
-use opentelemetry_c_abi::{OtelMetricInstrumentKind, OtelStatus, OtelStringView};
+use opentelemetry_c_abi::{OtelBool, OtelMetricInstrumentKind, OtelStatus, OtelStringView};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, InstrumentKind, Stream};
 
 use crate::error::{clear_last_error, fail, fail_abi, fail_owned};
@@ -39,6 +39,7 @@ pub(crate) struct MetricViewConfig {
     output_name: Option<String>,
     output_description: Option<String>,
     output_unit: Option<String>,
+    attribute_filter_enabled: bool,
     allowed_attributes: Vec<String>,
     cardinality_limit: Option<usize>,
     aggregation: AggregationConfig,
@@ -83,6 +84,7 @@ fn default_config() -> MetricViewConfig {
         output_name: None,
         output_description: None,
         output_unit: None,
+        attribute_filter_enabled: false,
         allowed_attributes: Vec::new(),
         cardinality_limit: None,
         aggregation: AggregationConfig::Default,
@@ -204,6 +206,7 @@ pub unsafe extern "C" fn otel_metric_view_builder_add_allowed_attribute(
     unsafe {
         with_builder(builder, |config| match key.to_string_strict() {
             Ok(key) if !key.is_empty() => {
+                config.attribute_filter_enabled = true;
                 config.allowed_attributes.push(key);
                 OtelStatus::Ok
             }
@@ -212,6 +215,26 @@ pub unsafe extern "C" fn otel_metric_view_builder_add_allowed_attribute(
                 "allowed attribute key must not be empty",
             ),
             Err(err) => fail_abi(err),
+        })
+    }
+}
+
+/// Enable or disable attribute filtering for the selected stream.
+///
+/// Enabling with no allowed keys intentionally drops every attribute.
+///
+/// # Safety
+///
+/// `builder` must be a live builder and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_metric_view_builder_set_attribute_filter_enabled(
+    builder: *mut OtelMetricViewBuilder,
+    enabled: OtelBool,
+) -> OtelStatus {
+    unsafe {
+        with_builder(builder, |config| {
+            config.attribute_filter_enabled = enabled != 0;
+            OtelStatus::Ok
         })
     }
 }
@@ -366,7 +389,7 @@ fn stream(config: &MetricViewConfig) -> Result<Stream, String> {
     if let Some(unit) = &config.output_unit {
         builder = builder.with_unit(unit.clone());
     }
-    if !config.allowed_attributes.is_empty() {
+    if config.attribute_filter_enabled {
         builder = builder
             .with_allowed_attribute_keys(config.allowed_attributes.iter().cloned().map(Key::from));
     }

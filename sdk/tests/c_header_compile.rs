@@ -179,6 +179,7 @@ int main(void) {
     otel_metric_view_builder_t* vb = otel_metric_view_builder_new();
     otel_metric_view_builder_set_name_pattern(vb, otel_cstr("request.*"));
     otel_metric_view_builder_set_cardinality_limit(vb, 100);
+    otel_metric_view_builder_set_attribute_filter_enabled(vb, 1);
     otel_metric_view_t* view = NULL;
     otel_metric_view_builder_build(vb, &view);
     otel_metric_view_builder_destroy(vb);

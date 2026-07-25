@@ -76,7 +76,9 @@ fn find_lib_dir() -> Option<PathBuf> {
         }
         _ => workspace_root.join("target"),
     };
-    for profile in ["release", "debug"] {
+    // `scripts/test.sh` builds debug cdylibs immediately before this test. Prefer them over
+    // potentially stale release artifacts left by an earlier benchmark run.
+    for profile in ["debug", "release"] {
         let dir = target_dir.join(profile);
         let has = |stem: &str| dylib_names(stem).iter().any(|n| dir.join(n).exists());
         if has("opentelemetry_c_api") && has("opentelemetry_c_sdk") {
@@ -90,6 +92,7 @@ const HARNESS_C: &str = r#"
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdlib.h>
 typedef struct { const char* ptr; size_t len; } otel_string_view_t;
 typedef struct otel_sdk_builder_t otel_sdk_builder_t;
 typedef struct otel_sdk_t otel_sdk_t;
@@ -101,6 +104,8 @@ typedef struct otel_meter_t otel_meter_t;
 typedef struct otel_counter_u64_t otel_counter_u64_t;
 typedef struct otel_gauge_f64_t otel_gauge_f64_t;
 typedef struct otel_histogram_f64_t otel_histogram_f64_t;
+typedef struct otel_observable_gauge_u64_t otel_observable_gauge_u64_t;
+typedef struct otel_observer_u64_t otel_observer_u64_t;
 typedef struct { uint32_t kind; const otel_span_t* parent; } otel_span_start_options_t;
 extern otel_tracer_provider_t* otel_global_tracer_provider(void);
 extern otel_tracer_t* otel_tracer_provider_get_tracer(const otel_tracer_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
@@ -115,12 +120,15 @@ extern otel_meter_t* otel_meter_provider_get_meter(const otel_meter_provider_t*,
 extern int otel_meter_create_u64_counter(const otel_meter_t*, otel_string_view_t, const void*, otel_counter_u64_t**);
 extern int otel_meter_create_f64_gauge(const otel_meter_t*, otel_string_view_t, const void*, otel_gauge_f64_t**);
 extern int otel_meter_create_f64_histogram(const otel_meter_t*, otel_string_view_t, const void*, otel_histogram_f64_t**);
+extern int otel_meter_create_u64_observable_gauge(const otel_meter_t*, otel_string_view_t, const void*, void (*)(otel_observer_u64_t*, void*), void*, void (*)(void*), otel_observable_gauge_u64_t**);
 extern int otel_counter_u64_add(const otel_counter_u64_t*, uint64_t, const void*, size_t);
 extern int otel_gauge_f64_record(const otel_gauge_f64_t*, double, const void*, size_t);
 extern int otel_histogram_f64_record(const otel_histogram_f64_t*, double, const void*, size_t);
+extern int otel_observer_u64_observe(otel_observer_u64_t*, uint64_t, const void*, size_t);
 extern void otel_counter_u64_destroy(otel_counter_u64_t*);
 extern void otel_gauge_f64_destroy(otel_gauge_f64_t*);
 extern void otel_histogram_f64_destroy(otel_histogram_f64_t*);
+extern void otel_observable_gauge_u64_destroy(otel_observable_gauge_u64_t*);
 extern void otel_meter_destroy(otel_meter_t*);
 extern void otel_meter_provider_destroy(otel_meter_provider_t*);
 typedef struct otel_trace_exporter_t otel_trace_exporter_t;
@@ -167,6 +175,18 @@ extern void otel_sdk_destroy(otel_sdk_t*);
 static otel_string_view_t cs(const char* s){ otel_string_view_t v; v.ptr=s; v.len=s?strlen(s):0; return v; }
 static otel_string_view_t emp(void){ otel_string_view_t v; v.ptr=(void*)0; v.len=0; return v; }
 extern char* getenv(const char*);
+static int observable_calls=0;
+static int observable_destroyed=0;
+static otel_observable_gauge_u64_t* observable=(void*)0;
+static void observe_queue(otel_observer_u64_t* observer, void* user_data){
+    (void)user_data;
+    observable_calls++;
+    otel_observer_u64_observe(observer,17,(void*)0,0);
+}
+static void destroy_observable_state(void* user_data){
+    observable_destroyed++;
+    free(user_data);
+}
 static void work(void){
     otel_tracer_provider_t* p = otel_global_tracer_provider();
     otel_tracer_t* t = otel_tracer_provider_get_tracer(p, cs("instr"), cs("1.0"), emp());
@@ -190,6 +210,15 @@ static void metrics_work(void){
     otel_histogram_f64_record(h,7.5,(void*)0,0);
     otel_histogram_f64_destroy(h); otel_gauge_f64_destroy(g); otel_counter_u64_destroy(c);
     otel_meter_destroy(m); otel_meter_provider_destroy(p);
+}
+static int observable_setup(void){
+    otel_meter_provider_t* p = otel_global_meter_provider();
+    otel_meter_t* m = otel_meter_provider_get_meter(p, cs("observable-instr"), cs("1.0"), emp());
+    void* state=malloc(1);
+    if (!state) return 16;
+    if (otel_meter_create_u64_observable_gauge(m,cs("observable_queue"),(void*)0,observe_queue,state,destroy_observable_state,&observable)!=0) return 17;
+    otel_meter_destroy(m); otel_meter_provider_destroy(p);
+    return 0;
 }
 int main(void){
     work(); /* API-only no-op before install (must be safe) */
@@ -227,11 +256,15 @@ int main(void){
     if (otel_sdk_set_metrics_as_global(sdk)!=0) return 15;
     work(); /* API-only calls AFTER install must export through the SDK */
     metrics_work();
+    if (observable_setup()!=0) return 18;
     otel_sdk_force_flush(sdk, 5000);
     otel_sdk_metrics_force_flush(sdk, 0);
+    if (observable_calls==0) return 19;
+    otel_observable_gauge_u64_destroy(observable);
     otel_sdk_metrics_shutdown(sdk, 5000);
     otel_sdk_shutdown(sdk, 5000);
     otel_sdk_destroy(sdk);
+    if (observable_destroyed!=1) return 20;
     return 0;
 }
 "#;

@@ -7,7 +7,7 @@ experimental `0.x` C ABI.
 | --- | --- | --- |
 | API-only operation | Implemented | Independent API-owned global `MeterProvider`; no SDK dependency and safe no-op instruments before installation. |
 | Synchronous instruments | Implemented | `u64`/`f64` counters, `i64`/`f64` up-down counters, `u64`/`i64`/`f64` gauges, and `u64`/`f64` histograms. |
-| Observable instruments | Implemented | Counters, up-down counters, and gauges for all Rust SDK-supported numeric types; callback user data has exactly-once destruction. |
+| Observable instruments | Implemented | Counters, up-down counters, and gauges for all Rust SDK-supported numeric types; callback user data has exactly-once destruction independent of upstream closure release. |
 | Observer lifetime | Implemented | Observer tokens are valid only during their callback and reject stale use after return. Destroying the public instrument disables future callback work. |
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
 | SDK pipeline | Implemented | Independent `SdkMeterProvider`, one or more periodic readers, resource/scope propagation, force flush, and shutdown. |
@@ -16,7 +16,7 @@ experimental `0.x` C ABI.
 | Split-artifact linking | Implemented | C integration links separate API/SDK shared libraries and verifies OTLP Metrics bytes through the API-owned global slot. |
 | C and C++ headers | Implemented | All Metrics headers compile standalone as C11; the combined pipeline headers compile as C++17. |
 | Hot path | Implemented | SDK-backed synchronous handles own concrete Rust instruments; recording does not resolve providers, lock global state, or access readers/exporters/views. |
-| ABI compatibility | Implemented | Separate Metrics vtable with version/size checks and provider replacement race coverage. |
+| ABI compatibility | Implemented | Separate Metrics vtable with prefix-only version/size checks before full-structure access and provider replacement race coverage. |
 
 ## Known experimental constraints
 
@@ -24,8 +24,8 @@ experimental `0.x` C ABI.
 - The Rust 0.32 periodic reader controls collection on its worker thread; its force flush may
   block, and its shutdown uses the upstream reader's fixed timeout behavior.
 - Observable callbacks cannot be unregistered from the upstream Rust SDK. Destroying the C
-  handle disables callback work, while retained callback state is released when the SDK
-  pipeline releases its closure.
+  handle disables callback work and releases user data after any in-flight callback. Metrics
+  shutdown/destroy also removes the SDK's global provider registration when still current.
 - The supported shared-global deployment model is one dynamically loaded API library on
   Linux or macOS. Windows dynamic linking remains unverified.
 - Logs, custom readers/exporters, and asynchronous user-controlled collection are not

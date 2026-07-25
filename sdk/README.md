@@ -56,6 +56,13 @@ provider, tracer, span obtained after `set_as_global`) must also be destroyed be
 Statically linking the API into multiple artifacts creates separate global slots and is
 **not** the shared-global model.
 
+Metrics global installation is intentionally different: each successful
+`otel_sdk_set_metrics_as_global` receives an internal registration token.
+`otel_sdk_metrics_shutdown` and `otel_sdk_destroy` remove the Metrics global reference only
+when that token still owns the slot. If another SDK installed a newer Metrics provider, the
+older SDK's shutdown is a no-op for the global slot. Explicitly acquired MeterProvider/meter
+handles remain caller-owned and must be destroyed before unloading the SDK library.
+
 Ready-to-run examples that link both libraries are in
 [`examples/c-basic-traces/`](examples/c-basic-traces) and
 [`examples/c-metrics/`](examples/c-metrics).
@@ -147,7 +154,8 @@ Enabling `otlp` without a TLS feature builds an HTTP-only OTLP exporter (no HTTP
 - [`otlp_metric_exporter.h`](include/opentelemetry_c/otlp_metric_exporter.h) — OTLP Metrics
   endpoint, headers, timeout, and temporality preference.
 - [`periodic_metric_reader.h`](include/opentelemetry_c/periodic_metric_reader.h) — periodic
-  export interval/timeout and exporter ownership.
+  export interval and exporter ownership. Reader shutdown timeout behavior is controlled by
+  the pinned upstream SDK.
 - [`metric_view.h`](include/opentelemetry_c/metric_view.h) — instrument selection, stream
   metadata, attribute filtering, cardinality, and aggregation.
 

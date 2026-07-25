@@ -26,10 +26,12 @@ mod imp {
             vtable: *const OtelImplVtable,
             provider_ctx: *mut c_void,
         ) -> *mut c_void;
-        pub fn otel_api_register_global_meter_provider(
+        pub fn otel_api_register_global_meter_provider_with_token(
             vtable: *const OtelMetricsVtable,
             provider_ctx: *mut c_void,
+            out_id: *mut u64,
         ) -> OtelStatus;
+        pub fn otel_api_unregister_global_meter_provider(registration_id: u64) -> OtelStatus;
         pub fn otel_api_meter_provider_new(
             vtable: *const OtelMetricsVtable,
             provider_ctx: *mut c_void,
@@ -43,6 +45,7 @@ mod imp {
 mod imp {
     use super::*;
     use std::cell::RefCell;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
 
     thread_local! {
@@ -50,6 +53,8 @@ mod imp {
     }
     // Records the most recently registered (vtable, ctx) so tests can drive it.
     pub(super) static REGISTERED: Mutex<Option<(usize, usize)>> = Mutex::new(None);
+    pub(super) static METRICS_REGISTERED: Mutex<Option<(usize, usize, u64)>> = Mutex::new(None);
+    static NEXT_METRICS_ID: AtomicU64 = AtomicU64::new(1);
 
     /// # Safety
     /// Test stub mirroring the real ABI.
@@ -68,11 +73,39 @@ mod imp {
     ) -> *mut c_void {
         provider_ctx
     }
-    pub unsafe fn otel_api_register_global_meter_provider(
-        _vtable: *const OtelMetricsVtable,
+    pub unsafe fn otel_api_register_global_meter_provider_with_token(
+        vtable: *const OtelMetricsVtable,
         provider_ctx: *mut c_void,
+        out_id: *mut u64,
     ) -> OtelStatus {
-        *REGISTERED.lock().unwrap() = Some((0, provider_ctx as usize));
+        if out_id.is_null() {
+            return OtelStatus::InvalidArgument;
+        }
+        let id = NEXT_METRICS_ID.fetch_add(1, Ordering::Relaxed);
+        let old = METRICS_REGISTERED.lock().unwrap().replace((
+            vtable as usize,
+            provider_ctx as usize,
+            id,
+        ));
+        if let Some((old_vtable, old_ctx, _)) = old {
+            unsafe {
+                ((*(old_vtable as *const OtelMetricsVtable)).provider_free)(old_ctx as *mut c_void)
+            };
+        }
+        unsafe { *out_id = id };
+        OtelStatus::Ok
+    }
+    pub unsafe fn otel_api_unregister_global_meter_provider(registration_id: u64) -> OtelStatus {
+        let old = {
+            let mut registered = METRICS_REGISTERED.lock().unwrap();
+            match *registered {
+                Some((_, _, id)) if id == registration_id => registered.take(),
+                _ => None,
+            }
+        };
+        if let Some((vtable, ctx, _)) = old {
+            unsafe { ((*(vtable as *const OtelMetricsVtable)).provider_free)(ctx as *mut c_void) };
+        }
         OtelStatus::Ok
     }
     pub unsafe fn otel_api_meter_provider_new(
@@ -118,8 +151,20 @@ pub(crate) fn provider_new(
 pub(crate) fn register_global_meter_provider(
     vtable: *const OtelMetricsVtable,
     provider_ctx: *mut c_void,
-) -> OtelStatus {
-    unsafe { imp::otel_api_register_global_meter_provider(vtable, provider_ctx) }
+) -> (OtelStatus, u64) {
+    let mut registration_id = 0;
+    let status = unsafe {
+        imp::otel_api_register_global_meter_provider_with_token(
+            vtable,
+            provider_ctx,
+            &mut registration_id,
+        )
+    };
+    (status, registration_id)
+}
+
+pub(crate) fn unregister_global_meter_provider(registration_id: u64) -> OtelStatus {
+    unsafe { imp::otel_api_unregister_global_meter_provider(registration_id) }
 }
 
 pub(crate) fn meter_provider_new(
@@ -152,6 +197,10 @@ pub(crate) mod test_probe {
             .unwrap()
             .as_ref()
             .map(|&(v, c)| (v as *const OtelImplVtable, c as *mut c_void))
+    }
+
+    pub fn metrics_registered() -> bool {
+        imp::METRICS_REGISTERED.lock().unwrap().is_some()
     }
 
     /// The current thread's recorded last-error message (empty if none).

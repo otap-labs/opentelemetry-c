@@ -42,8 +42,10 @@ fn complete_noop_instrument_family_is_safe() {
         assert!(!meter.is_null());
         let opts = options();
 
+        #[allow(unknown_lints)]
+        #[allow(edition_2024_expr_fragment_specifier)]
         macro_rules! sync {
-            ($ty:ty, $create:ident, $record:ident, $destroy:ident, $value:expr_2021) => {{
+            ($ty:ty, $create:ident, $record:ident, $destroy:ident, $value:expr) => {{
                 let mut instrument: *mut $ty = std::ptr::null_mut();
                 assert_eq!(
                     $create(meter, sv(stringify!($create)), &opts, &mut instrument),
@@ -216,6 +218,17 @@ fn invalid_configuration_is_rejected_even_without_sdk() {
         let mut counter = std::ptr::null_mut();
         assert_eq!(
             otel_meter_create_u64_counter(meter, sv("_invalid"), std::ptr::null(), &mut counter),
+            OtelStatus::InvalidConfig
+        );
+        assert!(counter.is_null());
+        let short_options = std::mem::size_of::<u64>() as u64;
+        assert_eq!(
+            otel_meter_create_u64_counter(
+                meter,
+                sv("short_options"),
+                (&short_options as *const u64).cast(),
+                &mut counter,
+            ),
             OtelStatus::InvalidConfig
         );
         assert!(counter.is_null());

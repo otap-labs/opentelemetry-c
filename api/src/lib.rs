@@ -42,6 +42,7 @@ pub use global::{
 pub use metrics::*;
 pub use metrics_global::{
     otel_api_meter_provider_new, otel_api_register_global_meter_provider,
+    otel_api_register_global_meter_provider_with_token, otel_api_unregister_global_meter_provider,
     otel_global_meter_provider,
 };
 pub use trace::{

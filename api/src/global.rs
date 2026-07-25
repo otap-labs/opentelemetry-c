@@ -183,7 +183,7 @@ pub unsafe extern "C" fn otel_api_provider_new(
             return std::ptr::null_mut();
         }
         // SAFETY: non-NULL and required by the construction contract.
-        if !trace_vtable_compatible(unsafe { &*vtable }) {
+        if !unsafe { trace_vtable_compatible(vtable) } {
             fail(
                 OtelStatus::InvalidConfig,
                 "provider_new: incompatible trace implementation ABI",

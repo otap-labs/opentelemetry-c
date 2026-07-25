@@ -48,6 +48,10 @@ otel_status_t otel_metric_view_builder_set_output_unit(
     otel_metric_view_builder_t* builder, otel_string_view_t unit);
 otel_status_t otel_metric_view_builder_add_allowed_attribute(
     otel_metric_view_builder_t* builder, otel_string_view_t key);
+/* Enable filtering explicitly. When enabled with no allowed keys, all attributes are
+ * dropped. Adding an allowed key also enables filtering. */
+otel_status_t otel_metric_view_builder_set_attribute_filter_enabled(
+    otel_metric_view_builder_t* builder, otel_bool_t enabled);
 otel_status_t otel_metric_view_builder_set_cardinality_limit(
     otel_metric_view_builder_t* builder, uint64_t limit);
 otel_status_t otel_metric_view_builder_set_aggregation(

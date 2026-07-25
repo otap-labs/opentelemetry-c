@@ -10,7 +10,7 @@
 //! into the **API cdylib's** global slot across the C ABI.
 
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -66,6 +66,7 @@ pub struct OtelSdk {
     meter_provider: SdkMeterProvider,
     shutdown: AtomicBool,
     metrics_shutdown: AtomicBool,
+    metrics_global_registration: AtomicU64,
     flush_in_flight: Arc<AtomicBool>,
 }
 
@@ -85,6 +86,23 @@ const _: () = {
     fn assert_sync<T: Sync>() {}
     let _ = assert_sync::<OtelSdk>;
 };
+
+impl OtelSdk {
+    fn unregister_global_metrics(&self) -> OtelStatus {
+        let registration_id = self.metrics_global_registration.swap(0, Ordering::AcqRel);
+        if registration_id == 0 {
+            OtelStatus::Ok
+        } else {
+            api_ffi::unregister_global_meter_provider(registration_id)
+        }
+    }
+}
+
+impl Drop for OtelSdk {
+    fn drop(&mut self) {
+        let _ = self.unregister_global_metrics();
+    }
+}
 
 fn optional_millis(millis: u64) -> Option<Duration> {
     (millis != 0).then(|| Duration::from_millis(millis))
@@ -330,6 +348,7 @@ pub unsafe extern "C" fn otel_sdk_build(
             meter_provider,
             shutdown: AtomicBool::new(false),
             metrics_shutdown: AtomicBool::new(false),
+            metrics_global_registration: AtomicU64::new(0),
             flush_in_flight: Arc::new(AtomicBool::new(false)),
         });
         unsafe { *out_sdk = sdk };
@@ -382,10 +401,18 @@ pub unsafe extern "C" fn otel_sdk_set_metrics_as_global(sdk: *mut OtelSdk) -> Ot
             );
         }
         let ctx = crate::metrics_vtable::provider_ctx(sdk.meter_provider.clone());
-        let status =
+        let (status, registration_id) =
             api_ffi::register_global_meter_provider(crate::metrics_vtable::vtable_ptr(), ctx);
         if status != OtelStatus::Ok {
             (crate::metrics_vtable::SDK_METRICS_VTABLE.provider_free)(ctx);
+        } else if registration_id == 0 {
+            return fail(
+                OtelStatus::InternalError,
+                "Metrics global registration returned an invalid zero token",
+            );
+        } else {
+            sdk.metrics_global_registration
+                .store(registration_id, Ordering::Release);
         }
         status
     })
@@ -610,10 +637,16 @@ pub unsafe extern "C" fn otel_sdk_metrics_shutdown(
                 "Metrics provider has already been shut down",
             );
         }
+        let unregister_status = sdk.unregister_global_metrics();
         let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
-        match sdk.meter_provider.shutdown_with_timeout(timeout) {
+        let shutdown_status = match sdk.meter_provider.shutdown_with_timeout(timeout) {
             Ok(()) => OtelStatus::Ok,
             Err(err) => status_from_sdk_error(&err),
+        };
+        if unregister_status != OtelStatus::Ok {
+            unregister_status
+        } else {
+            shutdown_status
         }
     })
 }
@@ -757,6 +790,21 @@ mod tests {
             assert!(!sdk.is_null());
             otel_sdk_builder_destroy(b);
             otel_sdk_shutdown(sdk, 500);
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn metrics_shutdown_removes_its_global_registration() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+            assert_eq!(otel_sdk_set_metrics_as_global(sdk), OtelStatus::Ok);
+            assert!(crate::api_ffi::test_probe::metrics_registered());
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert!(!crate::api_ffi::test_probe::metrics_registered());
             otel_sdk_destroy(sdk);
         }
     }

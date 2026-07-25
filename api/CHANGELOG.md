@@ -10,6 +10,10 @@
   observer lifetime enforcement.
 - Versioned, signal-specific internal Metrics vtable with version/size compatibility
   rejection and race-safe provider replacement.
+- Prefix-only ABI validation rejects truncated vtables before forming a full Rust reference.
+  Observable callback state ownership is consumed exactly once even when SDK construction
+  panics, and token-based Metrics deregistration releases the global provider on Metrics
+  shutdown/destroy without clearing a newer installation.
 - Initial release of `opentelemetry-c-api` as part of the split of `opentelemetry-c` into
   separate C **API** and **SDK** artifacts. The API library exposes the public trace API
   (tracer   providers, tracers, spans) as opaque handles, owns the process-global trace provider

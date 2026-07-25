@@ -45,17 +45,13 @@ The shared-global model is only guaranteed under **dynamic linking with exactly 
   its **own** global provider slots and no-op defaults. An SDK installed into one copy
   is invisible to the other. Link the API as a single shared library so all callers observe
   the same slots.
-- **Keep the SDK loaded for the process lifetime after a global install.** Installing an
-  SDK (`otel_sdk_set_as_global` or `otel_sdk_set_metrics_as_global`) publishes the SDK's
-  `'static` implementation vtable and an SDK-owned provider object into the corresponding
-  global slot. **`otel_sdk_shutdown`, `otel_sdk_metrics_shutdown`, and
-  `otel_sdk_destroy` do *not* clear those slots** — they stop and free SDK state
-  but leave the slot pointing at the SDK's vtable/provider. The slot is only cleared when
-  **another provider replaces it** (a later signal-specific global installation).
-  Therefore, once either global installation succeeds, **`libopentelemetry_c_sdk` must remain
-  loaded until process exit, or until another provider replaces the global slot** — shutting
-  down and destroying the SDK does **not** make unloading it safe. (Any live SDK-backed
-  trace/Metrics handles must also be destroyed before unload.)
+- **Keep the SDK loaded while any installed provider or backed handle can dispatch to it.**
+  The trace global remains installed until another trace provider replaces it, so trace
+  installation still requires the SDK library to remain loaded for that window. Metrics
+  installation receives a registration token: `otel_sdk_metrics_shutdown` and
+  `otel_sdk_destroy` remove the Metrics global only if that SDK still owns the slot, without
+  clearing a newer installation. Explicitly acquired trace/Metrics handles must also be
+  destroyed before unloading the SDK library.
 
 ## Headers
 

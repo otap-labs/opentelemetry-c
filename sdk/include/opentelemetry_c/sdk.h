@@ -208,14 +208,17 @@ otel_status_t otel_sdk_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
  * honor a caller-supplied provider timeout, so timeout_millis is reserved/advisory. */
 otel_status_t otel_sdk_metrics_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
 
-/* Metrics shutdown is independent from trace shutdown and runs at most once. The pinned
+/* Metrics shutdown is independent from trace shutdown and runs at most once. If this SDK
+ * still owns the API global Metrics slot, shutdown removes that registration before shutting
+ * down the provider; a newer SDK registration is never cleared by an older SDK. The pinned
  * Rust provider ignores timeout_millis; PeriodicReader uses its own fixed five-second wait. */
 otel_status_t otel_sdk_metrics_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
 
 /*
  * Destroy an SDK handle (no-op on NULL). If not already shut down, dropping the SDK
- * triggers a best-effort shutdown; prefer calling otel_sdk_shutdown() explicitly. Must
- * not race with any other call on the same SDK handle.
+ * triggers a best-effort shutdown; prefer calling the signal-specific shutdown functions
+ * explicitly. Destroy also conditionally removes this SDK's global Metrics registration.
+ * Must not race with any other call on the same SDK handle.
  */
 void otel_sdk_destroy(otel_sdk_t* sdk);
 
