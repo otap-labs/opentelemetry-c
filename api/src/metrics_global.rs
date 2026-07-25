@@ -104,8 +104,11 @@ pub(crate) fn retain_global_metrics() -> GlobalMetricsRetain {
 ///
 /// # Safety
 ///
-/// `vtable` must point to a live static-compatible vtable and `provider_ctx` must be one
-/// owned provider reference accepted by that vtable.
+/// `vtable` must be correctly aligned and readable for `OtelVtableHeader`. If its Metrics
+/// kind/version and size are compatible, it must point to a complete `'static`
+/// [`OtelMetricsVtable`]. `provider_ctx` must be caller-owned and accepted by that vtable.
+/// Its ownership transfers only on successful registration; on failure it remains
+/// caller-owned.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_register_global_meter_provider(
     vtable: *const OtelMetricsVtable,
@@ -125,8 +128,8 @@ pub unsafe extern "C" fn otel_api_register_global_meter_provider(
 /// # Safety
 ///
 /// `vtable` and `provider_ctx` follow [`otel_api_register_global_meter_provider`]. `out_id`
-/// must point to writable storage. On success, ownership of `provider_ctx` transfers to the
-/// global slot and `out_id` receives a non-zero registration token.
+/// must point to writable storage. Only on success does ownership of `provider_ctx` transfer
+/// to the global slot and `out_id` receive a non-zero registration token.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_register_global_meter_provider_with_token(
     vtable: *const OtelMetricsVtable,
@@ -192,8 +195,11 @@ pub extern "C" fn otel_api_unregister_global_meter_provider(registration_id: u64
 ///
 /// # Safety
 ///
-/// `vtable` must remain live for the returned handle's lifetime and `provider_ctx` must be
-/// one owned provider reference accepted by that vtable.
+/// `vtable` must be correctly aligned and readable for `OtelVtableHeader`. If its Metrics
+/// kind/version and size are compatible, it must point to a complete [`OtelMetricsVtable`]
+/// that remains live for the returned handle's lifetime. `provider_ctx` must be caller-owned
+/// and accepted by that vtable. Its ownership transfers only when a non-NULL handle is
+/// returned.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_meter_provider_new(
     vtable: *const OtelMetricsVtable,

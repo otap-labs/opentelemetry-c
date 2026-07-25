@@ -147,6 +147,8 @@ extern "C" fn rejected_context_free(_: *mut c_void) {
 fn vtable_kind_and_size_validation_is_signal_specific() {
     assert_eq!(OTEL_IMPL_ABI_VERSION, OTEL_TRACE_IMPL_ABI_VERSION);
     assert_ne!(OTEL_TRACE_IMPL_ABI_VERSION, OTEL_METRICS_IMPL_ABI_VERSION);
+    assert_eq!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000, 0x4D00_0000);
+    assert_eq!(OTEL_METRICS_IMPL_ABI_VERSION & 0x00FF_FFFF, 1);
 
     assert!(unsafe { trace_vtable_compatible(&VALID_TRACE) });
     assert!(unsafe { metrics_vtable_compatible(&VALID) });

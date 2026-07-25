@@ -526,7 +526,10 @@ pub struct OtelMetricsVtable {
 }
 
 /// Current Metrics implementation ABI kind/version identifier.
-pub const OTEL_METRICS_IMPL_ABI_VERSION: u32 = 2;
+///
+/// The high byte `0x4D` (`M`) reserves the Metrics namespace; the low 24 bits carry the
+/// version within that namespace.
+pub const OTEL_METRICS_IMPL_ABI_VERSION: u32 = 0x4D00_0001;
 
 /// Minimum Metrics vtable size required by this API version.
 pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelMetricsVtable>();
@@ -545,8 +548,10 @@ pub struct OtelVtableHeader {
 ///
 /// # Safety
 ///
-/// `vtable` must be non-NULL, correctly aligned, and readable for at least
-/// [`OtelVtableHeader`]. No bytes beyond that prefix are read until the size check succeeds.
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+/// If the header is compatible, it must also be readable as a complete [`OtelImplVtable`]
+/// and remain live wherever the caller subsequently stores or uses it. No bytes beyond the
+/// header are read by this function.
 pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
     let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
     header.abi_version == OTEL_TRACE_IMPL_ABI_VERSION
@@ -560,8 +565,10 @@ pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
 ///
 /// # Safety
 ///
-/// `vtable` must be non-NULL, correctly aligned, and readable for at least
-/// [`OtelVtableHeader`]. No bytes beyond that prefix are read until the size check succeeds.
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+/// If the header is compatible, it must also be readable as a complete
+/// [`OtelMetricsVtable`] and remain live wherever the caller subsequently stores or uses it.
+/// No bytes beyond the header are read by this function.
 pub unsafe fn metrics_vtable_compatible(vtable: *const OtelMetricsVtable) -> bool {
     let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
     header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
@@ -569,6 +576,7 @@ pub unsafe fn metrics_vtable_compatible(vtable: *const OtelMetricsVtable) -> boo
 }
 
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
+const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
 
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]

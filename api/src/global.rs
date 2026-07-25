@@ -100,8 +100,11 @@ pub(crate) fn retain_global() -> GlobalRetain {
 /// owns `vtable`/`provider_ctx` (the SDK cdylib) must stay loaded for that whole window.
 ///
 /// # Safety
-/// `vtable` must point to a `'static` [`OtelImplVtable`] and `provider_ctx` to a provider
-/// object owned by the caller; ownership of `provider_ctx` transfers to the API slot.
+/// `vtable` must be correctly aligned and readable for `OtelVtableHeader`. If its trace
+/// kind/version and size are compatible, it must point to a complete `'static`
+/// [`OtelImplVtable`]. `provider_ctx` must be caller-owned and accepted by that vtable.
+/// Its ownership transfers to the API slot only on successful registration; on failure it
+/// remains caller-owned.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_register_global_provider(
     vtable: *const OtelImplVtable,
@@ -154,8 +157,10 @@ pub unsafe extern "C" fn otel_api_register_global_provider(
 /// returned handle owns `provider_ctx` and frees it (via `provider_free`) when destroyed.
 ///
 /// # Safety
-/// `vtable` must point to a `'static` [`OtelImplVtable`]; `provider_ctx` to a provider
-/// object whose ownership transfers to the returned handle.
+/// `vtable` must be correctly aligned and readable for `OtelVtableHeader`. If its trace
+/// kind/version and size are compatible, it must point to a complete [`OtelImplVtable`] that
+/// remains live for the returned handle's lifetime. `provider_ctx` must be caller-owned and
+/// accepted by that vtable. Its ownership transfers only when a non-NULL handle is returned.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_provider_new(
     vtable: *const OtelImplVtable,
