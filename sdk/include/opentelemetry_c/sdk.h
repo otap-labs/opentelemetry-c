@@ -5,8 +5,8 @@
  * exporter and a batch span processor, install it globally, flush, and shut down.
  *
  * The SDK owns all of its own threading (a dedicated batch-processor OS thread and the
- * blocking HTTP client). No user-managed async runtime is required, and the library
- * never invokes any C callback.
+ * blocking HTTP client). No user-managed async runtime is required. Metrics reader
+ * collection may invoke observable C callbacks on SDK-managed collection threads.
  *
  * Threading & lifecycle contract
  * ------------------------------
@@ -20,6 +20,13 @@
  *     order: set_as_global may still publish the provider if it observes the SDK as
  *     not-yet-shut-down (which then becomes a no-op once shutdown completes); once
  *     shutdown is observed, set_as_global returns OTEL_STATUS_ALREADY_SHUTDOWN.
+ *   - Metrics installation and Metrics shutdown are serialized per SDK. A concurrent
+ *     otel_sdk_set_metrics_as_global() and otel_sdk_metrics_shutdown() linearize in lock
+ *     acquisition order. If installation wins, shutdown removes that exact registration
+ *     before shutting down the MeterProvider. If shutdown wins, installation returns
+ *     OTEL_STATUS_ALREADY_SHUTDOWN and publishes nothing. Concurrent same-SDK installations
+ *     are serialized; the last successful installation is the token later removed by
+ *     shutdown or destroy.
  *   - A timed otel_sdk_force_flush() runs the flush on a helper thread; at most one such
  *     helper exists at a time (a concurrent timed flush returns OTEL_STATUS_TIMEOUT
  *     rather than spawning another). A blocking flush (timeout 0) uses the calling
@@ -179,6 +186,14 @@ otel_meter_provider_t* otel_sdk_get_meter_provider(const otel_sdk_t* sdk);
  * returns OTEL_STATUS_ALREADY_SHUTDOWN.
  */
 otel_status_t otel_sdk_set_as_global(otel_sdk_t* sdk);
+
+/*
+ * Install this SDK's MeterProvider as the process-global Metrics provider. Repeated and
+ * concurrent calls on one SDK are serialized; the most recent successful call wins.
+ * Concurrent Metrics shutdown either follows a completed installation and removes it, or
+ * precedes installation and causes OTEL_STATUS_ALREADY_SHUTDOWN. An older SDK's shutdown
+ * never removes a provider registered later by another SDK.
+ */
 otel_status_t otel_sdk_set_metrics_as_global(otel_sdk_t* sdk);
 
 /* ---- Lifecycle ------------------------------------------------------------ */

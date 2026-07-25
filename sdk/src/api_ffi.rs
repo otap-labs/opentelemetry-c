@@ -188,6 +188,8 @@ pub(crate) fn clear_last_error() {
 pub(crate) mod test_probe {
     use super::*;
 
+    pub static METRICS_GLOBAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // Only the OTLP-backed `set_as_global` unit test drives this probe; without the `otlp`
     // feature that test is compiled out, so gate the helper to match (avoids dead_code).
     #[cfg(feature = "otlp")]
@@ -201,6 +203,14 @@ pub(crate) mod test_probe {
 
     pub fn metrics_registered() -> bool {
         imp::METRICS_REGISTERED.lock().unwrap().is_some()
+    }
+
+    pub fn metrics_registration_id() -> Option<u64> {
+        imp::METRICS_REGISTERED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|&(_, _, id)| id)
     }
 
     /// The current thread's recorded last-error message (empty if none).
