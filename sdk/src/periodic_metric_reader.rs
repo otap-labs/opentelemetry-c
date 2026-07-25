@@ -22,7 +22,11 @@ pub(crate) enum PeriodicMetricReaderImpl {
     #[cfg(feature = "otlp")]
     Otlp(PeriodicReader<opentelemetry_otlp::MetricExporter>),
     #[cfg(test)]
-    Test(PeriodicReader<crate::metric_exporter::TestMetricExporter>),
+    Test {
+        reader: PeriodicReader<crate::metric_exporter::TestMetricExporter>,
+        #[allow(dead_code)]
+        configured_interval: Option<Duration>,
+    },
 }
 
 impl PeriodicMetricReaderImpl {
@@ -34,7 +38,7 @@ impl PeriodicMetricReaderImpl {
                 let _ = provider.shutdown();
             }
             #[cfg(test)]
-            Self::Test(reader) => {
+            Self::Test { reader, .. } => {
                 let provider = SdkMeterProvider::builder().with_reader(reader).build();
                 let _ = provider.shutdown();
             }
@@ -171,7 +175,10 @@ fn build_reader(
                 Some(interval) => builder.with_interval(interval),
                 None => builder,
             };
-            PeriodicMetricReaderImpl::Test(builder.build())
+            PeriodicMetricReaderImpl::Test {
+                reader: builder.build(),
+                configured_interval: interval,
+            }
         }
     }
 }
@@ -244,13 +251,17 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_destroy(
 }
 
 #[cfg(test)]
-pub(crate) fn test_reader(
+pub(crate) fn test_reader_with_lifecycle(
     drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    lifecycle: crate::metric_exporter::TestMetricExporterLifecycle,
 ) -> *mut OtelPeriodicMetricReader {
-    let exporter = crate::metric_exporter::TestMetricExporter::new(drops);
+    let exporter = crate::metric_exporter::TestMetricExporter::with_lifecycle(drops, lifecycle);
     into_raw(OtelPeriodicMetricReader {
         magic: READER_MAGIC,
-        reader: PeriodicMetricReaderImpl::Test(PeriodicReader::builder(exporter).build()),
+        reader: PeriodicMetricReaderImpl::Test {
+            reader: PeriodicReader::builder(exporter).build(),
+            configured_interval: None,
+        },
     })
 }
 
@@ -305,6 +316,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn interval_setter_validates_handles_and_uses_last_value() {
+        unsafe {
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(std::ptr::null_mut(), 10,),
+                OtelStatus::InvalidArgument
+            );
+
+            let dead = Box::into_raw(Box::new(OtelPeriodicMetricReaderBuilder {
+                magic: 0,
+                interval: None,
+                exporter: None,
+            }));
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(dead, 10),
+                OtelStatus::InvalidArgument
+            );
+            drop(Box::from_raw(dead));
+
+            let wrong_drops = Arc::new(AtomicUsize::new(0));
+            let wrong = test_exporter(&wrong_drops);
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(wrong.cast(), 10),
+                OtelStatus::InvalidArgument
+            );
+            crate::metric_exporter::otel_metric_exporter_destroy(wrong);
+            assert_eq!(wrong_drops.load(Ordering::SeqCst), 1);
+
+            let builder = otel_periodic_metric_reader_builder_new();
+            assert!((*builder).interval.is_none());
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(builder, 100),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).interval, Some(Duration::from_millis(100)));
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(builder, 250),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).interval, Some(Duration::from_millis(250)));
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(builder, 0),
+                OtelStatus::Ok
+            );
+            assert!(
+                (*builder).interval.is_none(),
+                "zero must leave interval selection to the upstream default/environment"
+            );
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(builder, 75),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).interval, Some(Duration::from_millis(75)));
+            otel_periodic_metric_reader_builder_destroy(builder);
+        }
+    }
+
     #[cfg(feature = "otlp")]
     #[test]
     fn exporter_transfer_duplicate_rejection_and_reader_destruction_are_exactly_once() {
@@ -314,6 +382,14 @@ mod tests {
             let first_dropped = Arc::new((Mutex::new(false), Condvar::new()));
             let second_drops = Arc::new(AtomicUsize::new(0));
             let builder = otel_periodic_metric_reader_builder_new();
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(builder, 100),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(builder, 250),
+                OtelStatus::Ok
+            );
             let first = lifecycle_exporter(&first_drops, &first_shutdowns, &first_dropped);
             assert_eq!(
                 otel_periodic_metric_reader_builder_set_exporter(builder, first),
@@ -337,6 +413,14 @@ mod tests {
                 OtelStatus::Ok
             );
             assert!(!reader.is_null());
+            match &(*reader).reader {
+                PeriodicMetricReaderImpl::Test {
+                    configured_interval,
+                    ..
+                } => assert_eq!(*configured_interval, Some(Duration::from_millis(250))),
+                #[cfg(feature = "otlp")]
+                PeriodicMetricReaderImpl::Otlp(_) => panic!("expected test reader"),
+            }
             otel_periodic_metric_reader_builder_destroy(builder);
             assert_eq!(first_drops.load(Ordering::SeqCst), 0);
             otel_periodic_metric_reader_destroy(reader);
@@ -351,6 +435,10 @@ mod tests {
         unsafe {
             let drops = Arc::new(AtomicUsize::new(0));
             let builder = otel_periodic_metric_reader_builder_new();
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_interval_millis(builder, 25),
+                OtelStatus::Ok
+            );
             let exporter = test_exporter(&drops);
             assert_eq!(
                 otel_periodic_metric_reader_builder_set_exporter(builder, exporter),

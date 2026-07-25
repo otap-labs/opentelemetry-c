@@ -33,7 +33,6 @@ impl TestMetricExporter {
         }
     }
 
-    #[cfg(feature = "otlp")]
     pub(crate) fn with_lifecycle(
         drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         lifecycle: TestMetricExporterLifecycle,

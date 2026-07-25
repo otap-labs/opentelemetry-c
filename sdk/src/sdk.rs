@@ -145,7 +145,6 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
     })
 }
 
-/// Add (transfer) a declarative Metrics view.
 /// Transfer a Metrics view into an SDK builder.
 ///
 /// # Safety
@@ -171,8 +170,8 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_view(
     })
 }
 
-/// Add (transfer) a periodic Metrics reader. On success the SDK builder owns `reader`.
-/// Transfer a periodic Metrics reader into an SDK builder.
+/// Transfer a periodic Metrics reader into an SDK builder. On success the SDK builder owns
+/// `reader`.
 ///
 /// # Safety
 ///
@@ -197,8 +196,8 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_reader(
     })
 }
 
-/// Destroy an SDK builder (no-op on NULL). Frees any span processors transferred in but not
-/// yet consumed by `otel_sdk_build`.
+/// Destroy an SDK builder (no-op on NULL). Frees any span processors, Metrics readers, and
+/// Metrics views transferred in but not yet consumed by `otel_sdk_build`.
 ///
 /// # Safety
 /// `builder` must be NULL or a live builder not destroyed concurrently.
@@ -355,7 +354,7 @@ pub unsafe extern "C" fn otel_sdk_build(
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
                 }
                 #[cfg(test)]
-                PeriodicMetricReaderImpl::Test(reader) => {
+                PeriodicMetricReaderImpl::Test { reader, .. } => {
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
                 }
             }
@@ -697,6 +696,7 @@ mod tests {
         otel_batch_span_processor_builder_build, otel_batch_span_processor_builder_destroy,
         otel_batch_span_processor_builder_new, otel_batch_span_processor_builder_set_exporter,
     };
+    use crate::metric_exporter::TestMetricExporterLifecycle;
     #[cfg(feature = "otlp")]
     use crate::otlp_exporter::{
         otel_otlp_trace_exporter_builder_build, otel_otlp_trace_exporter_builder_destroy,
@@ -705,7 +705,7 @@ mod tests {
     #[cfg(feature = "otlp")]
     use crate::span_processor::otel_span_processor_destroy;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, Condvar};
 
     #[cfg(feature = "otlp")]
     fn sv(s: &str) -> OtelStringView {
@@ -750,11 +750,55 @@ mod tests {
         }
     }
 
+    struct LifecycleReader {
+        handle: *mut OtelPeriodicMetricReader,
+        drops: Arc<AtomicUsize>,
+        shutdowns: Arc<AtomicUsize>,
+        dropped: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    fn lifecycle_reader() -> LifecycleReader {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new((Mutex::new(false), Condvar::new()));
+        let handle = crate::periodic_metric_reader::test_reader_with_lifecycle(
+            Arc::clone(&drops),
+            TestMetricExporterLifecycle {
+                shutdowns: Arc::clone(&shutdowns),
+                dropped: Arc::clone(&dropped),
+            },
+        );
+        LifecycleReader {
+            handle,
+            drops,
+            shutdowns,
+            dropped,
+        }
+    }
+
+    fn wait_for_exporter_drop(dropped: &Arc<(Mutex<bool>, Condvar)>) {
+        let (dropped, condition) = &**dropped;
+        let guard = dropped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = condition
+            .wait_timeout_while(guard, Duration::from_secs(5), |dropped| !*dropped)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            *guard,
+            "exporter was not dropped before the bounded deadline"
+        );
+    }
+
     #[test]
     fn metric_reader_transfer_and_sdk_destruction_release_exporter_once() {
         unsafe {
-            let drops = Arc::new(AtomicUsize::new(0));
-            let reader = crate::periodic_metric_reader::test_reader(Arc::clone(&drops));
+            let LifecycleReader {
+                handle: reader,
+                drops,
+                shutdowns,
+                dropped,
+            } = lifecycle_reader();
             let builder = otel_sdk_builder_new();
             assert_eq!(
                 otel_sdk_builder_add_metric_reader(builder, reader),
@@ -768,6 +812,8 @@ mod tests {
             otel_sdk_builder_destroy(builder);
             assert_eq!(drops.load(AtomicOrdering::SeqCst), 0);
             otel_sdk_destroy(sdk);
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&dropped);
             assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
         }
     }
@@ -775,19 +821,28 @@ mod tests {
     #[test]
     fn failed_sdk_build_and_invalid_transfer_preserve_reader_ownership() {
         unsafe {
-            let invalid_drops = Arc::new(AtomicUsize::new(0));
-            let invalid_reader =
-                crate::periodic_metric_reader::test_reader(Arc::clone(&invalid_drops));
+            let LifecycleReader {
+                handle: invalid_reader,
+                drops: invalid_drops,
+                shutdowns: invalid_shutdowns,
+                dropped: invalid_dropped,
+            } = lifecycle_reader();
             assert_eq!(
                 otel_sdk_builder_add_metric_reader(std::ptr::null_mut(), invalid_reader),
                 OtelStatus::InvalidArgument
             );
             assert_eq!(invalid_drops.load(AtomicOrdering::SeqCst), 0);
             crate::periodic_metric_reader::otel_periodic_metric_reader_destroy(invalid_reader);
+            assert_eq!(invalid_shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&invalid_dropped);
             assert_eq!(invalid_drops.load(AtomicOrdering::SeqCst), 1);
 
-            let build_drops = Arc::new(AtomicUsize::new(0));
-            let reader = crate::periodic_metric_reader::test_reader(Arc::clone(&build_drops));
+            let LifecycleReader {
+                handle: reader,
+                drops: build_drops,
+                shutdowns: build_shutdowns,
+                dropped: build_dropped,
+            } = lifecycle_reader();
             let builder = otel_sdk_builder_new();
             assert_eq!(
                 otel_sdk_builder_add_metric_reader(builder, reader),
@@ -799,6 +854,8 @@ mod tests {
             );
             assert_eq!(build_drops.load(AtomicOrdering::SeqCst), 0);
             otel_sdk_builder_destroy(builder);
+            assert_eq!(build_shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&build_dropped);
             assert_eq!(build_drops.load(AtomicOrdering::SeqCst), 1);
         }
     }
@@ -924,6 +981,28 @@ mod tests {
     #[test]
     fn metrics_flush_and_shutdown_statuses_are_stable() {
         unsafe {
+            assert_eq!(
+                otel_sdk_metrics_force_flush(std::ptr::null_mut(), 0),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_sdk_metrics_shutdown(std::ptr::null_mut(), 0),
+                OtelStatus::InvalidArgument
+            );
+
+            let dead = build_test_sdk();
+            (*dead).magic = 0;
+            assert_eq!(
+                otel_sdk_metrics_force_flush(dead, 0),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_sdk_metrics_shutdown(dead, 0),
+                OtelStatus::InvalidArgument
+            );
+            (*dead).magic = SDK_MAGIC;
+            otel_sdk_destroy(dead);
+
             let sdk = build_test_sdk();
             assert_eq!(otel_sdk_metrics_force_flush(sdk, 0), OtelStatus::Ok);
             assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
@@ -936,6 +1015,38 @@ mod tests {
                 OtelStatus::AlreadyShutdown
             );
             otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn explicit_metrics_shutdown_does_not_release_pipeline_twice() {
+        unsafe {
+            let LifecycleReader {
+                handle: reader,
+                drops,
+                shutdowns,
+                dropped,
+            } = lifecycle_reader();
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::Ok);
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(
+                otel_sdk_metrics_shutdown(sdk, 0),
+                OtelStatus::AlreadyShutdown
+            );
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            otel_sdk_destroy(sdk);
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&dropped);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
         }
     }
 

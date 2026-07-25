@@ -274,6 +274,129 @@ mod tests {
         InMemoryMetricExporterBuilder, PeriodicReader, SdkMeterProvider,
     };
 
+    fn sv(value: &str) -> OtelStringView {
+        OtelStringView {
+            ptr: value.as_ptr().cast(),
+            len: value.len(),
+        }
+    }
+
+    #[test]
+    fn endpoint_and_timeout_setters_validate_and_use_last_value() {
+        unsafe {
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(
+                    std::ptr::null_mut(),
+                    sv("http://localhost:4318/v1/metrics"),
+                ),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_timeout_millis(std::ptr::null_mut(), 10),
+                OtelStatus::InvalidArgument
+            );
+
+            let dead = Box::into_raw(Box::new(OtelOtlpMetricExporterBuilder {
+                magic: 0,
+                config: Config::default(),
+            }));
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(dead, sv("http://localhost")),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_timeout_millis(dead, 10),
+                OtelStatus::InvalidArgument
+            );
+            drop(Box::from_raw(dead));
+
+            let wrong = crate::periodic_metric_reader::otel_periodic_metric_reader_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(
+                    wrong.cast(),
+                    sv("http://localhost"),
+                ),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_timeout_millis(wrong.cast(), 10),
+                OtelStatus::InvalidArgument
+            );
+            crate::periodic_metric_reader::otel_periodic_metric_reader_builder_destroy(wrong);
+
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, OtelStringView::empty()),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.endpoint.as_deref(), Some(""));
+
+            let first_endpoint = "http://127.0.0.1:4318/first";
+            let final_endpoint = "http://127.0.0.1:4318/v1/metrics";
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv(first_endpoint)),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv(final_endpoint)),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.endpoint.as_deref(), Some(final_endpoint));
+
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_timeout_millis(builder, 125),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.timeout, Some(Duration::from_millis(125)));
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_timeout_millis(builder, 250),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.timeout, Some(Duration::from_millis(250)));
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_timeout_millis(builder, 0),
+                OtelStatus::Ok
+            );
+            assert!(
+                (*builder).config.timeout.is_none(),
+                "zero must preserve the exporter default timeout"
+            );
+
+            let invalid_utf8 = [0xff_u8];
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(
+                    builder,
+                    OtelStringView {
+                        ptr: invalid_utf8.as_ptr().cast(),
+                        len: invalid_utf8.len(),
+                    },
+                ),
+                OtelStatus::InvalidUtf8
+            );
+            assert!(crate::api_ffi::test_probe::last_error()
+                .to_ascii_lowercase()
+                .contains("utf-8"));
+            assert_eq!(
+                (*builder).config.endpoint.as_deref(),
+                Some(final_endpoint),
+                "a rejected endpoint must not corrupt the live builder"
+            );
+
+            #[cfg(feature = "otlp")]
+            {
+                let mut exporter = std::ptr::null_mut();
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                    OtelStatus::Ok
+                );
+                assert!(!exporter.is_null());
+                crate::metric_exporter::otel_metric_exporter_destroy(exporter);
+            }
+
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
     #[test]
     fn setters_validate_temporality_and_duplicate_headers() {
         unsafe {

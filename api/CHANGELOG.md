@@ -16,7 +16,7 @@
   shutdown/destroy without clearing a newer installation.
 - Initial release of `opentelemetry-c-api` as part of the split of `opentelemetry-c` into
   separate C **API** and **SDK** artifacts. The API library exposes the public trace API
-  (tracer   providers, tracers, spans) as opaque handles, owns the process-global trace provider
+  (tracer providers, tracers, spans) as opaque handles, owns the process-global trace provider
   slot with a no-op default, and exposes the internal registration ABI the SDK
   uses to install itself. It depends only on the internal ABI-types crate — never on
   `opentelemetry_sdk`, `opentelemetry-otlp`, or `reqwest` — so instrumentation can link the
