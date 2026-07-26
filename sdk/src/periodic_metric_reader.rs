@@ -2,11 +2,14 @@
 
 use std::time::Duration;
 
-use opentelemetry_c_abi::OtelStatus;
+use opentelemetry_c_abi::{
+    OtelHandleHeader, OtelStatus, OTEL_HANDLE_KIND_PERIODIC_METRIC_READER,
+    OTEL_HANDLE_KIND_PERIODIC_METRIC_READER_BUILDER,
+};
 
 use crate::error::{clear_last_error, fail};
 use crate::handle::{
-    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, take, HasMagic,
+    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, take, HasHandleHeader,
 };
 use crate::metric_exporter::{MetricExporterImpl, OtelMetricExporter};
 
@@ -14,9 +17,6 @@ use crate::metric_exporter::{MetricExporterImpl, OtelMetricExporter};
 use opentelemetry_sdk::metrics::PeriodicReaderBuilder;
 #[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
-
-const BUILDER_MAGIC: u64 = 0x4F54_4C43_4D52_4442;
-const READER_MAGIC: u64 = 0x4F54_4C43_4D52_4452;
 
 pub(crate) enum PeriodicMetricReaderImpl {
     #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
@@ -46,34 +46,36 @@ impl PeriodicMetricReaderImpl {
     }
 }
 
+#[repr(C)]
 pub struct OtelPeriodicMetricReaderBuilder {
-    magic: u64,
+    header: OtelHandleHeader,
     interval: Option<Duration>,
     exporter: Option<MetricExporterImpl>,
 }
 
+#[repr(C)]
 pub struct OtelPeriodicMetricReader {
-    magic: u64,
+    header: OtelHandleHeader,
     pub(crate) reader: PeriodicMetricReaderImpl,
 }
 
-impl HasMagic for OtelPeriodicMetricReaderBuilder {
-    const MAGIC: u64 = BUILDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelPeriodicMetricReaderBuilder {
+    const KIND: u64 = OTEL_HANDLE_KIND_PERIODIC_METRIC_READER_BUILDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
-impl HasMagic for OtelPeriodicMetricReader {
-    const MAGIC: u64 = READER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelPeriodicMetricReader {
+    const KIND: u64 = OTEL_HANDLE_KIND_PERIODIC_METRIC_READER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -83,7 +85,7 @@ pub extern "C" fn otel_periodic_metric_reader_builder_new() -> *mut OtelPeriodic
     guard_ptr(|| {
         clear_last_error();
         into_raw(OtelPeriodicMetricReaderBuilder {
-            magic: BUILDER_MAGIC,
+            header: OtelHandleHeader::new(OtelPeriodicMetricReaderBuilder::KIND),
             interval: None,
             exporter: None,
         })
@@ -217,7 +219,7 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_build(
             let reader = build_reader(exporter, builder.interval);
             unsafe {
                 *out = into_raw(OtelPeriodicMetricReader {
-                    magic: READER_MAGIC,
+                    header: OtelHandleHeader::new(OtelPeriodicMetricReader::KIND),
                     reader,
                 })
             };
@@ -257,7 +259,7 @@ pub(crate) fn test_reader_with_lifecycle(
 ) -> *mut OtelPeriodicMetricReader {
     let exporter = crate::metric_exporter::TestMetricExporter::with_lifecycle(drops, lifecycle);
     into_raw(OtelPeriodicMetricReader {
-        magic: READER_MAGIC,
+        header: OtelHandleHeader::new(OtelPeriodicMetricReader::KIND),
         reader: PeriodicMetricReaderImpl::Test {
             reader: PeriodicReader::builder(MetricExporterImpl::Test(exporter)).build(),
             configured_interval: None,
@@ -325,7 +327,11 @@ mod tests {
             );
 
             let dead = Box::into_raw(Box::new(OtelPeriodicMetricReaderBuilder {
-                magic: 0,
+                header: {
+                    let mut header = OtelHandleHeader::new(OtelPeriodicMetricReaderBuilder::KIND);
+                    header.poison();
+                    header
+                },
                 interval: None,
                 exporter: None,
             }));

@@ -3,6 +3,7 @@
 #[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use std::time::Duration;
 
+use opentelemetry_c_abi::{OtelHandleHeader, OTEL_HANDLE_KIND_METRIC_EXPORTER};
 #[cfg(feature = "otlp-grpc")]
 use opentelemetry_sdk::error::OTelSdkError;
 #[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
@@ -14,7 +15,7 @@ use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 #[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::Temporality;
 
-use crate::handle::{destroy, guard_unit, HasMagic};
+use crate::handle::{destroy, guard_unit, HasHandleHeader};
 
 pub(crate) enum MetricExporterImpl {
     #[cfg(feature = "otlp-http")]
@@ -258,29 +259,28 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for TestMetricExpo
     }
 }
 
-const METRIC_EXPORTER_MAGIC: u64 = 0x4F54_4C43_4D45_5850;
-
+#[repr(C)]
 pub struct OtelMetricExporter {
-    magic: u64,
+    header: OtelHandleHeader,
     pub(crate) exporter: MetricExporterImpl,
 }
 
 impl OtelMetricExporter {
     pub(crate) fn new(exporter: MetricExporterImpl) -> Self {
         Self {
-            magic: METRIC_EXPORTER_MAGIC,
+            header: OtelHandleHeader::new(Self::KIND),
             exporter,
         }
     }
 }
 
-impl HasMagic for OtelMetricExporter {
-    const MAGIC: u64 = METRIC_EXPORTER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMetricExporter {
+    const KIND: u64 = OTEL_HANDLE_KIND_METRIC_EXPORTER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 

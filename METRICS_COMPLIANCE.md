@@ -16,7 +16,7 @@ experimental `0.x` C ABI.
 | Split-artifact linking | Implemented | C integration links separate API/SDK shared libraries and verifies OTLP Metrics bytes through the API-owned global slot. |
 | C and C++ headers | Implemented | All Metrics headers compile standalone as C11; the combined pipeline headers compile as C++17. |
 | Hot path | Implemented | SDK-backed synchronous handles own concrete Rust instruments; recording does not resolve providers, lock global state, or access readers/exporters/views. |
-| ABI compatibility | Implemented | Separate Metrics vtable with prefix-only version/size checks before full-structure access and provider replacement race coverage. |
+| ABI compatibility | Implemented | Separate Metrics vtable with prefix-only version/size checks plus a common opaque-handle kind prefix validated before full typed access. |
 
 ## Known experimental constraints
 

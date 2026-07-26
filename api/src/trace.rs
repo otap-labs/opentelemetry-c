@@ -10,18 +10,16 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use opentelemetry_c_abi::{
-    OtelAttributeType, OtelBool, OtelImplVtable, OtelKeyValue, OtelSpanStatusCode, OtelStringView,
+    OtelAttributeType, OtelBool, OtelHandleHeader, OtelImplVtable, OtelKeyValue,
+    OtelSpanStatusCode, OtelStringView, OTEL_HANDLE_KIND_SPAN, OTEL_HANDLE_KIND_TRACER,
+    OTEL_HANDLE_KIND_TRACER_PROVIDER,
 };
 
 use crate::error::{clear_last_error, fail, OtelStatus};
 use crate::global::{retain_global, GlobalRetain};
 use crate::handle::{
-    checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasMagic,
+    checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasHandleHeader,
 };
-
-const PROVIDER_MAGIC: u64 = 0x4F54_4C43_5052_4F56; // "OTLCPROV"
-const TRACER_MAGIC: u64 = 0x4F54_4C43_5452_4143; // "OTLCTRAC"
-const SPAN_MAGIC: u64 = 0x4F54_4C43_5350_414E; // "OTLCSPAN"
 
 /// Backing selector for a provider handle.
 pub(crate) enum ProviderInner {
@@ -35,50 +33,53 @@ pub(crate) enum ProviderInner {
 }
 
 /// Opaque tracer-provider handle (`otel_tracer_provider_t`).
+#[repr(C)]
 pub struct OtelTracerProvider {
-    magic: u64,
+    header: OtelHandleHeader,
     inner: ProviderInner,
 }
 
 impl OtelTracerProvider {
     pub(crate) fn new(inner: ProviderInner) -> Self {
         OtelTracerProvider {
-            magic: PROVIDER_MAGIC,
+            header: OtelHandleHeader::new(Self::KIND),
             inner,
         }
     }
 }
 
-impl HasMagic for OtelTracerProvider {
-    const MAGIC: u64 = PROVIDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelTracerProvider {
+    const KIND: u64 = OTEL_HANDLE_KIND_TRACER_PROVIDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
 /// Opaque tracer handle (`otel_tracer_t`). NULL `vtable` == no-op.
+#[repr(C)]
 pub struct OtelTracer {
-    magic: u64,
+    header: OtelHandleHeader,
     vtable: *const OtelImplVtable,
     ctx: *mut c_void,
 }
 
-impl HasMagic for OtelTracer {
-    const MAGIC: u64 = TRACER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelTracer {
+    const KIND: u64 = OTEL_HANDLE_KIND_TRACER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
 /// Opaque span handle (`otel_span_t`). NULL `vtable` == no-op.
+#[repr(C)]
 pub struct OtelSpan {
-    magic: u64,
+    header: OtelHandleHeader,
     vtable: *const OtelImplVtable,
     ctx: *mut c_void,
     ended: AtomicBool,
@@ -107,13 +108,13 @@ impl OtelSpan {
     }
 }
 
-impl HasMagic for OtelSpan {
-    const MAGIC: u64 = SPAN_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelSpan {
+    const KIND: u64 = OTEL_HANDLE_KIND_SPAN;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -152,7 +153,7 @@ const _: () = {
 
 fn new_tracer(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelTracer {
     into_raw(OtelTracer {
-        magic: TRACER_MAGIC,
+        header: OtelHandleHeader::new(OtelTracer::KIND),
         vtable,
         ctx,
     })
@@ -160,7 +161,7 @@ fn new_tracer(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelTrace
 
 fn new_span(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelSpan {
     into_raw(OtelSpan {
-        magic: SPAN_MAGIC,
+        header: OtelHandleHeader::new(OtelSpan::KIND),
         vtable,
         ctx,
         ended: AtomicBool::new(false),

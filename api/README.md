@@ -125,8 +125,9 @@ unsupported.
 ## Ownership & safety
 
 - Every handle-returning function transfers ownership; release with the matching
-  `*_destroy`. Pass only NULL or a **live handle of the exact expected type**; the magic
-  check is a best-effort diagnostic, not a safety net (use-after-destroy is UB).
+  `*_destroy`. Pass only NULL or a live project handle. A common raw prefix rejects a live
+  handle of the wrong OpenTelemetry C type before full typed access. Foreign pointers,
+  use-after-destroy, double destruction, and destruction races remain undefined behavior.
 - Strings are borrowed `otel_string_view_t` values, copied before return.
 - All entry points are panic-safe (a Rust panic is caught, never unwound into C).
 - SDK/provider/tracer handles are safe to share across threads; a single span handle is

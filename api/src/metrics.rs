@@ -6,18 +6,24 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use opentelemetry_c_abi::{
-    OtelKeyValue, OtelMetricInstrumentConfig, OtelMetricInstrumentKind, OtelMetricNumberKind,
-    OtelMetricsVtable, OtelStringView,
+    OtelHandleHeader, OtelKeyValue, OtelMetricInstrumentConfig, OtelMetricInstrumentKind,
+    OtelMetricNumberKind, OtelMetricsVtable, OtelStringView, OTEL_HANDLE_KIND_COUNTER_F64,
+    OTEL_HANDLE_KIND_COUNTER_U64, OTEL_HANDLE_KIND_GAUGE_F64, OTEL_HANDLE_KIND_GAUGE_I64,
+    OTEL_HANDLE_KIND_GAUGE_U64, OTEL_HANDLE_KIND_HISTOGRAM_F64, OTEL_HANDLE_KIND_HISTOGRAM_U64,
+    OTEL_HANDLE_KIND_METER, OTEL_HANDLE_KIND_METER_PROVIDER,
+    OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64, OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64, OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64, OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
+    OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64, OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64,
+    OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64,
 };
 
 use crate::error::{clear_last_error, fail, has_last_error, set_last_error, OtelStatus};
 use crate::handle::{
-    checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasMagic,
+    checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasHandleHeader,
 };
 use crate::metrics_global::{retain_global_metrics, GlobalMetricsRetain};
 
-const METER_PROVIDER_MAGIC: u64 = 0x4F54_4C43_4D50_524F;
-const METER_MAGIC: u64 = 0x4F54_4C43_4D45_5445;
 const MAX_HISTOGRAM_BOUNDARIES: usize = 65_536;
 
 pub(crate) enum MeterProviderInner {
@@ -28,43 +34,45 @@ pub(crate) enum MeterProviderInner {
     },
 }
 
+#[repr(C)]
 pub struct OtelMeterProvider {
-    magic: u64,
+    header: OtelHandleHeader,
     inner: MeterProviderInner,
 }
 
 impl OtelMeterProvider {
     pub(crate) fn new(inner: MeterProviderInner) -> Self {
         Self {
-            magic: METER_PROVIDER_MAGIC,
+            header: OtelHandleHeader::new(Self::KIND),
             inner,
         }
     }
 }
 
-impl HasMagic for OtelMeterProvider {
-    const MAGIC: u64 = METER_PROVIDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMeterProvider {
+    const KIND: u64 = OTEL_HANDLE_KIND_METER_PROVIDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
+#[repr(C)]
 pub struct OtelMeter {
-    magic: u64,
+    header: OtelHandleHeader,
     vtable: *const OtelMetricsVtable,
     ctx: *mut c_void,
 }
 
-impl HasMagic for OtelMeter {
-    const MAGIC: u64 = METER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMeter {
+    const KIND: u64 = OTEL_HANDLE_KIND_METER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -255,7 +263,7 @@ pub unsafe extern "C" fn otel_meter_provider_get_meter(
             MeterProviderInner::Global => match retain_global_metrics() {
                 GlobalMetricsRetain::NoProvider => {
                     return into_raw(OtelMeter {
-                        magic: METER_MAGIC,
+                        header: OtelHandleHeader::new(OtelMeter::KIND),
                         vtable: std::ptr::null(),
                         ctx: std::ptr::null_mut(),
                     });
@@ -276,7 +284,7 @@ pub unsafe extern "C" fn otel_meter_provider_get_meter(
             return std::ptr::null_mut();
         }
         into_raw(OtelMeter {
-            magic: METER_MAGIC,
+            header: OtelHandleHeader::new(OtelMeter::KIND),
             vtable,
             ctx: meter_ctx,
         })
@@ -344,22 +352,23 @@ fn create_instrument(
 #[allow(edition_2024_expr_fragment_specifier)]
 macro_rules! define_sync_instrument {
     (
-        $handle:ident, $magic:expr, $create:ident, $record:ident, $destroy_fn:ident,
+        $handle:ident, $handle_kind:expr, $create:ident, $record:ident, $destroy_fn:ident,
         $kind:ident, $number:ident, $value:ty, $vtable_record:ident, $histogram:expr
     ) => {
+        #[repr(C)]
         pub struct $handle {
-            magic: u64,
+            header: OtelHandleHeader,
             vtable: *const OtelMetricsVtable,
             ctx: *mut c_void,
         }
 
-        impl HasMagic for $handle {
-            const MAGIC: u64 = $magic;
-            fn magic(&self) -> u64 {
-                self.magic
+        impl HasHandleHeader for $handle {
+            const KIND: u64 = $handle_kind;
+            fn header(&self) -> &OtelHandleHeader {
+                &self.header
             }
-            fn set_magic(&mut self, value: u64) {
-                self.magic = value;
+            fn header_mut(&mut self) -> &mut OtelHandleHeader {
+                &mut self.header
             }
         }
 
@@ -408,7 +417,7 @@ macro_rules! define_sync_instrument {
                 };
                 unsafe {
                     *out = into_raw($handle {
-                        magic: $magic,
+                        header: OtelHandleHeader::new($handle::KIND),
                         vtable,
                         ctx,
                     })
@@ -473,7 +482,7 @@ macro_rules! define_sync_instrument {
 
 define_sync_instrument!(
     OtelCounterU64,
-    0x4F544D4300010001,
+    OTEL_HANDLE_KIND_COUNTER_U64,
     otel_meter_create_u64_counter,
     otel_counter_u64_add,
     otel_counter_u64_destroy,
@@ -485,7 +494,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelCounterF64,
-    0x4F544D4300010002,
+    OTEL_HANDLE_KIND_COUNTER_F64,
     otel_meter_create_f64_counter,
     otel_counter_f64_add,
     otel_counter_f64_destroy,
@@ -497,7 +506,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelUpDownCounterI64,
-    0x4F544D4300020001,
+    OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64,
     otel_meter_create_i64_up_down_counter,
     otel_up_down_counter_i64_add,
     otel_up_down_counter_i64_destroy,
@@ -509,7 +518,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelUpDownCounterF64,
-    0x4F544D4300020002,
+    OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64,
     otel_meter_create_f64_up_down_counter,
     otel_up_down_counter_f64_add,
     otel_up_down_counter_f64_destroy,
@@ -521,7 +530,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelGaugeU64,
-    0x4F544D4300030001,
+    OTEL_HANDLE_KIND_GAUGE_U64,
     otel_meter_create_u64_gauge,
     otel_gauge_u64_record,
     otel_gauge_u64_destroy,
@@ -533,7 +542,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelGaugeI64,
-    0x4F544D4300030002,
+    OTEL_HANDLE_KIND_GAUGE_I64,
     otel_meter_create_i64_gauge,
     otel_gauge_i64_record,
     otel_gauge_i64_destroy,
@@ -545,7 +554,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelGaugeF64,
-    0x4F544D4300030003,
+    OTEL_HANDLE_KIND_GAUGE_F64,
     otel_meter_create_f64_gauge,
     otel_gauge_f64_record,
     otel_gauge_f64_destroy,
@@ -557,7 +566,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelHistogramU64,
-    0x4F544D4300040001,
+    OTEL_HANDLE_KIND_HISTOGRAM_U64,
     otel_meter_create_u64_histogram,
     otel_histogram_u64_record,
     otel_histogram_u64_destroy,
@@ -569,7 +578,7 @@ define_sync_instrument!(
 );
 define_sync_instrument!(
     OtelHistogramF64,
-    0x4F544D4300040002,
+    OTEL_HANDLE_KIND_HISTOGRAM_F64,
     otel_meter_create_f64_histogram,
     otel_histogram_f64_record,
     otel_histogram_f64_destroy,
@@ -916,24 +925,25 @@ fn create_observable(
 #[allow(edition_2024_expr_fragment_specifier)]
 macro_rules! define_observable_instrument {
     (
-        $handle:ident, $magic:expr, $create:ident, $destroy_fn:ident,
+        $handle:ident, $handle_kind:expr, $create:ident, $destroy_fn:ident,
         $kind:ident, $number:ident, $callback_ty:ty, $callback_variant:ident,
         $trampoline:ident
     ) => {
+        #[repr(C)]
         pub struct $handle {
-            magic: u64,
+            header: OtelHandleHeader,
             vtable: *const OtelMetricsVtable,
             ctx: *mut c_void,
             state: Arc<CallbackState>,
         }
 
-        impl HasMagic for $handle {
-            const MAGIC: u64 = $magic;
-            fn magic(&self) -> u64 {
-                self.magic
+        impl HasHandleHeader for $handle {
+            const KIND: u64 = $handle_kind;
+            fn header(&self) -> &OtelHandleHeader {
+                &self.header
             }
-            fn set_magic(&mut self, value: u64) {
-                self.magic = value;
+            fn header_mut(&mut self) -> &mut OtelHandleHeader {
+                &mut self.header
             }
         }
 
@@ -1005,7 +1015,7 @@ macro_rules! define_observable_instrument {
                 };
                 unsafe {
                     *out = into_raw($handle {
-                        magic: $magic,
+                        header: OtelHandleHeader::new($handle::KIND),
                         vtable,
                         ctx,
                         state,
@@ -1038,7 +1048,7 @@ macro_rules! define_observable_instrument {
 
 define_observable_instrument!(
     OtelObservableCounterU64,
-    0x4F544D4301010001,
+    OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64,
     otel_meter_create_u64_observable_counter,
     otel_observable_counter_u64_destroy,
     ObservableCounter,
@@ -1049,7 +1059,7 @@ define_observable_instrument!(
 );
 define_observable_instrument!(
     OtelObservableCounterF64,
-    0x4F544D4301010002,
+    OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64,
     otel_meter_create_f64_observable_counter,
     otel_observable_counter_f64_destroy,
     ObservableCounter,
@@ -1060,7 +1070,7 @@ define_observable_instrument!(
 );
 define_observable_instrument!(
     OtelObservableUpDownCounterI64,
-    0x4F544D4301020001,
+    OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64,
     otel_meter_create_i64_observable_up_down_counter,
     otel_observable_up_down_counter_i64_destroy,
     ObservableUpDownCounter,
@@ -1071,7 +1081,7 @@ define_observable_instrument!(
 );
 define_observable_instrument!(
     OtelObservableUpDownCounterF64,
-    0x4F544D4301020002,
+    OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
     otel_meter_create_f64_observable_up_down_counter,
     otel_observable_up_down_counter_f64_destroy,
     ObservableUpDownCounter,
@@ -1082,7 +1092,7 @@ define_observable_instrument!(
 );
 define_observable_instrument!(
     OtelObservableGaugeU64,
-    0x4F544D4301030001,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64,
     otel_meter_create_u64_observable_gauge,
     otel_observable_gauge_u64_destroy,
     ObservableGauge,
@@ -1093,7 +1103,7 @@ define_observable_instrument!(
 );
 define_observable_instrument!(
     OtelObservableGaugeI64,
-    0x4F544D4301030002,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64,
     otel_meter_create_i64_observable_gauge,
     otel_observable_gauge_i64_destroy,
     ObservableGauge,
@@ -1104,7 +1114,7 @@ define_observable_instrument!(
 );
 define_observable_instrument!(
     OtelObservableGaugeF64,
-    0x4F544D4301030003,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64,
     otel_meter_create_f64_observable_gauge,
     otel_observable_gauge_f64_destroy,
     ObservableGauge,
@@ -1253,7 +1263,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
 
         let meter = OtelMeter {
-            magic: METER_MAGIC,
+            header: OtelHandleHeader::new(OtelMeter::KIND),
             vtable: &MOCK_METRICS_VTABLE,
             ctx: std::ptr::NonNull::<c_void>::dangling().as_ptr(),
         };

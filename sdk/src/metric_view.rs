@@ -1,16 +1,17 @@
 //! Declarative Metrics view builder.
 
 use opentelemetry::Key;
-use opentelemetry_c_abi::{OtelBool, OtelMetricInstrumentKind, OtelStatus, OtelStringView};
+use opentelemetry_c_abi::{
+    OtelBool, OtelHandleHeader, OtelMetricInstrumentKind, OtelStatus, OtelStringView,
+    OTEL_HANDLE_KIND_METRIC_VIEW, OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER,
+};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, InstrumentKind, Stream};
 
 use crate::error::{clear_last_error, fail, fail_abi, fail_owned};
 use crate::handle::{
-    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasMagic,
+    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasHandleHeader,
 };
 
-const BUILDER_MAGIC: u64 = 0x4F54_4C43_4D56_4942;
-const VIEW_MAGIC: u64 = 0x4F54_4C43_4D56_4945;
 const ANY_KIND: u32 = u32::MAX;
 
 #[derive(Clone)]
@@ -45,33 +46,35 @@ pub(crate) struct MetricViewConfig {
     aggregation: AggregationConfig,
 }
 
+#[repr(C)]
 pub struct OtelMetricViewBuilder {
-    magic: u64,
+    header: OtelHandleHeader,
     config: MetricViewConfig,
 }
 
+#[repr(C)]
 pub struct OtelMetricView {
-    magic: u64,
+    header: OtelHandleHeader,
     pub(crate) config: MetricViewConfig,
 }
 
-impl HasMagic for OtelMetricViewBuilder {
-    const MAGIC: u64 = BUILDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMetricViewBuilder {
+    const KIND: u64 = OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
-impl HasMagic for OtelMetricView {
-    const MAGIC: u64 = VIEW_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMetricView {
+    const KIND: u64 = OTEL_HANDLE_KIND_METRIC_VIEW;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -96,7 +99,7 @@ pub extern "C" fn otel_metric_view_builder_new() -> *mut OtelMetricViewBuilder {
     guard_ptr(|| {
         clear_last_error();
         into_raw(OtelMetricViewBuilder {
-            magic: BUILDER_MAGIC,
+            header: OtelHandleHeader::new(OtelMetricViewBuilder::KIND),
             config: default_config(),
         })
     })
@@ -531,7 +534,7 @@ pub unsafe extern "C" fn otel_metric_view_builder_build(
         }
         unsafe {
             *out = into_raw(OtelMetricView {
-                magic: VIEW_MAGIC,
+                header: OtelHandleHeader::new(OtelMetricView::KIND),
                 config: builder.config.clone(),
             })
         };

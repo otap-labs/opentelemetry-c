@@ -4,6 +4,8 @@
 
 ### Added
 
+- SDK opaque handles now use the coordinated raw handle prefix and globally unique kinds,
+  matching API-side validation before complete typed access.
 - Documented the coordinated, experimental, source-only product release policy. Consumers
   build matching API and SDK libraries from one tag; no native binaries or crates.io
   packages are distributed.

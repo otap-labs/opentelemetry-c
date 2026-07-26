@@ -12,13 +12,12 @@
 use std::time::Duration;
 
 use opentelemetry::Context;
+use opentelemetry_c_abi::{OtelHandleHeader, OTEL_HANDLE_KIND_SPAN_PROCESSOR};
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::trace::{BatchSpanProcessor, Span, SpanData, SpanProcessor};
 use opentelemetry_sdk::Resource;
 
-use crate::handle::{destroy, guard_unit, HasMagic};
-
-pub(crate) const SPAN_PROCESSOR_MAGIC: u64 = 0x4F54_4C43_5350_5052; // "OTLCSPPR"
+use crate::handle::{destroy, guard_unit, HasHandleHeader};
 
 /// Internal span-processor implementation. Each variant is a concrete processor kind; the enum
 /// dispatches the [`SpanProcessor`] trait to the active one. The batch processor is SDK core,
@@ -59,27 +58,28 @@ impl SpanProcessor for SpanProcessorImpl {
 
 /// Opaque span-processor handle. Owns a built `SpanProcessorImpl` until it is consumed by the
 /// SDK builder (via `add_span_processor`) or destroyed.
+#[repr(C)]
 pub struct OtelSpanProcessor {
-    magic: u64,
+    header: OtelHandleHeader,
     pub(crate) processor: SpanProcessorImpl,
 }
 
 impl OtelSpanProcessor {
     pub(crate) fn new(processor: SpanProcessorImpl) -> Self {
         OtelSpanProcessor {
-            magic: SPAN_PROCESSOR_MAGIC,
+            header: OtelHandleHeader::new(Self::KIND),
             processor,
         }
     }
 }
 
-impl HasMagic for OtelSpanProcessor {
-    const MAGIC: u64 = SPAN_PROCESSOR_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelSpanProcessor {
+    const KIND: u64 = OTEL_HANDLE_KIND_SPAN_PROCESSOR;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 

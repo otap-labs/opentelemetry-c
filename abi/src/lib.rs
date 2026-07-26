@@ -18,6 +18,87 @@
 
 use std::os::raw::{c_char, c_void};
 
+/// Common prefix for every API/SDK-owned opaque C handle.
+///
+/// This is internal to the coordinated API/SDK implementation. It lets entry points inspect
+/// only two fixed-width fields before forming a reference to the expected concrete handle.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtelHandleHeader {
+    magic: u64,
+    kind: u64,
+}
+
+const OTEL_HANDLE_MAGIC: u64 = 0x4F54_4C43_4844_4C31; // "OTLCHDL1"
+
+impl OtelHandleHeader {
+    /// Construct a live header for `kind`.
+    pub const fn new(kind: u64) -> Self {
+        Self {
+            magic: OTEL_HANDLE_MAGIC,
+            kind,
+        }
+    }
+
+    /// Whether this is a live handle of the expected kind.
+    pub const fn is_live_kind(self, kind: u64) -> bool {
+        self.magic == OTEL_HANDLE_MAGIC && self.kind == kind
+    }
+
+    /// Whether this carries the live-handle magic, independent of kind.
+    pub const fn is_live(self) -> bool {
+        self.magic == OTEL_HANDLE_MAGIC
+    }
+
+    /// Stored globally unique handle kind.
+    pub const fn kind(self) -> u64 {
+        self.kind
+    }
+
+    /// Poison a consumed or about-to-be-destroyed handle.
+    pub fn poison(&mut self) {
+        self.magic = 0;
+    }
+}
+
+// API handle kinds.
+pub const OTEL_HANDLE_KIND_TRACER_PROVIDER: u64 = 0x0101;
+pub const OTEL_HANDLE_KIND_TRACER: u64 = 0x0102;
+pub const OTEL_HANDLE_KIND_SPAN: u64 = 0x0103;
+pub const OTEL_HANDLE_KIND_METER_PROVIDER: u64 = 0x0110;
+pub const OTEL_HANDLE_KIND_METER: u64 = 0x0111;
+pub const OTEL_HANDLE_KIND_COUNTER_U64: u64 = 0x0120;
+pub const OTEL_HANDLE_KIND_COUNTER_F64: u64 = 0x0121;
+pub const OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64: u64 = 0x0122;
+pub const OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64: u64 = 0x0123;
+pub const OTEL_HANDLE_KIND_GAUGE_U64: u64 = 0x0124;
+pub const OTEL_HANDLE_KIND_GAUGE_I64: u64 = 0x0125;
+pub const OTEL_HANDLE_KIND_GAUGE_F64: u64 = 0x0126;
+pub const OTEL_HANDLE_KIND_HISTOGRAM_U64: u64 = 0x0127;
+pub const OTEL_HANDLE_KIND_HISTOGRAM_F64: u64 = 0x0128;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64: u64 = 0x0130;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64: u64 = 0x0131;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64: u64 = 0x0132;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64: u64 = 0x0133;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64: u64 = 0x0134;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64: u64 = 0x0135;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64: u64 = 0x0136;
+
+// SDK handle kinds. These share one namespace with API handles because callers may pass a
+// live handle across the library boundary with the wrong static C type.
+pub const OTEL_HANDLE_KIND_SDK_BUILDER: u64 = 0x0201;
+pub const OTEL_HANDLE_KIND_SDK: u64 = 0x0202;
+pub const OTEL_HANDLE_KIND_OTLP_TRACE_EXPORTER_BUILDER: u64 = 0x0210;
+pub const OTEL_HANDLE_KIND_TRACE_EXPORTER: u64 = 0x0211;
+pub const OTEL_HANDLE_KIND_BATCH_SPAN_PROCESSOR_BUILDER: u64 = 0x0212;
+pub const OTEL_HANDLE_KIND_SPAN_PROCESSOR: u64 = 0x0213;
+pub const OTEL_HANDLE_KIND_OTLP_METRIC_EXPORTER_BUILDER: u64 = 0x0220;
+pub const OTEL_HANDLE_KIND_METRIC_EXPORTER: u64 = 0x0221;
+pub const OTEL_HANDLE_KIND_PERIODIC_METRIC_READER_BUILDER: u64 = 0x0222;
+pub const OTEL_HANDLE_KIND_PERIODIC_METRIC_READER: u64 = 0x0223;
+pub const OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER: u64 = 0x0224;
+pub const OTEL_HANDLE_KIND_METRIC_VIEW: u64 = 0x0225;
+
 /// Fixed-width status code returned by fallible C API functions. Mirrors `otel_status_t`.
 ///
 /// `Ok` (0) is success; any non-zero value is a failure. This is an integer newtype rather
@@ -637,6 +718,51 @@ mod tests {
             std::mem::size_of::<u32>()
         );
         assert_ne!(OtelStatus(999), OtelStatus::Ok);
+    }
+
+    #[test]
+    fn opaque_handle_kinds_are_globally_unique() {
+        let kinds = [
+            OTEL_HANDLE_KIND_TRACER_PROVIDER,
+            OTEL_HANDLE_KIND_TRACER,
+            OTEL_HANDLE_KIND_SPAN,
+            OTEL_HANDLE_KIND_METER_PROVIDER,
+            OTEL_HANDLE_KIND_METER,
+            OTEL_HANDLE_KIND_COUNTER_U64,
+            OTEL_HANDLE_KIND_COUNTER_F64,
+            OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64,
+            OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64,
+            OTEL_HANDLE_KIND_GAUGE_U64,
+            OTEL_HANDLE_KIND_GAUGE_I64,
+            OTEL_HANDLE_KIND_GAUGE_F64,
+            OTEL_HANDLE_KIND_HISTOGRAM_U64,
+            OTEL_HANDLE_KIND_HISTOGRAM_F64,
+            OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64,
+            OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64,
+            OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64,
+            OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
+            OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64,
+            OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64,
+            OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64,
+            OTEL_HANDLE_KIND_SDK_BUILDER,
+            OTEL_HANDLE_KIND_SDK,
+            OTEL_HANDLE_KIND_OTLP_TRACE_EXPORTER_BUILDER,
+            OTEL_HANDLE_KIND_TRACE_EXPORTER,
+            OTEL_HANDLE_KIND_BATCH_SPAN_PROCESSOR_BUILDER,
+            OTEL_HANDLE_KIND_SPAN_PROCESSOR,
+            OTEL_HANDLE_KIND_OTLP_METRIC_EXPORTER_BUILDER,
+            OTEL_HANDLE_KIND_METRIC_EXPORTER,
+            OTEL_HANDLE_KIND_PERIODIC_METRIC_READER_BUILDER,
+            OTEL_HANDLE_KIND_PERIODIC_METRIC_READER,
+            OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER,
+            OTEL_HANDLE_KIND_METRIC_VIEW,
+        ];
+        for (index, kind) in kinds.iter().enumerate() {
+            assert!(
+                !kinds[..index].contains(kind),
+                "duplicate opaque handle kind {kind:#x}"
+            );
+        }
     }
 
     #[test]

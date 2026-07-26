@@ -20,25 +20,26 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
-use opentelemetry_c_abi::{OtelKeyValue, OtelStatus, OtelStringView};
+use opentelemetry_c_abi::{
+    OtelHandleHeader, OtelKeyValue, OtelStatus, OtelStringView, OTEL_HANDLE_KIND_SDK,
+    OTEL_HANDLE_KIND_SDK_BUILDER,
+};
 
 use crate::api_ffi;
 use crate::error::{clear_last_error, fail, fail_owned, status_from_sdk_error};
 use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, take,
-    HasMagic,
+    HasHandleHeader,
 };
 use crate::metric_view::{MetricViewConfig, OtelMetricView};
 use crate::periodic_metric_reader::{OtelPeriodicMetricReader, PeriodicMetricReaderImpl};
 use crate::span_processor::{OtelSpanProcessor, SpanProcessorImpl};
 use crate::vtable;
 
-const SDK_BUILDER_MAGIC: u64 = 0x4F54_4C43_5344_4B42; // "OTLCSDKB"
-const SDK_MAGIC: u64 = 0x4F54_4C43_5344_4B00; // "OTLCSDK\0"
-
 /// Opaque builder handle (`otel_sdk_builder_t`). Not thread-safe; confine to one thread.
+#[repr(C)]
 pub struct OtelSdkBuilder {
-    magic: u64,
+    header: OtelHandleHeader,
     service_name: Option<String>,
     resource_attributes: Vec<KeyValue>,
     // Span processors transferred in via `add_span_processor`; moved into the provider on
@@ -49,13 +50,13 @@ pub struct OtelSdkBuilder {
     metric_views: Vec<MetricViewConfig>,
 }
 
-impl HasMagic for OtelSdkBuilder {
-    const MAGIC: u64 = SDK_BUILDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelSdkBuilder {
+    const KIND: u64 = OTEL_HANDLE_KIND_SDK_BUILDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -68,8 +69,9 @@ impl Drop for OtelSdkBuilder {
 }
 
 /// Opaque SDK handle (`otel_sdk_t`). All operations except destroy take shared access.
+#[repr(C)]
 pub struct OtelSdk {
-    magic: u64,
+    header: OtelHandleHeader,
     provider: SdkTracerProvider,
     meter_provider: SdkMeterProvider,
     shutdown: AtomicBool,
@@ -83,13 +85,13 @@ struct MetricsLifecycle {
     global_registration: Option<u64>,
 }
 
-impl HasMagic for OtelSdk {
-    const MAGIC: u64 = SDK_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelSdk {
+    const KIND: u64 = OTEL_HANDLE_KIND_SDK;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -135,7 +137,7 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
     guard_ptr(|| {
         clear_last_error();
         into_raw(OtelSdkBuilder {
-            magic: SDK_BUILDER_MAGIC,
+            header: OtelHandleHeader::new(OtelSdkBuilder::KIND),
             service_name: None,
             resource_attributes: Vec::new(),
             processors: Vec::new(),
@@ -365,7 +367,7 @@ pub unsafe extern "C" fn otel_sdk_build(
         }
         let meter_provider = meter_provider_builder.build();
         let sdk = into_raw(OtelSdk {
-            magic: SDK_MAGIC,
+            header: OtelHandleHeader::new(OtelSdk::KIND),
             provider,
             meter_provider,
             shutdown: AtomicBool::new(false),
@@ -991,7 +993,7 @@ mod tests {
             );
 
             let dead = build_test_sdk();
-            (*dead).magic = 0;
+            (*dead).header.poison();
             assert_eq!(
                 otel_sdk_metrics_force_flush(dead, 0),
                 OtelStatus::InvalidArgument
@@ -1000,7 +1002,7 @@ mod tests {
                 otel_sdk_metrics_shutdown(dead, 0),
                 OtelStatus::InvalidArgument
             );
-            (*dead).magic = SDK_MAGIC;
+            (*dead).header = OtelHandleHeader::new(OtelSdk::KIND);
             otel_sdk_destroy(dead);
 
             let sdk = build_test_sdk();

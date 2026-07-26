@@ -12,11 +12,14 @@
 
 use std::time::Duration;
 
-use opentelemetry_c_abi::{OtelStatus, OtelStringView};
+use opentelemetry_c_abi::{
+    OtelHandleHeader, OtelStatus, OtelStringView, OTEL_HANDLE_KIND_OTLP_TRACE_EXPORTER_BUILDER,
+};
 
 use crate::error::{clear_last_error, fail, fail_abi, fail_owned};
 use crate::handle::{
-    checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasMagic,
+    checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw,
+    HasHandleHeader,
 };
 use crate::trace_exporter::{OtelTraceExporter, TraceExporterImpl};
 
@@ -26,8 +29,6 @@ use std::collections::HashMap;
 #[cfg(feature = "otlp-http")]
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig, WithHttpConfig};
 
-const OTLP_EXPORTER_BUILDER_MAGIC: u64 = 0x4F54_4C43_4F54_4C42; // "OTLCOTLB"
-
 #[derive(Default)]
 struct OtlpExporterConfig {
     endpoint: Option<String>,
@@ -36,18 +37,19 @@ struct OtlpExporterConfig {
 }
 
 /// Opaque OTLP trace exporter builder. Not thread-safe; confine to one thread.
+#[repr(C)]
 pub struct OtelOtlpTraceExporterBuilder {
-    magic: u64,
+    header: OtelHandleHeader,
     config: OtlpExporterConfig,
 }
 
-impl HasMagic for OtelOtlpTraceExporterBuilder {
-    const MAGIC: u64 = OTLP_EXPORTER_BUILDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelOtlpTraceExporterBuilder {
+    const KIND: u64 = OTEL_HANDLE_KIND_OTLP_TRACE_EXPORTER_BUILDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -58,7 +60,7 @@ pub extern "C" fn otel_otlp_trace_exporter_builder_new() -> *mut OtelOtlpTraceEx
     guard_ptr(|| {
         clear_last_error();
         into_raw(OtelOtlpTraceExporterBuilder {
-            magic: OTLP_EXPORTER_BUILDER_MAGIC,
+            header: OtelHandleHeader::new(OtelOtlpTraceExporterBuilder::KIND),
             config: OtlpExporterConfig::default(),
         })
     })

@@ -21,12 +21,11 @@
  * Handle validity
  * ---------------
  * You must pass only NULL or a live handle of the exact expected type returned by this
- * library. Handles carry a per-type magic number, but it is a best-effort diagnostic, NOT
- * a safety net: NULL is rejected up front, but the magic is read only after the pointer is
- * dereferenced as the expected type, so it cannot be relied upon to catch a wrong handle
- * type, a freed/already-destroyed handle, or a foreign pointer. Passing the wrong handle
- * type, using a handle after it is destroyed, destroying it twice, or racing *_destroy
- * with any other call on the same handle is undefined behavior (exactly like C `free`).
+ * library. Project handles share a fixed raw prefix that is checked before the complete
+ * expected handle type is accessed, so a live handle of another OpenTelemetry C type is
+ * rejected. This is defensive validation, NOT a general pointer-safety boundary: a foreign
+ * pointer, freed/already-destroyed pointer, double destruction, or racing *_destroy with
+ * another call remains undefined behavior (exactly like C `free`).
  *
  * Strings are passed as length-delimited UTF-8 views (`otel_string_view_t`) and are
  * copied by the library before it returns; the caller retains ownership of the
