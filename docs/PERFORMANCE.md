@@ -44,7 +44,10 @@ layer. Entry points that report failures clear the thread-local last-error slot 
 that clear takes no global lock and allocates no heap memory.
 
 Observable Metrics callbacks are collection-path work rather than synchronous recording.
-Their callback and observer-lifetime rules are documented in
+Observer dispatch uses callback-thread-local registrations rather than a process-global
+mutex, so readers collecting concurrently do not serialize at the C API boundary. A
+deterministic API test holds two observer dispatches inside the SDK-facing operation at once
+to guard this property. Callback and observer-lifetime rules are documented in
 [`metrics.h`](../api/include/opentelemetry_c/metrics.h) and
 [`METRICS_COMPLIANCE.md`](../METRICS_COMPLIANCE.md).
 

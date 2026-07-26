@@ -45,3 +45,7 @@
 
 - Trace and Metrics ABI kind/version/size incompatibilities now consistently report
   `OTEL_STATUS_INVALID_CONFIG`; the public status classification policy is documented.
+- Observable dispatch now uses callback-thread-local registrations instead of a
+  process-global mutex. Observer tokens fail closed on another thread or after callback
+  return, while concurrent reader callbacks and same-thread reentrant observations do not
+  serialize on API-global state.

@@ -8,7 +8,7 @@ experimental `0.x` C ABI.
 | API-only operation | Implemented | Independent API-owned global `MeterProvider`; no SDK dependency and safe no-op instruments before installation. |
 | Synchronous instruments | Implemented | `u64`/`f64` counters, `i64`/`f64` up-down counters, `u64`/`i64`/`f64` gauges, and `u64`/`f64` histograms. |
 | Observable instruments | Implemented | Counters, up-down counters, and gauges for all Rust SDK-supported numeric types; callback user data has exactly-once destruction independent of upstream closure release. |
-| Observer lifetime | Implemented | Observer tokens are valid only during their callback and reject stale use after return. Destroying the public instrument disables future callback work. |
+| Observer lifetime | Implemented | Observer tokens are valid only on the callback thread until return; stale and cross-thread use fail closed. Dispatch is thread-local, so independent readers are not serialized by an API-global lock. Destroying the public instrument disables future callback work. |
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
 | Instrumentation scope | Implemented | Versioned meter options carry name, version, schema URL, and uniquely keyed typed attributes into the upstream owned `InstrumentationScope`. |
 | SDK pipeline | Implemented | Independent `SdkMeterProvider`, one or more periodic readers, resource/scope propagation, force flush, and shutdown. |
@@ -34,6 +34,7 @@ experimental `0.x` C ABI.
 - Observable callbacks cannot be unregistered from the upstream Rust SDK. Destroying the C
   handle disables callback work and releases user data after any in-flight callback. Metrics
   shutdown/destroy also removes the SDK's global provider registration when still current.
+  Observer tokens cannot be handed to another thread, including work spawned by a callback.
 - The supported shared-global deployment model is one shared API library on Linux or macOS,
   loaded before the matching SDK and retained for process lifetime after use. Windows
   shared-library use and static deployment are unsupported.

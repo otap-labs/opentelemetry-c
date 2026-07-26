@@ -143,7 +143,11 @@ void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
 
 /*
  * Observable callbacks run during reader collection and may be invoked concurrently by
- * different readers. They must finish in finite time and must not retain the observer.
+ * different readers. An observer token is valid only on the callback's current thread and
+ * only until that callback returns. It may be used repeatedly and reentrantly on that thread,
+ * but must not be retained, passed to another thread, or used by work spawned from the
+ * callback. Cross-thread and stale uses return OTEL_STATUS_INVALID_ARGUMENT without
+ * dispatching to the SDK. Callbacks must finish in finite time.
  * Destroying the public observable handle disables future callback work and releases its
  * user-data ownership. user_data_destroy runs exactly once after any callback already in
  * flight releases its temporary reference; it does not depend on the SDK pipeline closure

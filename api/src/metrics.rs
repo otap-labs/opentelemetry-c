@@ -1,9 +1,10 @@
 //! Public OpenTelemetry Metrics API.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use opentelemetry_c_abi::{
     metrics_vtable_supports_scope_config, OtelAttributeType, OtelHandleHeader, OtelKeyValue,
@@ -828,19 +829,26 @@ impl CallbackState {
     }
 }
 
+#[derive(Clone, Copy)]
 struct ObserverEntry {
     vtable: *const OtelMetricsVtable,
     ctx: *mut c_void,
     number: OtelMetricNumberKind,
 }
 
-unsafe impl Send for ObserverEntry {}
-
-static OBSERVERS: OnceLock<Mutex<HashMap<usize, ObserverEntry>>> = OnceLock::new();
 static NEXT_OBSERVER: AtomicUsize = AtomicUsize::new(1);
 
-fn observer_registry() -> &'static Mutex<HashMap<usize, ObserverEntry>> {
-    OBSERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+thread_local! {
+    static OBSERVERS: RefCell<Vec<(usize, ObserverEntry)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn next_observer_token() -> usize {
+    loop {
+        let token = NEXT_OBSERVER.fetch_add(1, Ordering::Relaxed);
+        if token != 0 {
+            return token;
+        }
+    }
 }
 
 struct ObserverRegistration {
@@ -853,28 +861,32 @@ impl ObserverRegistration {
         ctx: *mut c_void,
         number: OtelMetricNumberKind,
     ) -> Self {
-        let token = NEXT_OBSERVER.fetch_add(1, Ordering::Relaxed).max(1);
-        observer_registry()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
+        let token = next_observer_token();
+        OBSERVERS.with(|observers| {
+            observers.borrow_mut().push((
                 token,
                 ObserverEntry {
                     vtable,
                     ctx,
                     number,
                 },
-            );
+            ));
+        });
         Self { token }
     }
 }
 
 impl Drop for ObserverRegistration {
     fn drop(&mut self) {
-        observer_registry()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.token);
+        OBSERVERS.with(|observers| {
+            let mut observers = observers.borrow_mut();
+            if let Some(index) = observers
+                .iter()
+                .rposition(|(token, _)| *token == self.token)
+            {
+                observers.remove(index);
+            }
+        });
     }
 }
 
@@ -949,10 +961,16 @@ fn observe<T>(
     attribute_count: usize,
     call: impl FnOnce(&ObserverEntry, T) -> OtelStatus,
 ) -> OtelStatus {
-    let registry = observer_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entry = match registry.get(&token) {
+    let entry = OBSERVERS.with(|observers| {
+        observers
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|(candidate, entry)| (*candidate == token).then_some(*entry))
+    });
+    // The callback stack owns this thread-local entry until callback return. Copying it lets
+    // SDK dispatch reenter observer APIs without retaining a RefCell borrow across FFI.
+    let entry = match entry {
         Some(entry) if entry.number == expected && !entry.vtable.is_null() => entry,
         _ => {
             return fail(
@@ -962,14 +980,14 @@ fn observe<T>(
         }
     };
     let _ = (attributes, attribute_count);
-    call(entry, value)
+    call(&entry, value)
 }
 
 /// Record a value through a callback-scoped unsigned observer.
 ///
 /// # Safety
 ///
-/// `observer` must be the token passed to the currently executing callback. When
+/// `observer` must be the token passed to the currently executing callback on this thread. When
 /// `attribute_count` is non-zero, `attributes` must address that many readable values.
 #[no_mangle]
 pub unsafe extern "C" fn otel_observer_u64_observe(
@@ -1002,7 +1020,7 @@ pub unsafe extern "C" fn otel_observer_u64_observe(
 ///
 /// # Safety
 ///
-/// `observer` must be the token passed to the currently executing callback. When
+/// `observer` must be the token passed to the currently executing callback on this thread. When
 /// `attribute_count` is non-zero, `attributes` must address that many readable values.
 #[no_mangle]
 pub unsafe extern "C" fn otel_observer_i64_observe(
@@ -1035,7 +1053,7 @@ pub unsafe extern "C" fn otel_observer_i64_observe(
 ///
 /// # Safety
 ///
-/// `observer` must be the token passed to the currently executing callback. When
+/// `observer` must be the token passed to the currently executing callback on this thread. When
 /// `attribute_count` is non-zero, `attributes` must address that many readable values.
 #[no_mangle]
 pub unsafe extern "C" fn otel_observer_f64_observe(
@@ -1408,6 +1426,178 @@ mod tests {
         instrument_free: mock_instrument_free,
         provider_get_meter_with_scope: mock_provider_get_meter_with_scope,
     };
+
+    fn metrics_vtable_with_observer_u64(
+        observer_observe_u64: extern "C" fn(
+            *mut c_void,
+            u64,
+            *const OtelKeyValue,
+            usize,
+        ) -> OtelStatus,
+    ) -> OtelMetricsVtable {
+        OtelMetricsVtable {
+            observer_observe_u64,
+            ..MOCK_METRICS_VTABLE
+        }
+    }
+
+    struct ConcurrentObserverProbe {
+        entered: Mutex<usize>,
+        both_entered: Condvar,
+    }
+
+    extern "C" fn concurrent_observer_record(
+        ctx: *mut c_void,
+        _value: u64,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+    ) -> OtelStatus {
+        let probe = unsafe { &*(ctx.cast::<ConcurrentObserverProbe>()) };
+        let mut entered = probe
+            .entered
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *entered += 1;
+        probe.both_entered.notify_all();
+        let (entered, timeout) = probe
+            .both_entered
+            .wait_timeout_while(entered, Duration::from_secs(1), |entered| *entered < 2)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if timeout.timed_out() && *entered < 2 {
+            OtelStatus::InternalError
+        } else {
+            OtelStatus::Ok
+        }
+    }
+
+    struct ReentrantObserverProbe {
+        token: AtomicUsize,
+        calls: AtomicUsize,
+    }
+
+    extern "C" fn reentrant_observer_record(
+        ctx: *mut c_void,
+        _value: u64,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+    ) -> OtelStatus {
+        let probe = unsafe { &*(ctx.cast::<ReentrantObserverProbe>()) };
+        if probe.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            unsafe {
+                otel_observer_u64_observe(
+                    probe.token.load(Ordering::SeqCst) as *mut OtelObserverU64,
+                    2,
+                    std::ptr::null(),
+                    0,
+                )
+            }
+        } else {
+            OtelStatus::Ok
+        }
+    }
+
+    #[test]
+    fn observer_tokens_are_thread_bound_and_expire() {
+        let registration = ObserverRegistration::new(
+            &MOCK_METRICS_VTABLE,
+            std::ptr::null_mut(),
+            OtelMetricNumberKind::U64,
+        );
+        let token = registration.token;
+
+        assert_eq!(
+            unsafe {
+                otel_observer_u64_observe(token as *mut OtelObserverU64, 1, std::ptr::null(), 0)
+            },
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            std::thread::spawn(move || unsafe {
+                otel_observer_u64_observe(token as *mut OtelObserverU64, 1, std::ptr::null(), 0)
+            })
+            .join()
+            .unwrap(),
+            OtelStatus::InvalidArgument
+        );
+
+        drop(registration);
+        assert_eq!(
+            unsafe {
+                otel_observer_u64_observe(token as *mut OtelObserverU64, 1, std::ptr::null(), 0)
+            },
+            OtelStatus::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn observers_on_different_collection_threads_are_not_serialized() {
+        let probe = Arc::new(ConcurrentObserverProbe {
+            entered: Mutex::new(0),
+            both_entered: Condvar::new(),
+        });
+        let vtable = Arc::new(metrics_vtable_with_observer_u64(concurrent_observer_record));
+
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let probe = Arc::clone(&probe);
+                let vtable = Arc::clone(&vtable);
+                std::thread::spawn(move || {
+                    let registration = ObserverRegistration::new(
+                        Arc::as_ptr(&vtable),
+                        Arc::as_ptr(&probe) as *mut c_void,
+                        OtelMetricNumberKind::U64,
+                    );
+                    unsafe {
+                        otel_observer_u64_observe(
+                            registration.token as *mut OtelObserverU64,
+                            1,
+                            std::ptr::null(),
+                            0,
+                        )
+                    }
+                })
+            })
+            .collect();
+
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), OtelStatus::Ok);
+        }
+        assert_eq!(
+            *probe
+                .entered
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            2
+        );
+    }
+
+    #[test]
+    fn observer_dispatch_allows_same_thread_reentrancy() {
+        let probe = ReentrantObserverProbe {
+            token: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+        };
+        let vtable = metrics_vtable_with_observer_u64(reentrant_observer_record);
+        let registration = ObserverRegistration::new(
+            &vtable,
+            &probe as *const ReentrantObserverProbe as *mut c_void,
+            OtelMetricNumberKind::U64,
+        );
+        probe.token.store(registration.token, Ordering::SeqCst);
+
+        assert_eq!(
+            unsafe {
+                otel_observer_u64_observe(
+                    registration.token as *mut OtelObserverU64,
+                    1,
+                    std::ptr::null(),
+                    0,
+                )
+            },
+            OtelStatus::Ok
+        );
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+    }
 
     struct InFlightUserData {
         entered: Arc<Barrier>,
