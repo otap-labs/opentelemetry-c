@@ -32,7 +32,7 @@ The current `sdk/Cargo.toml` feature graph is:
 | Feature | Default | Capability |
 | --- | --- | --- |
 | `native-tls` | Yes | Implies `otlp-http`; HTTP HTTPS through the platform TLS backend. |
-| `otlp` | Via `native-tls` | Compatibility alias for `otlp-http`. |
+| `otlp` | No | Compatibility alias that enables `otlp-http`. |
 | `otlp-http` | Via `native-tls` | OTLP HTTP/protobuf trace and Metrics exporters. |
 | `otlp-grpc` | No | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
 | `rustls-tls` | No | Implies `otlp-http`; HTTP HTTPS through rustls. |

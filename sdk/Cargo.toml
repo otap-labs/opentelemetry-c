@@ -12,7 +12,8 @@ license = "Apache-2.0"
 publish = false
 
 # The SDK library. C consumers link this PLUS `libopentelemetry_c_api`; the SDK cdylib
-# links against the API cdylib to call its registration ABI (see build.rs).
+# references API registration symbols resolved from the process-global symbol scope at load
+# time (see build.rs).
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 
