@@ -11,13 +11,12 @@
 
 use std::time::Duration;
 
+use opentelemetry_c_abi::{OtelHandleHeader, OTEL_HANDLE_KIND_TRACE_EXPORTER};
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
 use opentelemetry_sdk::Resource;
 
-use crate::handle::{destroy, guard_unit, HasMagic};
-
-pub(crate) const TRACE_EXPORTER_MAGIC: u64 = 0x4F54_4C43_5452_4558; // "OTLCTREX"
+use crate::handle::{destroy, guard_unit, HasHandleHeader};
 
 /// Internal trace-exporter implementation. Each variant is a concrete exporter kind; the enum
 /// dispatches the [`SpanExporter`] trait to the active one. OTLP is optional (`otlp-http`);
@@ -74,35 +73,36 @@ impl SpanExporter for TraceExporterImpl {
 
 /// Opaque trace-exporter handle. Owns a built `TraceExporterImpl` until it is consumed by a
 /// span processor builder (via `set_exporter`) or destroyed.
+#[repr(C)]
 pub struct OtelTraceExporter {
-    magic: u64,
+    header: OtelHandleHeader,
     pub(crate) exporter: TraceExporterImpl,
 }
 
 impl OtelTraceExporter {
     pub(crate) fn new(exporter: TraceExporterImpl) -> Self {
         OtelTraceExporter {
-            magic: TRACE_EXPORTER_MAGIC,
+            header: OtelHandleHeader::new(Self::KIND),
             exporter,
         }
     }
 }
 
-impl HasMagic for OtelTraceExporter {
-    const MAGIC: u64 = TRACE_EXPORTER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelTraceExporter {
+    const KIND: u64 = OTEL_HANDLE_KIND_TRACE_EXPORTER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
 /// Destroy a trace-exporter handle (no-op on NULL).
 ///
 /// Do **not** call this on an exporter that was successfully transferred into a span
-/// processor builder via `otel_batch_span_processor_builder_set_exporter` — that builder owns
-/// it now (a transferred handle's magic is poisoned, so this degrades to a safe no-op).
+/// processor builder via `otel_batch_span_processor_builder_set_exporter` — the original
+/// pointer is invalid after transfer and that builder owns the exporter.
 ///
 /// # Safety
 /// `exporter` must be NULL or a live exporter handle, not destroyed concurrently.

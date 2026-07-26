@@ -60,13 +60,33 @@ typedef struct otel_instrument_options_t {
     size_t boundary_count;
 } otel_instrument_options_t;
 
+/*
+ * Complete instrumentation-scope options. Initialize with OTEL_METER_OPTIONS_INIT.
+ * All strings and attributes are borrowed only for the call and copied by an SDK-backed
+ * provider. Scope attribute keys must be non-empty, valid UTF-8, and unique. Duplicate keys
+ * are rejected rather than assigned ordering-dependent semantics.
+ */
+typedef struct otel_meter_options_t {
+    uint64_t struct_size;
+    otel_string_view_t name;
+    otel_string_view_t version;
+    otel_string_view_t schema_url;
+    const otel_key_value_t* attributes;
+    size_t attribute_count;
+} otel_meter_options_t;
+
 #define OTEL_INSTRUMENT_OPTIONS_INIT \
     { sizeof(otel_instrument_options_t), { NULL, 0 }, { NULL, 0 }, NULL, 0 }
+
+#define OTEL_METER_OPTIONS_INIT \
+    { sizeof(otel_meter_options_t), { NULL, 0 }, { NULL, 0 }, { NULL, 0 }, NULL, 0 }
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
     defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
 _Static_assert(sizeof(otel_instrument_options_t) == 56,
                "otel_instrument_options_t ABI mismatch");
+_Static_assert(sizeof(otel_meter_options_t) == 72,
+               "otel_meter_options_t ABI mismatch");
 #endif
 
 otel_meter_provider_t* otel_global_meter_provider(void);
@@ -74,6 +94,8 @@ otel_meter_t* otel_meter_provider_get_meter(const otel_meter_provider_t* provide
                                             otel_string_view_t name,
                                             otel_string_view_t version,
                                             otel_string_view_t schema_url);
+otel_meter_t* otel_meter_provider_get_meter_with_options(
+    const otel_meter_provider_t* provider, const otel_meter_options_t* options);
 void otel_meter_provider_destroy(otel_meter_provider_t* provider);
 void otel_meter_destroy(otel_meter_t* meter);
 
@@ -121,7 +143,11 @@ void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
 
 /*
  * Observable callbacks run during reader collection and may be invoked concurrently by
- * different readers. They must finish in finite time and must not retain the observer.
+ * different readers. An observer token is valid only on the callback's current thread and
+ * only until that callback returns. It may be used repeatedly and reentrantly on that thread,
+ * but must not be retained, passed to another thread, or used by work spawned from the
+ * callback. Cross-thread and stale uses return OTEL_STATUS_INVALID_ARGUMENT without
+ * dispatching to the SDK. Callbacks must finish in finite time.
  * Destroying the public observable handle disables future callback work and releases its
  * user-data ownership. user_data_destroy runs exactly once after any callback already in
  * flight releases its temporary reference; it does not depend on the SDK pipeline closure

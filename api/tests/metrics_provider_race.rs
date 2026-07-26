@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use opentelemetry_c_abi::{
-    OtelKeyValue, OtelMetricInstrumentConfig, OtelMetricsVtable, OtelStatus, OtelStringView,
-    OTEL_METRICS_IMPL_ABI_VERSION,
+    OtelKeyValue, OtelMetricInstrumentConfig, OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus,
+    OtelStringView, OTEL_METRICS_IMPL_ABI_VERSION,
 };
 use opentelemetry_c_api::{
     otel_api_register_global_meter_provider, otel_global_meter_provider, otel_meter_destroy,
@@ -50,6 +50,14 @@ extern "C" fn get_meter(
     _: OtelStringView,
     _: OtelStringView,
     _: OtelStringView,
+) -> *mut c_void {
+    check_alive(ctx);
+    Box::into_raw(Box::new(0u8)).cast()
+}
+
+extern "C" fn get_meter_with_scope(
+    ctx: *mut c_void,
+    _: *const OtelMetricScopeConfig,
 ) -> *mut c_void {
     check_alive(ctx);
     Box::into_raw(Box::new(0u8)).cast()
@@ -104,6 +112,7 @@ static VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     observer_observe_i64: record_i64,
     observer_observe_f64: record_f64,
     instrument_free: object_free,
+    provider_get_meter_with_scope: get_meter_with_scope,
 };
 
 fn sv(value: &'static str) -> OtelStringView {

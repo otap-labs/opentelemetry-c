@@ -2,15 +2,18 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use opentelemetry_c_abi::{
-    metrics_vtable_compatible, trace_vtable_compatible, OtelImplVtable, OtelKeyValue,
-    OtelMetricInstrumentConfig, OtelMetricsVtable, OtelStatus, OtelStringView, OtelVtableHeader,
-    OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE, OTEL_METRICS_IMPL_ABI_VERSION,
+    metrics_vtable_compatible, metrics_vtable_supports_scope_config, trace_vtable_compatible,
+    OtelImplVtable, OtelKeyValue, OtelMetricInstrumentConfig, OtelMetricScopeConfig,
+    OtelMetricsVtable, OtelStatus, OtelStringView, OtelVtableHeader, OTEL_IMPL_ABI_VERSION,
+    OTEL_IMPL_VTABLE_REQUIRED_SIZE, OTEL_METRICS_IMPL_ABI_VERSION,
     OTEL_METRICS_VTABLE_REQUIRED_SIZE, OTEL_TRACE_IMPL_ABI_VERSION,
 };
 use opentelemetry_c_api::{
     otel_api_meter_provider_new, otel_api_provider_new, otel_api_register_global_meter_provider,
     otel_api_register_global_meter_provider_with_token, otel_api_register_global_provider,
-    otel_api_unregister_global_meter_provider, otel_meter_provider_destroy,
+    otel_api_unregister_global_meter_provider, otel_last_error_message, otel_meter_destroy,
+    otel_meter_provider_destroy, otel_meter_provider_get_meter_with_options, OtelAttributeType,
+    OtelAttributeValue, OtelMeterOptions,
 };
 
 extern "C" fn get_meter(
@@ -19,6 +22,10 @@ extern "C" fn get_meter(
     _: OtelStringView,
     _: OtelStringView,
 ) -> *mut c_void {
+    std::ptr::NonNull::<c_void>::dangling().as_ptr()
+}
+
+extern "C" fn get_meter_with_scope(_: *mut c_void, _: *const OtelMetricScopeConfig) -> *mut c_void {
     std::ptr::null_mut()
 }
 
@@ -59,6 +66,7 @@ const VALID: OtelMetricsVtable = OtelMetricsVtable {
     observer_observe_i64: record_i64,
     observer_observe_f64: record_f64,
     instrument_free: free,
+    provider_get_meter_with_scope: get_meter_with_scope,
 };
 
 extern "C" fn get_tracer(
@@ -143,6 +151,15 @@ extern "C" fn rejected_context_free(_: *mut c_void) {
     REJECTED_CONTEXT_FREES.fetch_add(1, Ordering::SeqCst);
 }
 
+fn last_error() -> String {
+    let error = otel_last_error_message();
+    assert!(!error.ptr.is_null());
+    String::from_utf8(
+        unsafe { std::slice::from_raw_parts(error.ptr.cast::<u8>(), error.len) }.to_vec(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn vtable_kind_and_size_validation_is_signal_specific() {
     assert_eq!(OTEL_IMPL_ABI_VERSION, OTEL_TRACE_IMPL_ABI_VERSION);
@@ -152,6 +169,13 @@ fn vtable_kind_and_size_validation_is_signal_specific() {
 
     assert!(unsafe { trace_vtable_compatible(&VALID_TRACE) });
     assert!(unsafe { metrics_vtable_compatible(&VALID) });
+    assert!(unsafe { metrics_vtable_supports_scope_config(&VALID) });
+    let original_metrics_prefix = OtelMetricsVtable {
+        struct_size: OTEL_METRICS_VTABLE_REQUIRED_SIZE,
+        ..VALID
+    };
+    assert!(unsafe { metrics_vtable_compatible(&original_metrics_prefix) });
+    assert!(!unsafe { metrics_vtable_supports_scope_config(&original_metrics_prefix) });
 
     // Cross-kind checks read only the common header and reject before any function slot.
     assert!(!unsafe { metrics_vtable_compatible((&VALID_TRACE as *const OtelImplVtable).cast()) });
@@ -200,8 +224,9 @@ fn cross_kind_registration_and_construction_reject_before_dispatch() {
                 trace_ctx,
             )
         },
-        OtelStatus::InvalidArgument
+        OtelStatus::InvalidConfig
     );
+    assert!(last_error().contains("incompatible trace implementation ABI"));
     assert_eq!(REJECTED_CONTEXT_FREES.load(Ordering::SeqCst), 0);
     drop(unsafe { Box::from_raw(trace_ctx.cast::<u8>()) });
 
@@ -215,6 +240,7 @@ fn cross_kind_registration_and_construction_reject_before_dispatch() {
         },
         OtelStatus::InvalidConfig
     );
+    assert!(last_error().contains("incompatible metrics implementation ABI"));
     assert_eq!(REJECTED_CONTEXT_FREES.load(Ordering::SeqCst), 0);
     drop(unsafe { Box::from_raw(metrics_ctx.cast::<u8>()) });
 
@@ -226,6 +252,7 @@ fn cross_kind_registration_and_construction_reject_before_dispatch() {
         )
     }
     .is_null());
+    assert!(last_error().contains("incompatible metrics implementation ABI"));
     assert_eq!(REJECTED_CONTEXT_FREES.load(Ordering::SeqCst), 0);
     drop(unsafe { Box::from_raw(metrics_provider_ctx.cast::<u8>()) });
 
@@ -237,8 +264,32 @@ fn cross_kind_registration_and_construction_reject_before_dispatch() {
         )
     }
     .is_null());
+    assert!(last_error().contains("incompatible trace implementation ABI"));
     assert_eq!(REJECTED_CONTEXT_FREES.load(Ordering::SeqCst), 0);
     drop(unsafe { Box::from_raw(trace_provider_ctx.cast::<u8>()) });
+}
+
+#[test]
+fn trace_abi_failures_follow_the_metrics_invalid_config_policy() {
+    let dummy = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+    for invalid in [
+        OtelImplVtable {
+            abi_version: OTEL_TRACE_IMPL_ABI_VERSION + 1,
+            ..VALID_TRACE
+        },
+        OtelImplVtable {
+            struct_size: OTEL_IMPL_VTABLE_REQUIRED_SIZE - 1,
+            ..VALID_TRACE
+        },
+    ] {
+        assert_eq!(
+            unsafe { otel_api_register_global_provider(&invalid, dummy) },
+            OtelStatus::InvalidConfig
+        );
+        assert!(last_error().contains("incompatible trace implementation ABI"));
+        assert!(unsafe { otel_api_provider_new(&invalid, dummy) }.is_null());
+        assert!(last_error().contains("incompatible trace implementation ABI"));
+    }
 }
 
 #[test]
@@ -250,7 +301,7 @@ fn rejects_incompatible_metrics_vtables() {
             ..VALID
         },
         OtelMetricsVtable {
-            struct_size: std::mem::size_of::<OtelMetricsVtable>() - 1,
+            struct_size: OTEL_METRICS_VTABLE_REQUIRED_SIZE - 1,
             ..VALID
         },
     ] {
@@ -264,6 +315,50 @@ fn rejects_incompatible_metrics_vtables() {
 
     let provider = unsafe { otel_api_meter_provider_new(&VALID, dummy) };
     assert!(!provider.is_null());
+    unsafe { otel_meter_provider_destroy(provider) };
+}
+
+#[test]
+fn complete_scope_options_fail_closed_with_an_original_prefix_vtable() {
+    let legacy = OtelMetricsVtable {
+        struct_size: OTEL_METRICS_VTABLE_REQUIRED_SIZE,
+        ..VALID
+    };
+    let dummy = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+    let provider = unsafe { otel_api_meter_provider_new(&legacy, dummy) };
+    assert!(!provider.is_null());
+
+    let mut options = OtelMeterOptions {
+        struct_size: std::mem::size_of::<OtelMeterOptions>() as u64,
+        name: OtelStringView::empty(),
+        version: OtelStringView::empty(),
+        schema_url: OtelStringView::empty(),
+        attributes: std::ptr::null(),
+        attribute_count: 0,
+    };
+    let meter = unsafe { otel_meter_provider_get_meter_with_options(provider, &options) };
+    assert!(!meter.is_null());
+    unsafe { otel_meter_destroy(meter) };
+
+    let key = b"component";
+    let value = b"checkout";
+    let attribute = OtelKeyValue {
+        key: OtelStringView {
+            ptr: key.as_ptr().cast(),
+            len: key.len(),
+        },
+        value_type: OtelAttributeType::String as u32,
+        value: OtelAttributeValue {
+            string_value: OtelStringView {
+                ptr: value.as_ptr().cast(),
+                len: value.len(),
+            },
+        },
+    };
+    options.attributes = &attribute;
+    options.attribute_count = 1;
+    assert!(unsafe { otel_meter_provider_get_meter_with_options(provider, &options) }.is_null());
+    assert!(last_error().contains("does not support scope attributes"));
     unsafe { otel_meter_provider_destroy(provider) };
 }
 

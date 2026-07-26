@@ -125,9 +125,19 @@ unsupported.
 ## Ownership & safety
 
 - Every handle-returning function transfers ownership; release with the matching
-  `*_destroy`. Pass only NULL or a **live handle of the exact expected type**; the magic
-  check is a best-effort diagnostic, not a safety net (use-after-destroy is UB).
+  `*_destroy`. Pass only NULL or a live project handle. A common raw prefix rejects a live
+  handle of the wrong OpenTelemetry C type before full typed access. Foreign pointers,
+  use-after-destroy, double destruction, and destruction races remain undefined behavior.
+- Status classification is repository-wide: malformed immediate arguments use
+  `OTEL_STATUS_INVALID_ARGUMENT`; readable but incompatible ABI/configuration or unavailable
+  compiled support uses `OTEL_STATUS_INVALID_CONFIG`; bounded overruns use
+  `OTEL_STATUS_TIMEOUT`; export/callback pipeline failures use `OTEL_STATUS_EXPORT_FAILED`;
+  wrapper/infrastructure failures use `OTEL_STATUS_INTERNAL_ERROR`.
 - Strings are borrowed `otel_string_view_t` values, copied before return.
+- `otel_meter_provider_get_meter_with_options()` accepts a versioned complete
+  instrumentation scope: name, version, schema URL, and uniquely keyed typed attributes.
+  The API validates the borrowed data consistently even for API-only no-op meters; an
+  SDK-backed meter copies it into the upstream `InstrumentationScope`.
 - All entry points are panic-safe (a Rust panic is caught, never unwound into C).
 - SDK/provider/tracer handles are safe to share across threads; a single span handle is
   not (one span per thread). `*_destroy` must not race with other calls on the same handle.

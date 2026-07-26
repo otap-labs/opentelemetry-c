@@ -18,6 +18,88 @@
 
 use std::os::raw::{c_char, c_void};
 
+/// Common prefix for every API/SDK-owned opaque C handle.
+///
+/// This is internal to the coordinated API/SDK implementation. It lets entry points inspect
+/// only two fixed-width fields before forming a reference to the expected concrete handle.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtelHandleHeader {
+    magic: u64,
+    kind: u64,
+}
+
+const OTEL_HANDLE_MAGIC: u64 = 0x4F54_4C43_4844_4C31; // "OTLCHDL1"
+
+impl OtelHandleHeader {
+    /// Construct a live header for `kind`.
+    pub const fn new(kind: u64) -> Self {
+        Self {
+            magic: OTEL_HANDLE_MAGIC,
+            kind,
+        }
+    }
+
+    /// Whether this is a live handle of the expected kind.
+    pub const fn is_live_kind(self, kind: u64) -> bool {
+        self.magic == OTEL_HANDLE_MAGIC && self.kind == kind
+    }
+
+    /// Whether this carries the live-handle magic, independent of kind.
+    pub const fn is_live(self) -> bool {
+        self.magic == OTEL_HANDLE_MAGIC
+    }
+
+    /// Stored globally unique handle kind.
+    pub const fn kind(self) -> u64 {
+        self.kind
+    }
+
+    /// Poison a consumed or about-to-be-destroyed handle.
+    pub fn poison(&mut self) {
+        self.magic = 0;
+    }
+}
+
+// API handle kinds.
+pub const OTEL_HANDLE_KIND_TRACER_PROVIDER: u64 = 0x0101;
+pub const OTEL_HANDLE_KIND_TRACER: u64 = 0x0102;
+pub const OTEL_HANDLE_KIND_SPAN: u64 = 0x0103;
+pub const OTEL_HANDLE_KIND_METER_PROVIDER: u64 = 0x0110;
+pub const OTEL_HANDLE_KIND_METER: u64 = 0x0111;
+pub const OTEL_HANDLE_KIND_COUNTER_U64: u64 = 0x0120;
+pub const OTEL_HANDLE_KIND_COUNTER_F64: u64 = 0x0121;
+pub const OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64: u64 = 0x0122;
+pub const OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64: u64 = 0x0123;
+pub const OTEL_HANDLE_KIND_GAUGE_U64: u64 = 0x0124;
+pub const OTEL_HANDLE_KIND_GAUGE_I64: u64 = 0x0125;
+pub const OTEL_HANDLE_KIND_GAUGE_F64: u64 = 0x0126;
+pub const OTEL_HANDLE_KIND_HISTOGRAM_U64: u64 = 0x0127;
+pub const OTEL_HANDLE_KIND_HISTOGRAM_F64: u64 = 0x0128;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64: u64 = 0x0130;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64: u64 = 0x0131;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64: u64 = 0x0132;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64: u64 = 0x0133;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64: u64 = 0x0134;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64: u64 = 0x0135;
+pub const OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64: u64 = 0x0136;
+
+// SDK handle kinds. These share one namespace with API handles because callers may pass a
+// live handle across the library boundary with the wrong static C type.
+pub const OTEL_HANDLE_KIND_SDK_BUILDER: u64 = 0x0201;
+pub const OTEL_HANDLE_KIND_SDK: u64 = 0x0202;
+pub const OTEL_HANDLE_KIND_OTLP_TRACE_EXPORTER_BUILDER: u64 = 0x0210;
+pub const OTEL_HANDLE_KIND_TRACE_EXPORTER: u64 = 0x0211;
+pub const OTEL_HANDLE_KIND_BATCH_SPAN_PROCESSOR_BUILDER: u64 = 0x0212;
+pub const OTEL_HANDLE_KIND_SPAN_PROCESSOR: u64 = 0x0213;
+pub const OTEL_HANDLE_KIND_OTLP_METRIC_EXPORTER_BUILDER: u64 = 0x0220;
+pub const OTEL_HANDLE_KIND_METRIC_EXPORTER: u64 = 0x0221;
+pub const OTEL_HANDLE_KIND_PERIODIC_METRIC_READER_BUILDER: u64 = 0x0222;
+pub const OTEL_HANDLE_KIND_PERIODIC_METRIC_READER: u64 = 0x0223;
+pub const OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER: u64 = 0x0224;
+pub const OTEL_HANDLE_KIND_METRIC_VIEW: u64 = 0x0225;
+pub const OTEL_HANDLE_KIND_MANUAL_METRIC_READER: u64 = 0x0226;
+
 /// Fixed-width status code returned by fallible C API functions. Mirrors `otel_status_t`.
 ///
 /// `Ok` (0) is success; any non-zero value is a failure. This is an integer newtype rather
@@ -34,15 +116,17 @@ impl OtelStatus {
     pub const InvalidArgument: Self = Self(1);
     /// A string argument was not valid UTF-8 where UTF-8 is required.
     pub const InvalidUtf8: Self = Self(2);
-    /// Configuration supplied to the SDK builder was invalid.
+    /// Readable configuration was incompatible, invalid as a whole, or requested support
+    /// that was not compiled in.
     pub const InvalidConfig: Self = Self(3);
     /// The SDK (or provider) has already been shut down.
     pub const AlreadyShutdown: Self = Self(4);
     /// The operation did not complete within the supplied timeout.
     pub const Timeout: Self = Self(5);
-    /// A span export failed at runtime. This never crashes the process.
+    /// An exporter or callback-driven export pipeline failed at runtime.
     pub const ExportFailed: Self = Self(6);
-    /// An unexpected internal error occurred (including a caught Rust panic).
+    /// The C wrapper or SDK infrastructure failed unexpectedly, including a caught panic,
+    /// allocation failure, or worker-thread creation failure.
     pub const InternalError: Self = Self(7);
 }
 
@@ -468,6 +552,19 @@ pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelImplVt
 /// provider context, and API-owned global slot from traces.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct OtelMetricScopeConfig {
+    pub name: OtelStringView,
+    pub version: OtelStringView,
+    pub schema_url: OtelStringView,
+    pub attributes: *const OtelKeyValue,
+    pub attribute_count: usize,
+}
+
+pub type OtelProviderGetMeterWithScope =
+    extern "C" fn(provider_ctx: *mut c_void, scope: *const OtelMetricScopeConfig) -> *mut c_void;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct OtelMetricsVtable {
     /// Metrics ABI kind/version identifier.
     pub abi_version: u32,
@@ -523,6 +620,9 @@ pub struct OtelMetricsVtable {
         attribute_count: usize,
     ) -> OtelStatus,
     pub instrument_free: extern "C" fn(instrument_ctx: *mut c_void),
+    /// Append-only complete-scope extension. Access only when `struct_size` is at least
+    /// [`OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE`].
+    pub provider_get_meter_with_scope: OtelProviderGetMeterWithScope,
 }
 
 /// Current Metrics implementation ABI kind/version identifier.
@@ -531,8 +631,17 @@ pub struct OtelMetricsVtable {
 /// version within that namespace.
 pub const OTEL_METRICS_IMPL_ABI_VERSION: u32 = 0x4D00_0001;
 
-/// Minimum Metrics vtable size required by this API version.
-pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelMetricsVtable>();
+/// Historical Metrics vtable prefix size before append-only scope attributes were added.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = 112;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = 56;
+
+/// Metrics vtable prefix size through [`OtelMetricScopeConfig`] support.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE: usize = 120;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE: usize = 60;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -566,17 +675,31 @@ pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
 /// # Safety
 ///
 /// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
-/// If the header is compatible, it must also be readable as a complete
-/// [`OtelMetricsVtable`] and remain live wherever the caller subsequently stores or uses it.
-/// No bytes beyond the header are read by this function.
+/// If the header is compatible, it must also be readable through
+/// [`OTEL_METRICS_VTABLE_REQUIRED_SIZE`] and remain live wherever the caller stores or uses
+/// it. Append-only fields may be accessed only after their own size check. No bytes beyond
+/// the header are read by this function.
 pub unsafe fn metrics_vtable_compatible(vtable: *const OtelMetricsVtable) -> bool {
     let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
     header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
         && header.struct_size >= OTEL_METRICS_VTABLE_REQUIRED_SIZE
 }
 
+/// Whether a compatible Metrics vtable includes the complete-scope extension.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+pub unsafe fn metrics_vtable_supports_scope_config(vtable: *const OtelMetricsVtable) -> bool {
+    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE
+}
+
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
+const _: () =
+    assert!(std::mem::size_of::<OtelMetricsVtable>() == OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE);
 
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]
@@ -587,6 +710,8 @@ const _: () = {
     assert!(size_of::<OtelAttributeValue>() == 16);
     assert!(size_of::<OtelKeyValue>() == 40);
     assert!(align_of::<OtelKeyValue>() == 8);
+    assert!(size_of::<OtelMetricScopeConfig>() == 64);
+    assert!(align_of::<OtelMetricScopeConfig>() == 8);
 };
 
 /// Assert (mostly for documentation) that a raw `void*` round-trips; used by the API/SDK.
@@ -637,6 +762,52 @@ mod tests {
             std::mem::size_of::<u32>()
         );
         assert_ne!(OtelStatus(999), OtelStatus::Ok);
+    }
+
+    #[test]
+    fn opaque_handle_kinds_are_globally_unique() {
+        let kinds = [
+            OTEL_HANDLE_KIND_TRACER_PROVIDER,
+            OTEL_HANDLE_KIND_TRACER,
+            OTEL_HANDLE_KIND_SPAN,
+            OTEL_HANDLE_KIND_METER_PROVIDER,
+            OTEL_HANDLE_KIND_METER,
+            OTEL_HANDLE_KIND_COUNTER_U64,
+            OTEL_HANDLE_KIND_COUNTER_F64,
+            OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64,
+            OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64,
+            OTEL_HANDLE_KIND_GAUGE_U64,
+            OTEL_HANDLE_KIND_GAUGE_I64,
+            OTEL_HANDLE_KIND_GAUGE_F64,
+            OTEL_HANDLE_KIND_HISTOGRAM_U64,
+            OTEL_HANDLE_KIND_HISTOGRAM_F64,
+            OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64,
+            OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64,
+            OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64,
+            OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
+            OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64,
+            OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64,
+            OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64,
+            OTEL_HANDLE_KIND_SDK_BUILDER,
+            OTEL_HANDLE_KIND_SDK,
+            OTEL_HANDLE_KIND_OTLP_TRACE_EXPORTER_BUILDER,
+            OTEL_HANDLE_KIND_TRACE_EXPORTER,
+            OTEL_HANDLE_KIND_BATCH_SPAN_PROCESSOR_BUILDER,
+            OTEL_HANDLE_KIND_SPAN_PROCESSOR,
+            OTEL_HANDLE_KIND_OTLP_METRIC_EXPORTER_BUILDER,
+            OTEL_HANDLE_KIND_METRIC_EXPORTER,
+            OTEL_HANDLE_KIND_PERIODIC_METRIC_READER_BUILDER,
+            OTEL_HANDLE_KIND_PERIODIC_METRIC_READER,
+            OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER,
+            OTEL_HANDLE_KIND_METRIC_VIEW,
+            OTEL_HANDLE_KIND_MANUAL_METRIC_READER,
+        ];
+        for (index, kind) in kinds.iter().enumerate() {
+            assert!(
+                !kinds[..index].contains(kind),
+                "duplicate opaque handle kind {kind:#x}"
+            );
+        }
     }
 
     #[test]

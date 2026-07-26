@@ -93,7 +93,8 @@ pub(crate) fn retain_global() -> GlobalRetain {
 
 /// **Internal ABI (called by the SDK cdylib).** Install `vtable`/`provider_ctx` as the
 /// process-global provider, replacing any previous one (whose context is freed via its own
-/// `provider_free`). Returns `OTEL_STATUS_INVALID_ARGUMENT` if `vtable` is NULL.
+/// `provider_free`). Returns `OTEL_STATUS_INVALID_ARGUMENT` if `vtable` is NULL and
+/// `OTEL_STATUS_INVALID_CONFIG` if its readable ABI header is incompatible.
 ///
 /// There is no deregister/clear entry point: an installed provider stays in the slot until
 /// it is replaced by another install or the process exits. Consequently the library that
@@ -122,7 +123,7 @@ pub unsafe extern "C" fn otel_api_register_global_provider(
         // is accessed until the signal kind/version and required trace prefix are validated.
         if !unsafe { trace_vtable_compatible(vtable) } {
             return fail(
-                OtelStatus::InvalidArgument,
+                OtelStatus::InvalidConfig,
                 format!(
                     "register_global_provider: incompatible trace implementation ABI \
                      (expected kind/version {OTEL_TRACE_IMPL_ABI_VERSION})"

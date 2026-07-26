@@ -5,23 +5,23 @@
 //! dedicated OS thread and exports on the spec's batching schedule.
 //!
 //! Ownership: `set_exporter` transfers the exporter into this builder on `OTEL_STATUS_OK`
-//! (the caller must not destroy it afterwards). Destroying this builder frees a transferred
-//! exporter if `build` was not completed; a successful `build` moves it into the processor.
+//! and invalidates the original pointer. Destroying this builder frees a transferred exporter
+//! if `build` was not completed; a successful `build` moves it into the processor.
 
 use std::time::Duration;
 
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor};
 
-use opentelemetry_c_abi::OtelStatus;
+use opentelemetry_c_abi::{
+    OtelHandleHeader, OtelStatus, OTEL_HANDLE_KIND_BATCH_SPAN_PROCESSOR_BUILDER,
+};
 
 use crate::error::{clear_last_error, fail, fail_owned};
 use crate::handle::{
-    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, take, HasMagic,
+    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, take, HasHandleHeader,
 };
 use crate::span_processor::{OtelSpanProcessor, SpanProcessorImpl};
 use crate::trace_exporter::{OtelTraceExporter, TraceExporterImpl};
-
-const BATCH_PROCESSOR_BUILDER_MAGIC: u64 = 0x4F54_4C43_4253_5042; // "OTLCBSPB"
 
 /// Upper bound on the batch max queue size accepted from C (the processor preallocates a
 /// bounded channel of this capacity). `0` selects the SDK default; larger is rejected. This
@@ -39,20 +39,21 @@ struct BatchConfig {
 }
 
 /// Opaque batch span processor builder. Not thread-safe; confine to one thread.
+#[repr(C)]
 pub struct OtelBatchSpanProcessorBuilder {
-    magic: u64,
+    header: OtelHandleHeader,
     // Owned once `set_exporter` succeeds; freed on destroy or consumed by `build`.
     exporter: Option<Box<OtelTraceExporter>>,
     config: BatchConfig,
 }
 
-impl HasMagic for OtelBatchSpanProcessorBuilder {
-    const MAGIC: u64 = BATCH_PROCESSOR_BUILDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelBatchSpanProcessorBuilder {
+    const KIND: u64 = OTEL_HANDLE_KIND_BATCH_SPAN_PROCESSOR_BUILDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -81,7 +82,7 @@ pub extern "C" fn otel_batch_span_processor_builder_new() -> *mut OtelBatchSpanP
     guard_ptr(|| {
         clear_last_error();
         into_raw(OtelBatchSpanProcessorBuilder {
-            magic: BATCH_PROCESSOR_BUILDER_MAGIC,
+            header: OtelHandleHeader::new(OtelBatchSpanProcessorBuilder::KIND),
             exporter: None,
             config: BatchConfig::default(),
         })
@@ -101,8 +102,8 @@ pub unsafe extern "C" fn otel_batch_span_processor_builder_destroy(
 }
 
 /// Set (transfer) the trace exporter this processor exports through. On `OTEL_STATUS_OK`,
-/// ownership of `exporter` moves into the builder and the caller must not destroy it. On
-/// failure (invalid builder or exporter), the caller still owns `exporter`. Replacing a
+/// ownership of `exporter` moves into the builder and the original pointer becomes invalid.
+/// On failure (invalid builder or exporter), the caller still owns `exporter`. Replacing a
 /// previously-set exporter frees the previous one.
 ///
 /// # Safety
@@ -370,9 +371,8 @@ mod tests {
                 otel_batch_span_processor_builder_set_exporter(pb, exporter),
                 OtelStatus::Ok
             );
-            // Transferred: a destroy on the transferred handle is a poisoned no-op, and
-            // destroying the builder frees the exporter exactly once.
-            otel_trace_exporter_destroy(exporter);
+            // Transferred: the original pointer is invalid. Destroying the builder releases the
+            // exporter through its new owner.
             otel_batch_span_processor_builder_destroy(pb);
         }
     }

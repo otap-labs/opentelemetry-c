@@ -1,26 +1,27 @@
 //! Opaque Metrics exporter handle.
 
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use std::time::Duration;
 
+use opentelemetry_c_abi::{OtelHandleHeader, OTEL_HANDLE_KIND_METRIC_EXPORTER};
 #[cfg(feature = "otlp-grpc")]
 use opentelemetry_sdk::error::OTelSdkError;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::error::OTelSdkResult;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::Temporality;
 
-use crate::handle::{destroy, guard_unit, HasMagic};
+use crate::custom_metric_exporter::{
+    custom_exporter_export, custom_exporter_force_flush, custom_exporter_shutdown,
+    CustomMetricExporter,
+};
+use crate::handle::{destroy, guard_unit, HasHandleHeader};
 
 pub(crate) enum MetricExporterImpl {
     #[cfg(feature = "otlp-http")]
     OtlpHttp(opentelemetry_otlp::MetricExporter),
     #[cfg(feature = "otlp-grpc")]
     OtlpGrpc(GrpcMetricExporter),
+    Custom(CustomMetricExporter),
     #[cfg(test)]
     #[allow(dead_code)]
     Test(TestMetricExporter),
@@ -119,7 +120,6 @@ fn dispose_grpc_runtime(runtime: tokio::runtime::Runtime) {
     }
 }
 
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 impl PushMetricExporter for MetricExporterImpl {
     async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
         match self {
@@ -141,6 +141,7 @@ impl PushMetricExporter for MetricExporterImpl {
                     .runtime()
                     .block_on(exporter.exporter().export(metrics))
             }
+            Self::Custom(exporter) => custom_exporter_export(exporter, metrics),
             #[cfg(test)]
             Self::Test(exporter) => exporter.export(metrics).await,
         }
@@ -152,6 +153,7 @@ impl PushMetricExporter for MetricExporterImpl {
             Self::OtlpHttp(exporter) => exporter.force_flush(),
             #[cfg(feature = "otlp-grpc")]
             Self::OtlpGrpc(exporter) => exporter.exporter().force_flush(),
+            Self::Custom(exporter) => custom_exporter_force_flush(exporter),
             #[cfg(test)]
             Self::Test(exporter) => exporter.force_flush(),
         }
@@ -163,6 +165,7 @@ impl PushMetricExporter for MetricExporterImpl {
             Self::OtlpHttp(exporter) => exporter.shutdown_with_timeout(timeout),
             #[cfg(feature = "otlp-grpc")]
             Self::OtlpGrpc(exporter) => exporter.exporter().shutdown_with_timeout(timeout),
+            Self::Custom(exporter) => custom_exporter_shutdown(exporter, timeout),
             #[cfg(test)]
             Self::Test(exporter) => exporter.shutdown_with_timeout(timeout),
         }
@@ -174,6 +177,7 @@ impl PushMetricExporter for MetricExporterImpl {
             Self::OtlpHttp(exporter) => exporter.temporality(),
             #[cfg(feature = "otlp-grpc")]
             Self::OtlpGrpc(exporter) => exporter.exporter().temporality(),
+            Self::Custom(exporter) => exporter.temporality(),
             #[cfg(test)]
             Self::Test(exporter) => exporter.temporality(),
         }
@@ -185,6 +189,10 @@ impl PushMetricExporter for MetricExporterImpl {
 pub(crate) struct TestMetricExporter {
     drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     lifecycle: Option<TestMetricExporterLifecycle>,
+    #[cfg(feature = "metrics-async-runtime")]
+    exports: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    #[cfg(feature = "metrics-async-runtime")]
+    export_delay: Option<Duration>,
 }
 
 #[cfg(test)]
@@ -200,6 +208,10 @@ impl TestMetricExporter {
         Self {
             drops,
             lifecycle: None,
+            #[cfg(feature = "metrics-async-runtime")]
+            exports: None,
+            #[cfg(feature = "metrics-async-runtime")]
+            export_delay: None,
         }
     }
 
@@ -210,6 +222,24 @@ impl TestMetricExporter {
         Self {
             drops,
             lifecycle: Some(lifecycle),
+            #[cfg(feature = "metrics-async-runtime")]
+            exports: None,
+            #[cfg(feature = "metrics-async-runtime")]
+            export_delay: None,
+        }
+    }
+
+    #[cfg(feature = "metrics-async-runtime")]
+    pub(crate) fn with_async_probe(
+        drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        exports: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        export_delay: Duration,
+    ) -> Self {
+        Self {
+            drops,
+            lifecycle: None,
+            exports: Some(exports),
+            export_delay: Some(export_delay),
         }
     }
 }
@@ -234,6 +264,15 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for TestMetricExpo
         &self,
         _metrics: &opentelemetry_sdk::metrics::data::ResourceMetrics,
     ) -> opentelemetry_sdk::error::OTelSdkResult {
+        #[cfg(feature = "metrics-async-runtime")]
+        {
+            if let Some(exports) = &self.exports {
+                exports.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let Some(delay) = self.export_delay {
+                tokio::time::sleep(delay).await;
+            }
+        }
         Ok(())
     }
 
@@ -258,33 +297,33 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for TestMetricExpo
     }
 }
 
-const METRIC_EXPORTER_MAGIC: u64 = 0x4F54_4C43_4D45_5850;
-
+#[repr(C)]
 pub struct OtelMetricExporter {
-    magic: u64,
+    header: OtelHandleHeader,
     pub(crate) exporter: MetricExporterImpl,
 }
 
 impl OtelMetricExporter {
     pub(crate) fn new(exporter: MetricExporterImpl) -> Self {
         Self {
-            magic: METRIC_EXPORTER_MAGIC,
+            header: OtelHandleHeader::new(Self::KIND),
             exporter,
         }
     }
 }
 
-impl HasMagic for OtelMetricExporter {
-    const MAGIC: u64 = METRIC_EXPORTER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMetricExporter {
+    const KIND: u64 = OTEL_HANDLE_KIND_METRIC_EXPORTER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
-/// Destroy a Metrics exporter handle.
+/// Destroy an untransferred Metrics exporter handle. After a successful transfer into a reader,
+/// the original pointer is invalid and must not be passed here.
 ///
 /// # Safety
 ///

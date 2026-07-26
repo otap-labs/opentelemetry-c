@@ -25,14 +25,6 @@ enum {
     OTEL_OTLP_COMPRESSION_ZSTD = 2
 };
 
-typedef uint32_t otel_metric_temporality_t;
-enum {
-    OTEL_METRIC_TEMPORALITY_DEFAULT = 0,
-    OTEL_METRIC_TEMPORALITY_CUMULATIVE = 1,
-    OTEL_METRIC_TEMPORALITY_DELTA = 2,
-    OTEL_METRIC_TEMPORALITY_LOW_MEMORY = 3
-};
-
 otel_otlp_metric_exporter_builder_t* otel_otlp_metric_exporter_builder_new(void);
 void otel_otlp_metric_exporter_builder_destroy(otel_otlp_metric_exporter_builder_t* builder);
 /*

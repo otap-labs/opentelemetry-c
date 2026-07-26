@@ -150,7 +150,7 @@ fn global_retain_failure_returns_null_with_error() {
     let ctx = dummy();
     assert_eq!(
         unsafe { otel_api_register_global_provider(&incompatible, ctx) },
-        OtelStatus::InvalidArgument
+        OtelStatus::InvalidConfig
     );
     unsafe { free_dummy(ctx) };
 
@@ -160,7 +160,7 @@ fn global_retain_failure_returns_null_with_error() {
     let ctx = dummy();
     assert_eq!(
         unsafe { otel_api_register_global_provider(&truncated, ctx) },
-        OtelStatus::InvalidArgument
+        OtelStatus::InvalidConfig
     );
     unsafe { free_dummy(ctx) };
 

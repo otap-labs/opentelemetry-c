@@ -1150,6 +1150,7 @@ name = "opentelemetry-c-sdk"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "futures-executor",
  "opentelemetry",
  "opentelemetry-c-abi",
  "opentelemetry-c-api",

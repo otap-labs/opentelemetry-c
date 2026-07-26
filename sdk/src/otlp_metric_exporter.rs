@@ -2,11 +2,14 @@
 
 use std::time::Duration;
 
-use opentelemetry_c_abi::{OtelStatus, OtelStringView};
+use opentelemetry_c_abi::{
+    OtelHandleHeader, OtelStatus, OtelStringView, OTEL_HANDLE_KIND_OTLP_METRIC_EXPORTER_BUILDER,
+};
 
 use crate::error::{clear_last_error, fail, fail_abi, fail_owned};
 use crate::handle::{
-    checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasMagic,
+    checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw,
+    HasHandleHeader,
 };
 use crate::metric_exporter::{MetricExporterImpl, OtelMetricExporter};
 
@@ -22,8 +25,6 @@ use opentelemetry_sdk::metrics::Temporality;
 use std::collections::HashMap;
 #[cfg(feature = "otlp-grpc")]
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
-
-const BUILDER_MAGIC: u64 = 0x4F54_4C43_4D4F_544C;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Transport {
@@ -52,18 +53,19 @@ struct Config {
     runtime_thread_stops: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
+#[repr(C)]
 pub struct OtelOtlpMetricExporterBuilder {
-    magic: u64,
+    header: OtelHandleHeader,
     config: Config,
 }
 
-impl HasMagic for OtelOtlpMetricExporterBuilder {
-    const MAGIC: u64 = BUILDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelOtlpMetricExporterBuilder {
+    const KIND: u64 = OTEL_HANDLE_KIND_OTLP_METRIC_EXPORTER_BUILDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -72,7 +74,7 @@ pub extern "C" fn otel_otlp_metric_exporter_builder_new() -> *mut OtelOtlpMetric
     guard_ptr(|| {
         clear_last_error();
         into_raw(OtelOtlpMetricExporterBuilder {
-            magic: BUILDER_MAGIC,
+            header: OtelHandleHeader::new(OtelOtlpMetricExporterBuilder::KIND),
             config: Config::default(),
         })
     })
@@ -541,7 +543,11 @@ mod tests {
             );
 
             let dead = Box::into_raw(Box::new(OtelOtlpMetricExporterBuilder {
-                magic: 0,
+                header: {
+                    let mut header = OtelHandleHeader::new(OtelOtlpMetricExporterBuilder::KIND);
+                    header.poison();
+                    header
+                },
                 config: Config::default(),
             }));
             assert_eq!(

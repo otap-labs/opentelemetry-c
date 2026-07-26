@@ -44,7 +44,10 @@ layer. Entry points that report failures clear the thread-local last-error slot 
 that clear takes no global lock and allocates no heap memory.
 
 Observable Metrics callbacks are collection-path work rather than synchronous recording.
-Their callback and observer-lifetime rules are documented in
+Observer dispatch uses callback-thread-local registrations rather than a process-global
+mutex, so readers collecting concurrently do not serialize at the C API boundary. A
+deterministic API test holds two observer dispatches inside the SDK-facing operation at once
+to guard this property. Callback and observer-lifetime rules are documented in
 [`metrics.h`](../api/include/opentelemetry_c/metrics.h) and
 [`METRICS_COMPLIANCE.md`](../METRICS_COMPLIANCE.md).
 
@@ -60,14 +63,26 @@ cargo bench -p opentelemetry-c-sdk
 ```
 
 - `api_hotpath` measures the API-only, no-SDK path. It isolates opaque-handle,
-  panic-guard, and no-op dispatch costs.
+  panic-guard, and no-op dispatch costs. Its Metrics matrix records counter, gauge, and
+  histogram operations with 0, 1, 4, 8, and 16 preconstructed integer/bool, mixed-numeric,
+  and string attributes.
 - `sdk_hotpath` installs a real exporter and SDK pipeline through the public C API and
-  measures the C boundary plus Rust SDK processing. Its benchmark target requires the
-  `otlp` feature.
+  measures the C boundary plus Rust SDK processing. It repeats the same attribute matrix and
+  includes direct OpenTelemetry Rust calls with equivalent preconstructed attributes, so C
+  conversion/FFI overhead can be separated from SDK aggregation cost. Its benchmark target
+  requires the `otlp` feature.
 
 Both suites separate pipeline setup, global installation, and tracer or meter acquisition
-from measured loops. The SDK benchmark sends to a closed loopback port, so it is not an
-exporter or network-throughput benchmark.
+from measured loops. Attribute keys, string values, C arrays, and Rust `KeyValue` arrays are
+also built outside the timed loops. The API-only path remains no-op before SDK installation,
+so attributed calls do not convert or allocate SDK values. The SDK benchmark sends to a
+closed loopback port and uses a one-hour collection interval, so it is not an exporter or
+network-throughput benchmark.
+
+Criterion records time per operation under stable groups:
+`api_no_sdk_metrics_attributes`, `sdk_backed_metrics_attributes`, and
+`rust_sdk_metrics_attributes`. Published results should include `rustc -Vv`, the target,
+release profile, and Cargo feature flags.
 
 Both suites call the real `#[no_mangle] extern "C"` symbols used by C consumers. Header
 compilation and the C examples cover C source-level linkage separately. Any future

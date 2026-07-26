@@ -26,7 +26,10 @@ use std::hint::black_box;
 use std::os::raw::c_char;
 use std::ptr;
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use opentelemetry::metrics::MeterProvider;
+use opentelemetry::KeyValue;
+use opentelemetry_sdk::metrics::{ManualReader, SdkMeterProvider};
 
 // Public C API entrypoints (dev-dep): the real process-global provider slot and span/tracer ops.
 use opentelemetry_c_api::{
@@ -76,6 +79,127 @@ fn empty() -> OtelStringView {
 }
 fn assert_ok(status: OtelStatus) {
     assert_eq!(status, OtelStatus::Ok, "setup FFI call failed: {status:?}");
+}
+
+#[derive(Clone, Copy)]
+enum AttributeShape {
+    IntegerBool,
+    MixedNumeric,
+    String,
+}
+
+impl AttributeShape {
+    fn name(self) -> &'static str {
+        match self {
+            Self::IntegerBool => "integer_bool",
+            Self::MixedNumeric => "mixed_numeric",
+            Self::String => "string",
+        }
+    }
+}
+
+struct CAttributeSet {
+    _keys: Vec<String>,
+    _string_values: Vec<String>,
+    attributes: Vec<OtelKeyValue>,
+}
+
+impl CAttributeSet {
+    fn new(shape: AttributeShape, count: usize) -> Self {
+        let keys = (0..count)
+            .map(|index| format!("benchmark.attribute.{index}"))
+            .collect::<Vec<_>>();
+        let string_values = match shape {
+            AttributeShape::String => (0..count)
+                .map(|index| format!("benchmark-value-{index:02}"))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let attributes = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                let (value_type, value) = match shape {
+                    AttributeShape::IntegerBool if index % 2 == 0 => (
+                        OtelAttributeType::Int64 as u32,
+                        OtelAttributeValue {
+                            int64_value: i64::try_from(index).unwrap(),
+                        },
+                    ),
+                    AttributeShape::IntegerBool => (
+                        OtelAttributeType::Bool as u32,
+                        OtelAttributeValue {
+                            bool_value: u32::from(index % 2 == 0),
+                        },
+                    ),
+                    AttributeShape::MixedNumeric if index % 3 == 0 => (
+                        OtelAttributeType::Int64 as u32,
+                        OtelAttributeValue {
+                            int64_value: i64::try_from(index).unwrap(),
+                        },
+                    ),
+                    AttributeShape::MixedNumeric if index % 3 == 1 => (
+                        OtelAttributeType::Bool as u32,
+                        OtelAttributeValue {
+                            bool_value: u32::from(index % 2 == 0),
+                        },
+                    ),
+                    AttributeShape::MixedNumeric => (
+                        OtelAttributeType::Double as u32,
+                        OtelAttributeValue {
+                            double_value: index as f64 + 0.5,
+                        },
+                    ),
+                    AttributeShape::String => (
+                        OtelAttributeType::String as u32,
+                        OtelAttributeValue {
+                            string_value: sv(&string_values[index]),
+                        },
+                    ),
+                };
+                OtelKeyValue {
+                    key: sv(key),
+                    value_type,
+                    value,
+                }
+            })
+            .collect();
+        Self {
+            _keys: keys,
+            _string_values: string_values,
+            attributes,
+        }
+    }
+
+    fn as_ffi(&self) -> (*const OtelKeyValue, usize) {
+        if self.attributes.is_empty() {
+            (ptr::null(), 0)
+        } else {
+            (self.attributes.as_ptr(), self.attributes.len())
+        }
+    }
+}
+
+fn rust_attributes(shape: AttributeShape, count: usize) -> Vec<KeyValue> {
+    (0..count)
+        .map(|index| {
+            let key = format!("benchmark.attribute.{index}");
+            match shape {
+                AttributeShape::IntegerBool if index % 2 == 0 => {
+                    KeyValue::new(key, i64::try_from(index).unwrap())
+                }
+                AttributeShape::IntegerBool => KeyValue::new(key, index % 2 == 0),
+                AttributeShape::MixedNumeric if index % 3 == 0 => {
+                    KeyValue::new(key, i64::try_from(index).unwrap())
+                }
+                AttributeShape::MixedNumeric if index % 3 == 1 => {
+                    KeyValue::new(key, index % 2 == 0)
+                }
+                AttributeShape::MixedNumeric => KeyValue::new(key, index as f64 + 0.5),
+                AttributeShape::String => KeyValue::new(key, format!("benchmark-value-{index:02}")),
+            }
+        })
+        .collect()
 }
 
 /// Build a real trace pipeline and install it as the process-global provider. Returns the owned
@@ -310,6 +434,102 @@ fn bench_sdk_backed(c: &mut Criterion) {
     });
 
     g.finish();
+
+    let mut attributes = c.benchmark_group("sdk_backed_metrics_attributes");
+    for shape in [
+        AttributeShape::IntegerBool,
+        AttributeShape::MixedNumeric,
+        AttributeShape::String,
+    ] {
+        for count in [0, 1, 4, 8, 16] {
+            let set = CAttributeSet::new(shape, count);
+            let (attribute_ptr, attribute_count) = set.as_ffi();
+            attributes.bench_with_input(
+                BenchmarkId::new(format!("counter_u64/{}", shape.name()), count),
+                &set,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(unsafe {
+                            otel_counter_u64_add(counter, 1, attribute_ptr, attribute_count)
+                        });
+                    });
+                },
+            );
+            attributes.bench_with_input(
+                BenchmarkId::new(format!("gauge_f64/{}", shape.name()), count),
+                &set,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(unsafe {
+                            otel_gauge_f64_record(gauge, 1.5, attribute_ptr, attribute_count)
+                        });
+                    });
+                },
+            );
+            attributes.bench_with_input(
+                BenchmarkId::new(format!("histogram_f64/{}", shape.name()), count),
+                &set,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(unsafe {
+                            otel_histogram_f64_record(
+                                histogram,
+                                1.5,
+                                attribute_ptr,
+                                attribute_count,
+                            )
+                        });
+                    });
+                },
+            );
+        }
+    }
+    attributes.finish();
+
+    let rust_provider = SdkMeterProvider::builder()
+        .with_reader(ManualReader::builder().build())
+        .build();
+    let rust_meter = rust_provider.meter("bench-direct");
+    let rust_counter = rust_meter.u64_counter("requests").build();
+    let rust_gauge = rust_meter.f64_gauge("depth").build();
+    let rust_histogram = rust_meter.f64_histogram("duration").build();
+    let mut direct = c.benchmark_group("rust_sdk_metrics_attributes");
+    for shape in [
+        AttributeShape::IntegerBool,
+        AttributeShape::MixedNumeric,
+        AttributeShape::String,
+    ] {
+        for count in [0, 1, 4, 8, 16] {
+            let rust_attributes = rust_attributes(shape, count);
+            direct.bench_with_input(
+                BenchmarkId::new(format!("counter_u64/{}", shape.name()), count),
+                &rust_attributes,
+                |b, attributes| {
+                    b.iter(|| rust_counter.add(black_box(1), black_box(attributes)));
+                },
+            );
+            direct.bench_with_input(
+                BenchmarkId::new(format!("gauge_f64/{}", shape.name()), count),
+                &rust_attributes,
+                |b, attributes| {
+                    b.iter(|| rust_gauge.record(black_box(1.5), black_box(attributes)));
+                },
+            );
+            direct.bench_with_input(
+                BenchmarkId::new(format!("histogram_f64/{}", shape.name()), count),
+                &rust_attributes,
+                |b, attributes| {
+                    b.iter(|| rust_histogram.record(black_box(1.5), black_box(attributes)));
+                },
+            );
+        }
+    }
+    direct.finish();
+    drop(rust_counter);
+    drop(rust_gauge);
+    drop(rust_histogram);
+    drop(rust_meter);
+    let _ = rust_provider.shutdown();
 
     // Teardown (not measured): drop the cached tracer, then shut down and destroy the SDK.
     unsafe {

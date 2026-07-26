@@ -24,9 +24,9 @@ extern "C" {
 typedef struct otel_span_processor_t otel_span_processor_t;
 
 /*
- * Destroy a span-processor handle (no-op on NULL). Do NOT call this on a processor that was
- * successfully transferred into the SDK builder (that builder owns it now). Must not race
- * with any other use of the same handle.
+ * Destroy an untransferred span-processor handle (no-op on NULL). A successful transfer into
+ * the SDK builder consumes the handle and invalidates the original pointer; never access or
+ * destroy that pointer afterward. Must not race with any other use of the same handle.
  */
 void otel_span_processor_destroy(otel_span_processor_t* processor);
 

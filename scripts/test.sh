@@ -8,5 +8,8 @@ cargo test -p opentelemetry-c-sdk --no-default-features
 cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-http
 cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-grpc
 cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-http,otlp-grpc
+# Exercise feature-gated async-reader and combined-transport unit tests, not merely compile them.
+cargo test -p opentelemetry-c-sdk --lib --all-features
 cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
 cargo test -p opentelemetry-c-sdk --test cross_artifact --all-features
+cargo test -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact --all-features

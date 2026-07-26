@@ -1,46 +1,55 @@
-//! Opaque handle plumbing: magic-number validation, allocation helpers, and
+//! Opaque handle plumbing: raw-prefix validation, allocation helpers, and
 //! panic-catching wrappers used by every FFI entry point in the API crate.
 //!
-//! ## What the magic value can and cannot do
+//! ## What the raw prefix can and cannot do
 //!
-//! The magic check is a **best-effort diagnostic, not a memory-safety boundary**. Callers
-//! must pass NULL or a live handle of the **exact expected type** returned by this library.
-//! [`checked_ref`] rejects NULL up front, but to read the magic it must
-//! first dereference the pointer *as the expected type*, so the check is only meaningful
-//! once that contract holds. Passing a wrong handle type, a freed handle, or a foreign
-//! pointer, double-destroying, or racing `destroy` with any other call is undefined
-//! behavior; the magic cannot be relied upon to catch it.
+//! The common `#[repr(C)]` prefix safely distinguishes live handles created by this project
+//! before a full typed reference is formed. It remains a **defensive diagnostic, not a
+//! memory-safety boundary**: arbitrary/foreign pointers, freed pointers, double destruction,
+//! or racing destruction remain undefined behavior.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::ptr;
 
 use crate::error::{set_last_error, OtelStatus};
+use opentelemetry_c_abi::OtelHandleHeader;
 
-/// A heap-allocated handle carrying a validation magic number.
-pub(crate) trait HasMagic {
-    /// Unique per-type magic value.
-    const MAGIC: u64;
-    /// Returns the stored magic value.
-    fn magic(&self) -> u64;
-    /// Overwrites the stored magic (used to poison freed handles).
-    fn set_magic(&mut self, value: u64);
+/// A heap-allocated handle with [`OtelHandleHeader`] as its first `#[repr(C)]` field.
+pub(crate) trait HasHandleHeader {
+    /// Globally unique handle kind from the internal ABI crate.
+    const KIND: u64;
+    fn header(&self) -> &OtelHandleHeader;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader;
 }
 
-/// Borrow a `&T` from a `*const T` handle after NULL and (best-effort) magic validation.
+unsafe fn read_header<T>(ptr: *const T) -> OtelHandleHeader {
+    // SAFETY: callers guarantee NULL or a live project handle. Every project handle starts
+    // with the same aligned `#[repr(C)]` header, including live handles of another kind.
+    unsafe { ptr::read(ptr.cast::<OtelHandleHeader>()) }
+}
+
+/// Borrow a `&T` after validating only the common raw prefix.
 ///
 /// # Safety
-/// `ptr` must be NULL or point to a live handle of the exact type `T` produced by this
-/// library, not destroyed or mutated concurrently for the borrow.
-pub(crate) unsafe fn checked_ref<'a, T: HasMagic>(ptr: *const T) -> Option<&'a T> {
+/// `ptr` must be NULL or point to a live project handle, not destroyed or mutated
+/// concurrently for the borrow. A live handle of another project handle kind is rejected.
+pub(crate) unsafe fn checked_ref<'a, T: HasHandleHeader>(ptr: *const T) -> Option<&'a T> {
     if ptr.is_null() {
         set_last_error("null handle passed to OpenTelemetry C API");
         return None;
     }
-    // SAFETY: caller guarantees a live `T` (or NULL, handled above).
-    let handle = unsafe { &*ptr };
-    if handle.magic() != T::MAGIC {
-        set_last_error("handle failed validation: not a live handle of the expected type");
+    let header = unsafe { read_header(ptr) };
+    if !header.is_live() {
+        set_last_error("handle failed validation: not a live OpenTelemetry C handle");
         return None;
     }
+    if header.kind() != T::KIND {
+        set_last_error("handle failed validation: wrong OpenTelemetry C handle type");
+        return None;
+    }
+    // SAFETY: the common header established that this is a live handle of kind `T`.
+    let handle = unsafe { &*ptr };
+    debug_assert!(handle.header().is_live_kind(T::KIND));
     Some(handle)
 }
 
@@ -57,16 +66,17 @@ pub(crate) fn into_raw<T>(value: T) -> *mut T {
 /// # Safety
 /// `ptr` must be NULL or a pointer returned by [`into_raw`] for the same `T` that has not
 /// been destroyed, and must not be used or destroyed concurrently.
-pub(crate) unsafe fn destroy<T: HasMagic>(ptr: *mut T) {
+pub(crate) unsafe fn destroy<T: HasHandleHeader>(ptr: *mut T) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: caller guarantees a live allocation for `T`.
-    let handle = unsafe { &mut *ptr };
-    if handle.magic() != T::MAGIC {
+    let header = unsafe { read_header(ptr) };
+    if !header.is_live_kind(T::KIND) {
         return;
     }
-    handle.set_magic(0);
+    // SAFETY: the raw header established the concrete handle kind.
+    let handle = unsafe { &mut *ptr };
+    handle.header_mut().poison();
     // SAFETY: validated above; reconstitute the Box to run drop + free.
     drop(unsafe { Box::from_raw(ptr) });
 }
@@ -107,29 +117,54 @@ pub(crate) fn guard_value<T, F: FnOnce() -> T>(fallback: T, f: F) -> T {
 mod tests {
     use super::*;
 
+    #[repr(C)]
     struct Dummy {
-        magic: u64,
+        header: OtelHandleHeader,
         value: i32,
     }
-    impl HasMagic for Dummy {
-        const MAGIC: u64 = 0xABCD;
-        fn magic(&self) -> u64 {
-            self.magic
+    impl HasHandleHeader for Dummy {
+        const KIND: u64 = 0xFFFF_0001;
+        fn header(&self) -> &OtelHandleHeader {
+            &self.header
         }
-        fn set_magic(&mut self, v: u64) {
-            self.magic = v;
+        fn header_mut(&mut self) -> &mut OtelHandleHeader {
+            &mut self.header
+        }
+    }
+
+    #[repr(C)]
+    struct Other {
+        header: OtelHandleHeader,
+    }
+    impl HasHandleHeader for Other {
+        const KIND: u64 = 0xFFFF_0002;
+        fn header(&self) -> &OtelHandleHeader {
+            &self.header
+        }
+        fn header_mut(&mut self) -> &mut OtelHandleHeader {
+            &mut self.header
         }
     }
 
     #[test]
-    fn ref_rejects_null_and_bad_magic_then_roundtrips() {
+    fn ref_rejects_null_dead_and_live_wrong_type_then_roundtrips() {
         assert!(unsafe { checked_ref::<Dummy>(std::ptr::null()) }.is_none());
-        let bad = into_raw(Dummy { magic: 0, value: 1 });
+        let bad = into_raw(Dummy {
+            header: OtelHandleHeader::new(Dummy::KIND),
+            value: 1,
+        });
+        unsafe { (*bad).header.poison() };
         assert!(unsafe { checked_ref(bad) }.is_none());
         unsafe { drop(Box::from_raw(bad)) };
 
+        let other = into_raw(Other {
+            header: OtelHandleHeader::new(Other::KIND),
+        });
+        assert!(unsafe { checked_ref::<Dummy>(other.cast()) }.is_none());
+        unsafe { destroy(other) };
+
         let ptr = into_raw(Dummy {
-            magic: Dummy::MAGIC,
+            header: OtelHandleHeader::new(Dummy::KIND),
             value: 7,
         });
         assert_eq!(unsafe { checked_ref(ptr) }.unwrap().value, 7);

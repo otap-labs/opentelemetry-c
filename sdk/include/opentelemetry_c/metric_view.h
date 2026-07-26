@@ -36,6 +36,17 @@ otel_status_t otel_metric_view_builder_set_name_pattern(
     otel_metric_view_builder_t* builder, otel_string_view_t pattern);
 otel_status_t otel_metric_view_builder_set_meter_name(
     otel_metric_view_builder_t* builder, otel_string_view_t meter_name);
+otel_status_t otel_metric_view_builder_set_scope_version(
+    otel_metric_view_builder_t* builder, otel_string_view_t version);
+otel_status_t otel_metric_view_builder_set_scope_schema_url(
+    otel_metric_view_builder_t* builder, otel_string_view_t schema_url);
+/*
+ * Add a required exact scope-attribute matcher. Every configured key/value must be present
+ * with the same value type for the view to match; extra scope attributes are allowed.
+ * Duplicate matcher keys are rejected.
+ */
+otel_status_t otel_metric_view_builder_add_scope_attribute(
+    otel_metric_view_builder_t* builder, const otel_key_value_t* attribute);
 otel_status_t otel_metric_view_builder_set_unit(
     otel_metric_view_builder_t* builder, otel_string_view_t unit);
 otel_status_t otel_metric_view_builder_set_instrument_kind(
@@ -64,6 +75,10 @@ otel_status_t otel_metric_view_builder_set_exponential_histogram(
     otel_bool_t record_min_max);
 otel_status_t otel_metric_view_builder_build(
     otel_metric_view_builder_t* builder, otel_metric_view_t** out);
+/*
+ * Destroy an untransferred view (no-op on NULL). Do NOT call this after an SDK builder accepted
+ * the view: successful transfer consumes it and invalidates the original pointer.
+ */
 void otel_metric_view_destroy(otel_metric_view_t* view);
 
 #ifdef __cplusplus

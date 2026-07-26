@@ -1,16 +1,17 @@
 //! Declarative Metrics view builder.
 
-use opentelemetry::Key;
-use opentelemetry_c_abi::{OtelBool, OtelMetricInstrumentKind, OtelStatus, OtelStringView};
+use opentelemetry::{Key, KeyValue};
+use opentelemetry_c_abi::{
+    OtelBool, OtelHandleHeader, OtelKeyValue, OtelMetricInstrumentKind, OtelStatus, OtelStringView,
+    OTEL_HANDLE_KIND_METRIC_VIEW, OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER,
+};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, InstrumentKind, Stream};
 
 use crate::error::{clear_last_error, fail, fail_abi, fail_owned};
 use crate::handle::{
-    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasMagic,
+    checked_mut, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasHandleHeader,
 };
 
-const BUILDER_MAGIC: u64 = 0x4F54_4C43_4D56_4942;
-const VIEW_MAGIC: u64 = 0x4F54_4C43_4D56_4945;
 const ANY_KIND: u32 = u32::MAX;
 
 #[derive(Clone)]
@@ -34,6 +35,9 @@ pub(crate) enum AggregationConfig {
 pub(crate) struct MetricViewConfig {
     name_pattern: Option<String>,
     meter_name: Option<String>,
+    scope_version: Option<String>,
+    scope_schema_url: Option<String>,
+    scope_attributes: Vec<KeyValue>,
     unit: Option<String>,
     kind: u32,
     output_name: Option<String>,
@@ -45,33 +49,35 @@ pub(crate) struct MetricViewConfig {
     aggregation: AggregationConfig,
 }
 
+#[repr(C)]
 pub struct OtelMetricViewBuilder {
-    magic: u64,
+    header: OtelHandleHeader,
     config: MetricViewConfig,
 }
 
+#[repr(C)]
 pub struct OtelMetricView {
-    magic: u64,
+    header: OtelHandleHeader,
     pub(crate) config: MetricViewConfig,
 }
 
-impl HasMagic for OtelMetricViewBuilder {
-    const MAGIC: u64 = BUILDER_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMetricViewBuilder {
+    const KIND: u64 = OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
-impl HasMagic for OtelMetricView {
-    const MAGIC: u64 = VIEW_MAGIC;
-    fn magic(&self) -> u64 {
-        self.magic
+impl HasHandleHeader for OtelMetricView {
+    const KIND: u64 = OTEL_HANDLE_KIND_METRIC_VIEW;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
     }
-    fn set_magic(&mut self, value: u64) {
-        self.magic = value;
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
     }
 }
 
@@ -79,6 +85,9 @@ fn default_config() -> MetricViewConfig {
     MetricViewConfig {
         name_pattern: None,
         meter_name: None,
+        scope_version: None,
+        scope_schema_url: None,
+        scope_attributes: Vec::new(),
         unit: None,
         kind: ANY_KIND,
         output_name: None,
@@ -96,7 +105,7 @@ pub extern "C" fn otel_metric_view_builder_new() -> *mut OtelMetricViewBuilder {
     guard_ptr(|| {
         clear_last_error();
         into_raw(OtelMetricViewBuilder {
-            magic: BUILDER_MAGIC,
+            header: OtelHandleHeader::new(OtelMetricViewBuilder::KIND),
             config: default_config(),
         })
     })
@@ -161,6 +170,11 @@ macro_rules! string_setter {
 
 string_setter!(otel_metric_view_builder_set_name_pattern, name_pattern);
 string_setter!(otel_metric_view_builder_set_meter_name, meter_name);
+string_setter!(otel_metric_view_builder_set_scope_version, scope_version);
+string_setter!(
+    otel_metric_view_builder_set_scope_schema_url,
+    scope_schema_url
+);
 string_setter!(otel_metric_view_builder_set_unit, unit);
 string_setter!(otel_metric_view_builder_set_output_name, output_name);
 string_setter!(
@@ -168,6 +182,47 @@ string_setter!(
     output_description
 );
 string_setter!(otel_metric_view_builder_set_output_unit, output_unit);
+
+/// Add a required exact instrumentation-scope attribute matcher.
+///
+/// All configured scope attributes must be present with the same type and value for the
+/// view to match. Additional scope attributes do not prevent a match.
+///
+/// # Safety
+///
+/// `builder` and `attribute` must be live and readable for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn otel_metric_view_builder_add_scope_attribute(
+    builder: *mut OtelMetricViewBuilder,
+    attribute: *const OtelKeyValue,
+) -> OtelStatus {
+    unsafe {
+        with_builder(builder, |config| {
+            if attribute.is_null() {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "scope attribute must not be NULL",
+                );
+            }
+            let attribute = match crate::vtable::to_key_value(&*attribute) {
+                Ok(attribute) => attribute,
+                Err(status) => return status,
+            };
+            if config
+                .scope_attributes
+                .iter()
+                .any(|existing| existing.key == attribute.key)
+            {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "duplicate scope attribute matcher key",
+                );
+            }
+            config.scope_attributes.push(attribute);
+            OtelStatus::Ok
+        })
+    }
+}
 
 /// Set the selected instrument kind.
 ///
@@ -481,6 +536,19 @@ impl MetricViewConfig {
                 .as_ref()
                 .is_some_and(|name| name != instrument.scope().name())
             || self
+                .scope_version
+                .as_ref()
+                .is_some_and(|version| instrument.scope().version() != Some(version.as_str()))
+            || self.scope_schema_url.as_ref().is_some_and(|schema_url| {
+                instrument.scope().schema_url() != Some(schema_url.as_str())
+            })
+            || self.scope_attributes.iter().any(|expected| {
+                !instrument
+                    .scope()
+                    .attributes()
+                    .any(|actual| actual == expected)
+            })
+            || self
                 .unit
                 .as_ref()
                 .is_some_and(|unit| unit != instrument.unit())
@@ -531,7 +599,7 @@ pub unsafe extern "C" fn otel_metric_view_builder_build(
         }
         unsafe {
             *out = into_raw(OtelMetricView {
-                magic: VIEW_MAGIC,
+                header: OtelHandleHeader::new(OtelMetricView::KIND),
                 config: builder.config.clone(),
             })
         };
@@ -539,7 +607,8 @@ pub unsafe extern "C" fn otel_metric_view_builder_build(
     })
 }
 
-/// Destroy a Metrics view.
+/// Destroy an untransferred Metrics view. After a successful transfer into an SDK builder, the
+/// original pointer is invalid and must not be passed here.
 ///
 /// # Safety
 ///
@@ -553,7 +622,8 @@ pub unsafe extern "C" fn otel_metric_view_destroy(view: *mut OtelMetricView) {
 mod tests {
     use super::*;
     use opentelemetry::metrics::MeterProvider;
-    use opentelemetry::{KeyValue, Value};
+    use opentelemetry::{InstrumentationScope, KeyValue, Value};
+    use opentelemetry_c_abi::{OtelAttributeType, OtelAttributeValue};
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
 
@@ -646,6 +716,7 @@ mod tests {
                     vec![KeyValue::new("route", "/items")]
                 );
             }
+
             data => panic!("unexpected renamed stream data: {data:?}"),
         }
         assert_eq!(
@@ -672,6 +743,86 @@ mod tests {
             }
             data => panic!("unexpected wrong-kind data: {data:?}"),
         }
+    }
+
+    #[test]
+    fn scope_name_version_schema_and_attributes_all_select_views() {
+        let mut view = default_config();
+        view.name_pattern = Some("scoped_counter".to_string());
+        view.meter_name = Some("scope.name".to_string());
+        view.scope_version = Some("1.2.3".to_string());
+        view.scope_schema_url = Some("https://example.test/schema".to_string());
+        view.scope_attributes = vec![
+            KeyValue::new("component", "checkout"),
+            KeyValue::new("stable", true),
+        ];
+        view.output_name = Some("renamed_scoped_counter".to_string());
+
+        let metrics = collect_with_views(vec![view], |provider| {
+            let scopes = [
+                InstrumentationScope::builder("scope.name")
+                    .with_version("1.2.3")
+                    .with_schema_url("https://example.test/schema")
+                    .with_attributes([
+                        KeyValue::new("component", "checkout"),
+                        KeyValue::new("stable", true),
+                        KeyValue::new("extra", 1_i64),
+                    ])
+                    .build(),
+                InstrumentationScope::builder("scope.name")
+                    .with_version("9.9.9")
+                    .with_schema_url("https://example.test/schema")
+                    .with_attributes([
+                        KeyValue::new("component", "checkout"),
+                        KeyValue::new("stable", true),
+                    ])
+                    .build(),
+                InstrumentationScope::builder("scope.name")
+                    .with_version("1.2.3")
+                    .with_schema_url("https://example.test/other")
+                    .with_attributes([
+                        KeyValue::new("component", "checkout"),
+                        KeyValue::new("stable", true),
+                    ])
+                    .build(),
+                InstrumentationScope::builder("scope.name")
+                    .with_version("1.2.3")
+                    .with_schema_url("https://example.test/schema")
+                    .with_attributes([
+                        KeyValue::new("component", "shipping"),
+                        KeyValue::new("stable", true),
+                    ])
+                    .build(),
+            ];
+            for scope in scopes {
+                provider
+                    .meter_with_scope(scope)
+                    .u64_counter("scoped_counter")
+                    .build()
+                    .add(1, &[]);
+            }
+        });
+
+        let names = metrics
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .map(|metric| metric.name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "renamed_scoped_counter")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "scoped_counter")
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -870,6 +1021,79 @@ mod tests {
                 otel_metric_view_builder_set_exponential_histogram(builder, 8, -11, 1),
                 OtelStatus::InvalidConfig
             );
+            otel_metric_view_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn scope_matcher_builder_copies_fields_and_rejects_duplicate_keys() {
+        unsafe {
+            let builder = otel_metric_view_builder_new();
+            let version = b"1.2.3";
+            let schema = b"https://example.test/schema";
+            assert_eq!(
+                otel_metric_view_builder_set_scope_version(
+                    builder,
+                    OtelStringView {
+                        ptr: version.as_ptr().cast(),
+                        len: version.len(),
+                    },
+                ),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_metric_view_builder_set_scope_schema_url(
+                    builder,
+                    OtelStringView {
+                        ptr: schema.as_ptr().cast(),
+                        len: schema.len(),
+                    },
+                ),
+                OtelStatus::Ok
+            );
+            let key = b"component";
+            let value = b"checkout";
+            let attribute = OtelKeyValue {
+                key: OtelStringView {
+                    ptr: key.as_ptr().cast(),
+                    len: key.len(),
+                },
+                value_type: OtelAttributeType::String as u32,
+                value: OtelAttributeValue {
+                    string_value: OtelStringView {
+                        ptr: value.as_ptr().cast(),
+                        len: value.len(),
+                    },
+                },
+            };
+            assert_eq!(
+                otel_metric_view_builder_add_scope_attribute(builder, &attribute),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_metric_view_builder_add_scope_attribute(builder, &attribute),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_metric_view_builder_add_scope_attribute(builder, std::ptr::null()),
+                OtelStatus::InvalidArgument
+            );
+
+            let mut view = std::ptr::null_mut();
+            assert_eq!(
+                otel_metric_view_builder_build(builder, &mut view),
+                OtelStatus::Ok
+            );
+            assert_eq!((*view).config.scope_version.as_deref(), Some("1.2.3"));
+            assert_eq!(
+                (*view).config.scope_schema_url.as_deref(),
+                Some("https://example.test/schema")
+            );
+            assert_eq!(
+                (*view).config.scope_attributes,
+                vec![KeyValue::new("component", "checkout")]
+            );
+            otel_metric_view_destroy(view);
             otel_metric_view_builder_destroy(builder);
         }
     }

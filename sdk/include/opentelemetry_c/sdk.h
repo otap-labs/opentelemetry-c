@@ -6,7 +6,8 @@
  *
  * The SDK owns all of its own threading (a dedicated batch-processor OS thread and the
  * blocking HTTP client). No user-managed async runtime is required. Metrics reader
- * collection may invoke observable C callbacks on SDK-managed collection threads.
+ * collection may invoke observable and custom-exporter C callbacks on SDK-managed
+ * collection threads or, for a manual reader, on the force-flush caller's thread.
  *
  * Threading & lifecycle contract
  * ------------------------------
@@ -102,6 +103,7 @@
 #include <opentelemetry_c/metrics.h>
 #include <opentelemetry_c/metric_view.h>
 #include <opentelemetry_c/periodic_metric_reader.h>
+#include <opentelemetry_c/manual_metric_reader.h>
 #include <opentelemetry_c/trace.h>
 #include <opentelemetry_c/span_processor.h>
 
@@ -119,8 +121,8 @@ typedef struct otel_sdk_t otel_sdk_t;
  * failure. Release with otel_sdk_builder_destroy(). */
 otel_sdk_builder_t* otel_sdk_builder_new(void);
 
-/* Destroy an SDK builder (no-op on NULL). Frees any span processors that were transferred
- * in via otel_sdk_builder_add_span_processor() but not yet consumed by otel_sdk_build(). */
+/* Destroy an SDK builder (no-op on NULL). Frees any span processors and Metrics readers
+ * transferred to the builder but not yet consumed by otel_sdk_build(). */
 void otel_sdk_builder_destroy(otel_sdk_builder_t* builder);
 
 /* ---- Resource ------------------------------------------------------------- */
@@ -140,19 +142,27 @@ otel_status_t otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t* builde
  * span-processor builder (e.g. batch_span_processor.h), which in turn consumes a trace
  * exporter (e.g. otlp_trace_exporter.h).
  *
- * Ownership: on OTEL_STATUS_OK, ownership of `processor` transfers to the SDK builder and
- * the caller must NOT call otel_span_processor_destroy() on it. On failure (invalid builder
- * or processor), the caller still owns `processor`. Add more than one processor to fan spans
- * out to multiple pipelines. A builder with no span processor still builds a valid SDK whose
- * spans are simply not exported.
+ * Ownership: on OTEL_STATUS_OK, ownership of `processor` transfers to the SDK builder, the
+ * original pointer becomes invalid, and the caller must not access or destroy it. On failure
+ * (invalid builder or processor), the caller still owns `processor`. Add more than one
+ * processor to fan spans out to multiple pipelines. A builder with no span processor still
+ * builds a valid SDK whose spans are simply not exported.
  */
 otel_status_t otel_sdk_builder_add_span_processor(otel_sdk_builder_t* builder,
                                                   otel_span_processor_t* processor);
 
-/* Add a periodic Metrics reader. Ownership transfers only on OTEL_STATUS_OK. More than one
- * reader may be added; each maintains independent aggregation/temporality state. */
+/* Add a periodic Metrics reader. On OTEL_STATUS_OK the reader is consumed and its original
+ * pointer becomes invalid; on failure the caller still owns it. More than one reader may be
+ * added; each maintains independent aggregation/temporality state. */
 otel_status_t otel_sdk_builder_add_metric_reader(otel_sdk_builder_t* builder,
                                                  otel_periodic_metric_reader_t* reader);
+/* Add (transfer) a manual reader. A manual reader has no worker thread; after build,
+ * otel_sdk_metrics_force_flush() performs its collection/export cycle. On OTEL_STATUS_OK the
+ * reader is consumed and its original pointer becomes invalid; on failure the caller owns it. */
+otel_status_t otel_sdk_builder_add_manual_metric_reader(
+    otel_sdk_builder_t* builder, otel_manual_metric_reader_t* reader);
+/* Add (transfer) a Metrics view. On OTEL_STATUS_OK the view is consumed and its original pointer
+ * becomes invalid; on failure the caller still owns it. */
 otel_status_t otel_sdk_builder_add_metric_view(otel_sdk_builder_t* builder,
                                                otel_metric_view_t* view);
 
@@ -225,6 +235,11 @@ otel_status_t otel_sdk_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
 
 /* Metrics force-flush currently blocks until all readers complete. Rust 0.32 does not
  * honor a caller-supplied provider timeout, so timeout_millis is reserved/advisory. */
+/*
+ * Force every Metrics reader to collect and export. For a manual reader this is the sole
+ * application-controlled collection trigger and runs synchronously on the calling thread.
+ * The pinned Rust 0.32 reader API does not accept this timeout; timeout_millis is advisory.
+ */
 otel_status_t otel_sdk_metrics_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
 
 /* Metrics shutdown is independent from trace shutdown and runs at most once. If this SDK

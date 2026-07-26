@@ -4,6 +4,24 @@
 
 ### Added
 
+- Metrics hot-path benchmarks now expose attribute-count and value-type scaling for counter,
+  gauge, and histogram recording, with direct OpenTelemetry Rust baselines for separating C
+  conversion/FFI overhead from SDK aggregation cost.
+- Optional async periodic Metrics reader behind `metrics-async-runtime`. It owns one bounded
+  Tokio runtime, maps the upstream cooperative export timeout, supports multiple readers,
+  requires no caller-managed runtime, and shuts its runtime down after reader/provider
+  destruction. The timeout cannot preempt synchronous custom callback execution. Custom
+  exporters are supported; the blocking OTLP/HTTP and synchronous OTLP/gRPC wrappers are
+  rejected.
+- C callback-backed Metrics exporters and worker-free manual readers. Export callbacks
+  traverse callback-scoped resource, scope, metric, point, histogram, exponential histogram,
+  exemplar, and scalar/array attribute views; stale/cross-thread batch use fails closed.
+  Manual collection is driven synchronously through `otel_sdk_metrics_force_flush`, with
+  callback failure propagation and exactly-once shutdown/state destruction.
+- SDK opaque handles now use the coordinated raw handle prefix and globally unique kinds,
+  matching API-side validation before complete typed access.
+- Complete instrumentation scopes now propagate attributes to OTLP, and Metrics views can
+  select exact scope version, schema URL, and required typed scope attributes.
 - Documented the coordinated, experimental, source-only product release policy. Consumers
   build matching API and SDK libraries from one tag; no native binaries or crates.io
   packages are distributed.
@@ -45,6 +63,7 @@
   exporter, batch span processor, and `otel_sdk_*` lifecycle behind the C ABI. Installing as
   global (or fetching a provider handle) registers the SDK's implementation into the API
   cdylib's global provider slot across the C ABI, so API-only instrumentation observes it.
+
   Selectable TLS backend (`native-tls` default, or `rustls-tls`); bounded C-provided batch
   sizes; panic-safe entry points; local parent/child span semantics; force-flush and
   shutdown. A `cross_artifact` integration test proves API-only spans export through the SDK
@@ -67,3 +86,11 @@
   (case-insensitively, so `Authorization` and `authorization` collide) with
   `OTEL_STATUS_INVALID_ARGUMENT` (and a `otel_last_error_message()` diagnostic) instead of
   silently overwriting the previously added value.
+
+### Changed
+
+- Ownership-transfer documentation now states the actual uniform contract: a successful
+  transfer consumes the handle and immediately invalidates its original pointer. Tests no
+  longer access or destroy consumed pointers.
+- Documented and tested the existing distinction between export-pipeline failures and
+  wrapper/infrastructure failures under the shared status policy.

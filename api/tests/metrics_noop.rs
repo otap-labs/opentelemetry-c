@@ -24,6 +24,15 @@ fn options() -> OtelInstrumentOptions {
     }
 }
 
+fn last_error() -> String {
+    let error = otel_last_error_message();
+    assert!(!error.ptr.is_null());
+    String::from_utf8(
+        unsafe { std::slice::from_raw_parts(error.ptr.cast::<u8>(), error.len) }.to_vec(),
+    )
+    .unwrap()
+}
+
 extern "C" fn callback_u64(_observer: *mut OtelObserverU64, _data: *mut c_void) {}
 extern "C" fn callback_i64(_observer: *mut OtelObserverI64, _data: *mut c_void) {}
 extern "C" fn callback_f64(_observer: *mut OtelObserverF64, _data: *mut c_void) {}
@@ -356,6 +365,88 @@ fn instrument_options_prefix_and_input_boundaries_are_validated() {
         );
 
         otel_meter_destroy(meter);
+        otel_meter_provider_destroy(provider);
+    }
+}
+
+#[test]
+fn complete_scope_options_are_validated_without_an_sdk() {
+    unsafe {
+        let provider = otel_global_meter_provider();
+        let attributes = [
+            OtelKeyValue {
+                key: sv("component"),
+                value_type: OtelAttributeType::String as u32,
+                value: OtelAttributeValue {
+                    string_value: sv("checkout"),
+                },
+            },
+            OtelKeyValue {
+                key: sv("stable"),
+                value_type: OtelAttributeType::Bool as u32,
+                value: OtelAttributeValue { bool_value: 1 },
+            },
+        ];
+        let options = OtelMeterOptions {
+            struct_size: std::mem::size_of::<OtelMeterOptions>() as u64,
+            name: sv("scope"),
+            version: sv("1.2.3"),
+            schema_url: sv("https://example.test/schema"),
+            attributes: attributes.as_ptr(),
+            attribute_count: attributes.len(),
+        };
+        let meter = otel_meter_provider_get_meter_with_options(provider, &options);
+        assert!(!meter.is_null());
+        otel_meter_destroy(meter);
+
+        let empty_options = OtelMeterOptions {
+            struct_size: std::mem::size_of::<OtelMeterOptions>() as u64,
+            name: empty(),
+            version: empty(),
+            schema_url: empty(),
+            attributes: std::ptr::null(),
+            attribute_count: 0,
+        };
+        let meter = otel_meter_provider_get_meter_with_options(provider, &empty_options);
+        assert!(!meter.is_null());
+        otel_meter_destroy(meter);
+
+        let duplicates = [attributes[0], attributes[0]];
+        let duplicate_options = OtelMeterOptions {
+            attributes: duplicates.as_ptr(),
+            attribute_count: duplicates.len(),
+            ..options
+        };
+        assert!(otel_meter_provider_get_meter_with_options(provider, &duplicate_options).is_null());
+        assert!(last_error().contains("duplicate scope attribute key"));
+
+        let null_attributes = OtelMeterOptions {
+            attributes: std::ptr::null(),
+            attribute_count: 1,
+            ..options
+        };
+        assert!(otel_meter_provider_get_meter_with_options(provider, &null_attributes).is_null());
+        assert!(last_error().contains("NULL with non-zero count"));
+
+        let short_size = std::mem::size_of::<u64>() as u64;
+        assert!(otel_meter_provider_get_meter_with_options(
+            provider,
+            (&short_size as *const u64).cast()
+        )
+        .is_null());
+        assert!(last_error().contains("struct_size"));
+
+        let invalid_utf8 = [0xff_u8];
+        let invalid_name = OtelMeterOptions {
+            name: OtelStringView {
+                ptr: invalid_utf8.as_ptr().cast(),
+                len: invalid_utf8.len(),
+            },
+            ..options
+        };
+        assert!(otel_meter_provider_get_meter_with_options(provider, &invalid_name).is_null());
+        assert!(last_error().contains("UTF-8"));
+
         otel_meter_provider_destroy(provider);
     }
 }

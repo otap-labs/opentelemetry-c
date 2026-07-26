@@ -8,8 +8,9 @@ use opentelemetry::metrics::{
 };
 use opentelemetry::InstrumentationScope;
 use opentelemetry_c_abi::{
-    OtelMetricInstrumentConfig, OtelMetricInstrumentKind, OtelMetricNumberKind, OtelMetricsVtable,
-    OtelStatus, OtelStringView, OTEL_METRICS_IMPL_ABI_VERSION,
+    OtelMetricInstrumentConfig, OtelMetricInstrumentKind, OtelMetricNumberKind,
+    OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus, OtelStringView,
+    OTEL_METRICS_IMPL_ABI_VERSION,
 };
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
@@ -66,6 +67,47 @@ fn guard_unit(f: impl FnOnce()) {
     let _ = catch_unwind(AssertUnwindSafe(f));
 }
 
+fn build_meter(ctx: *mut c_void, scope: &OtelMetricScopeConfig) -> *mut c_void {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let provider = unsafe { &*(ctx as *const SdkMeterProvider) };
+    let name = match unsafe { scope.name.to_string_strict() } {
+        Ok(name) => name,
+        Err(err) => {
+            fail_abi(err);
+            return std::ptr::null_mut();
+        }
+    };
+    let mut builder = InstrumentationScope::builder(name);
+    match unsafe { scope.version.to_string_strict() } {
+        Ok(version) if !version.is_empty() => builder = builder.with_version(version),
+        Ok(_) => {}
+        Err(err) => {
+            fail_abi(err);
+            return std::ptr::null_mut();
+        }
+    }
+    match unsafe { scope.schema_url.to_string_strict() } {
+        Ok(schema_url) if !schema_url.is_empty() => builder = builder.with_schema_url(schema_url),
+        Ok(_) => {}
+        Err(err) => {
+            fail_abi(err);
+            return std::ptr::null_mut();
+        }
+    }
+    let attributes = match unsafe {
+        crate::vtable::collect_unique_key_values(scope.attributes, scope.attribute_count)
+    } {
+        Ok(attributes) => attributes,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    if !attributes.is_empty() {
+        builder = builder.with_attributes(attributes);
+    }
+    Box::into_raw(Box::new(provider.meter_with_scope(builder.build()))) as *mut c_void
+}
+
 extern "C" fn provider_get_meter(
     ctx: *mut c_void,
     name: OtelStringView,
@@ -73,35 +115,32 @@ extern "C" fn provider_get_meter(
     schema_url: OtelStringView,
 ) -> *mut c_void {
     guard_ptr(|| {
-        if ctx.is_null() {
+        build_meter(
+            ctx,
+            &OtelMetricScopeConfig {
+                name,
+                version,
+                schema_url,
+                attributes: std::ptr::null(),
+                attribute_count: 0,
+            },
+        )
+    })
+}
+
+extern "C" fn provider_get_meter_with_scope(
+    ctx: *mut c_void,
+    scope: *const OtelMetricScopeConfig,
+) -> *mut c_void {
+    guard_ptr(|| {
+        if scope.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "metric scope config must not be NULL",
+            );
             return std::ptr::null_mut();
         }
-        let provider = unsafe { &*(ctx as *const SdkMeterProvider) };
-        let name = match unsafe { name.to_string_strict() } {
-            Ok(name) => name,
-            Err(err) => {
-                fail_abi(err);
-                return std::ptr::null_mut();
-            }
-        };
-        let mut scope = InstrumentationScope::builder(name);
-        match unsafe { version.to_string_strict() } {
-            Ok(version) if !version.is_empty() => scope = scope.with_version(version),
-            Ok(_) => {}
-            Err(err) => {
-                fail_abi(err);
-                return std::ptr::null_mut();
-            }
-        }
-        match unsafe { schema_url.to_string_strict() } {
-            Ok(schema_url) if !schema_url.is_empty() => scope = scope.with_schema_url(schema_url),
-            Ok(_) => {}
-            Err(err) => {
-                fail_abi(err);
-                return std::ptr::null_mut();
-            }
-        }
-        Box::into_raw(Box::new(provider.meter_with_scope(scope.build()))) as *mut c_void
+        build_meter(ctx, unsafe { &*scope })
     })
 }
 
@@ -642,6 +681,7 @@ pub(crate) static SDK_METRICS_VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     observer_observe_i64,
     observer_observe_f64,
     instrument_free,
+    provider_get_meter_with_scope,
 };
 
 pub(crate) fn vtable_ptr() -> *const OtelMetricsVtable {
@@ -817,12 +857,29 @@ mod tests {
         let reader = PeriodicReader::builder(exporter.clone()).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
         let provider_ctx_raw = provider_ctx(provider.clone());
-        let meter = (SDK_METRICS_VTABLE.provider_get_meter)(
-            provider_ctx_raw,
-            sv("semantic_scope"),
-            sv("2.1.0"),
-            sv("https://example.test/schema"),
-        );
+        let scope_attributes = [
+            OtelKeyValue {
+                key: sv("scope.component"),
+                value_type: OtelAttributeType::String as u32,
+                value: OtelAttributeValue {
+                    string_value: sv("checkout"),
+                },
+            },
+            OtelKeyValue {
+                key: sv("scope.stable"),
+                value_type: OtelAttributeType::Bool as u32,
+                value: OtelAttributeValue { bool_value: 1 },
+            },
+        ];
+        let scope_config = OtelMetricScopeConfig {
+            name: sv("semantic_scope"),
+            version: sv("2.1.0"),
+            schema_url: sv("https://example.test/schema"),
+            attributes: scope_attributes.as_ptr(),
+            attribute_count: scope_attributes.len(),
+        };
+        let meter =
+            (SDK_METRICS_VTABLE.provider_get_meter_with_scope)(provider_ctx_raw, &scope_config);
         let attributes = [
             OtelKeyValue {
                 key: sv("route"),
@@ -988,6 +1045,13 @@ mod tests {
         assert_eq!(
             scope.scope().schema_url(),
             Some("https://example.test/schema")
+        );
+        assert_eq!(
+            scope.scope().attributes().cloned().collect::<Vec<_>>(),
+            vec![
+                KeyValue::new("scope.component", "checkout"),
+                KeyValue::new("scope.stable", true),
+            ]
         );
         for metric in scope.metrics() {
             assert_eq!(metric.description(), "semantic description");

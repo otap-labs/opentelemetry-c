@@ -4,13 +4,15 @@
 
 The **C SDK** of the Rust-backed OpenTelemetry C binding: OTLP **HTTP/protobuf** trace
 export, HTTP/protobuf and optional gRPC Metrics export, a batch span processor, periodic
-Metrics readers, and declarative Metrics views behind C functions. Installing a signal
-provider registers it into the **API library's** corresponding global slot, so
+and manual Metrics readers, callback-backed custom Metrics exporters, and declarative Metrics
+views behind C functions. Installing a signal provider registers it into the **API
+library's** corresponding global slot, so
 instrumentation that links only [`opentelemetry-c-api`](../api) exports through it.
 
 HTTP uses the blocking `reqwest` client. The optional Metrics gRPC transport owns one
 bounded Tokio runtime per exporter and keeps it alive through reader/provider shutdown.
-In either case, **no user-managed async runtime is required**.
+Periodic Metrics export uses the blocking reader by default. The optional async reader owns
+its own bounded Tokio runtime. **No user-managed async runtime is required.**
 
 > ⚠️ **Experimental.** The C ABI is not yet stable and may change between `0.x` releases.
 
@@ -97,21 +99,48 @@ opaque extension points: internally each wraps an enum (`TraceExporterImpl` impl
 processor kind is a new variant plus a builder — no change to the C ABI, the generic handles,
 or the SDK builder's storage. No custom-callback exporter is provided yet.
 
-Metrics uses a parallel pipeline:
+Metrics uses a parallel pipeline. OTLP and callback-backed exporters share the same opaque
+exporter handle:
 
 ```
-OTLP Metrics exporter builder ──build──▶ otel_metric_exporter_t
-                                                │ set_exporter
-                                                ▼
-periodic reader builder ─────────build──▶ otel_periodic_metric_reader_t
-                                                │ add_metric_reader
+OTLP builder or C callbacks ────build──▶ otel_metric_exporter_t
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+          periodic reader builder                         manual reader
+                         │                                         │
+                         └──────────── add reader ─────────────────┘
 declarative view builder ────────build──▶ otel_metric_view_t
                                                 │ add_metric_view
                            SDK builder ──build──▶ otel_sdk_t
 ```
 
 Multiple readers and views may be added before build. Metrics installation, force flush, and
-shutdown are independent from trace lifecycle.
+shutdown are independent from trace lifecycle. A manual reader owns no worker thread:
+`otel_sdk_metrics_force_flush` collects and exports once on the calling thread. Aggregation
+selection remains declarative through Metrics views.
+
+Periodic readers use the blocking upstream reader unless
+`OTEL_METRIC_READER_RUNTIME_ASYNC` is selected. The async reader requires the
+`metrics-async-runtime` feature, owns one Tokio worker and at most one blocking thread, and
+passes its configured cooperative export timeout to interval and force-flush exports. The
+timeout cannot preempt synchronous custom C callback work, so callbacks must return promptly.
+The async reader currently supports custom exporters. The blocking OTLP/HTTP exporter is
+rejected because reqwest's blocking client cannot run safely inside Tokio, and the synchronous
+OTLP/gRPC wrapper is rejected because it cannot safely drive its private runtime from inside the
+async reader runtime.
+
+Custom exporter callbacks are configured through `metric_exporter.h`. The export callback
+receives a callback-thread-local batch token and may synchronously traverse complete
+resource/scope/metric/point/exemplar data with `otel_metric_batch_visit`. All visitor buffers
+are borrowed only for their callback; stale and cross-thread batch use fails closed.
+Different readers or SDKs may invoke shared callback state concurrently, so that state must
+be thread-safe. The SDK invokes its destroy callback exactly once after callbacks stop.
+
+Meter options map complete C scope name/version/schema/attributes into the pinned upstream
+`InstrumentationScope`. Views can select exact scope name, version, schema URL, and required
+typed scope attributes; all configured attributes must match, while extra scope attributes
+are allowed. Scope processing occurs only during meter/instrument creation, never recording.
 
 ### Cargo features (optional OTLP)
 
@@ -120,9 +149,10 @@ default and the existing `otlp` feature remains a compatibility alias:
 
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `otlp` | ✅ (via `native-tls`) | Compatibility alias for `otlp-http`. |
+| `otlp` | ❌ | Compatibility alias for `otlp-http`. |
 | `otlp-http` | ✅ | OTLP HTTP/protobuf traces and Metrics using blocking reqwest. |
 | `otlp-grpc` | ❌ | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
+| `metrics-async-runtime` | ❌ | SDK-owned async periodic Metrics reader with configurable export timeout. |
 | `native-tls` | ✅ | Implies `otlp-http`; HTTP HTTPS via the platform TLS stack. |
 | `rustls-tls` | ❌ | Implies `otlp-http`; HTTP HTTPS via rustls. |
 | `grpc-tls-ring` | ❌ | Implies `otlp-grpc`; tonic TLS using the ring provider and native/platform roots. |
@@ -160,8 +190,11 @@ Do not enable both HTTP TLS backends for a release build. See
   builder **on `OTEL_STATUS_OK`**; on failure the caller still owns it.
 - `otel_sdk_builder_add_span_processor` transfers the processor into the SDK builder **on
   `OTEL_STATUS_OK`**; on failure the caller still owns it.
-- After a successful transfer, do **not** destroy the transferred handle (its destroy becomes
-  a safe no-op).
+- Metrics exporters transfer into periodic/manual readers, and Metrics readers/views transfer
+  into the SDK builder, under the same rule.
+- After a successful transfer, the original pointer is invalid. Set the caller's variable to
+  `NULL` and never access or destroy the consumed handle. On failure, ownership remains with
+  the caller.
 - Destroying a builder frees any transferred children it still owns (i.e. that a later
   `build` did not consume). All `*_destroy` functions are NULL-safe and must not race with
   other use of the same handle.
@@ -179,11 +212,15 @@ Do not enable both HTTP TLS backends for a release build. See
   [`span_processor.h`](include/opentelemetry_c/span_processor.h) — the generic opaque handles.
 - [`otlp_metric_exporter.h`](include/opentelemetry_c/otlp_metric_exporter.h) — OTLP Metrics
   transport, endpoint, headers/metadata, compression, timeout, and temporality preference.
+- [`metric_exporter.h`](include/opentelemetry_c/metric_exporter.h) — generic exporter handle,
+  custom C callbacks, and callback-scoped aggregated Metrics visitor types.
 - [`periodic_metric_reader.h`](include/opentelemetry_c/periodic_metric_reader.h) — periodic
-  export interval and exporter ownership. Reader shutdown timeout behavior is controlled by
-  the pinned upstream SDK.
+  runtime selection, export interval/timeout, and exporter ownership. Blocking-reader shutdown
+  timeout behavior is controlled by the pinned upstream SDK.
+- [`manual_metric_reader.h`](include/opentelemetry_c/manual_metric_reader.h) — worker-free
+  application-controlled collection using a transferred Metrics exporter.
 - [`metric_view.h`](include/opentelemetry_c/metric_view.h) — instrument selection, stream
-  metadata, attribute filtering, cardinality, and aggregation.
+  metadata, scope-aware selection, attribute filtering, cardinality, and aggregation.
 
 ## Behavior & guarantees
 
@@ -203,8 +240,8 @@ Do not enable both HTTP TLS backends for a release build. See
 
 `cargo test -p opentelemetry-c-sdk --all-features` covers trace and Metrics vtable behavior,
 global registration, callback lifetime, batch bounds, and force-flush cleanup. The
-`cross_artifact` integration test compiles a C program, links it against **both** built
-cdylibs, and confirms API-only spans and Metrics export through the SDK. With `otlp-grpc`,
+Cross-artifact integration tests compile C programs, link them against **both** built
+cdylibs, and confirm API-only OTLP and custom-callback Metrics export through the SDK. With `otlp-grpc`,
 it also runs a bounded local tonic MetricsService and proves that an ordinary C process with
 no Tokio runtime exports, flushes, shuts down, and destroys the pipeline.
 
@@ -213,6 +250,7 @@ Because `cargo test` does not emit cdylib artifacts, build them first:
 ```sh
 cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
 cargo test -p opentelemetry-c-sdk --test cross_artifact --all-features
+cargo test -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact --all-features
 ```
 
 The repository's `scripts/test.sh` performs this build step automatically. The test

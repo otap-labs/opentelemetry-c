@@ -23,7 +23,13 @@ opentelemetry-c-abi = { path = "../abi" }
 # external C symbols; a Rust path dependency could embed another API instance and duplicate
 # the process-global provider slots.
 opentelemetry = { workspace = true, features = ["trace", "metrics"] }
-opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "spec_unstable_metrics_views"] }
+opentelemetry_sdk = { workspace = true, features = [
+    "trace",
+    "metrics",
+    "spec_unstable_metrics_views",
+    "experimental_metrics_custom_reader",
+] }
+futures-executor = "0.3"
 # OTLP transports are optional exporter implementations, not SDK core. HTTP/protobuf is
 # enabled by default; gRPC/tonic is independently selectable.
 opentelemetry-otlp = { workspace = true, optional = true }
@@ -98,6 +104,11 @@ otlp-http-gzip = ["otlp-http", "opentelemetry-otlp/gzip-http"]
 otlp-http-zstd = ["otlp-http", "opentelemetry-otlp/zstd-http"]
 otlp-grpc-gzip = ["otlp-grpc", "opentelemetry-otlp/gzip-tonic"]
 otlp-grpc-zstd = ["otlp-grpc", "opentelemetry-otlp/zstd-tonic"]
+# SDK-owned Tokio runtime driving the pinned experimental async periodic Metrics reader.
+metrics-async-runtime = [
+    "dep:tokio",
+    "opentelemetry_sdk/experimental_metrics_periodicreader_with_async_runtime",
+]
 
 [lints]
 workspace = true
