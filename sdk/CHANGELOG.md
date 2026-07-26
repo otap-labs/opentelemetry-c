@@ -4,6 +4,9 @@
 
 ### Added
 
+- Metrics hot-path benchmarks now expose attribute-count and value-type scaling for counter,
+  gauge, and histogram recording, with direct OpenTelemetry Rust baselines for separating C
+  conversion/FFI overhead from SDK aggregation cost.
 - Optional async periodic Metrics reader behind `metrics-async-runtime`. It owns one bounded
   Tokio runtime, supports configurable per-export timeouts and multiple readers, requires no
   caller-managed runtime, and shuts its runtime down after reader/provider destruction. HTTP

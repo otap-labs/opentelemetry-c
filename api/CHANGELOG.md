@@ -4,6 +4,9 @@
 
 ### Added
 
+- API-only Metrics benchmarks now measure counter, gauge, and histogram recording with
+  preconstructed integer/bool, mixed-numeric, and string attributes at 0, 1, 4, 8, and 16
+  attributes.
 - Common raw opaque-handle prefixes now validate project handle kind before complete typed
   access, allowing live wrong-type handles to fail closed while preserving caller lifetime
   obligations for foreign, freed, or concurrently destroyed pointers.
