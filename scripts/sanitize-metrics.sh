@@ -36,11 +36,14 @@ run_rust_sanitizer() {
     -p opentelemetry-c-api --tests
   cargo +nightly test -Zbuild-std --target "$target" \
     -p opentelemetry-c-sdk --lib --no-default-features
+  cargo +nightly test -Zbuild-std --target "$target" \
+    -p opentelemetry-c-sdk --lib --no-default-features --features metrics-async-runtime
   cargo +nightly build -Zbuild-std --target "$target" \
-    -p opentelemetry-c-api -p opentelemetry-c-sdk --no-default-features
+    -p opentelemetry-c-api -p opentelemetry-c-sdk --no-default-features \
+    --features metrics-async-runtime
   cargo +nightly test -Zbuild-std --target "$target" \
     -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact \
-    --no-default-features
+    --no-default-features --features metrics-async-runtime
 }
 
 case "$mode" in
