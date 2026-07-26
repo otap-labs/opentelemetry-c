@@ -11,7 +11,7 @@ experimental `0.x` C ABI.
 | Observer lifetime | Implemented | Observer tokens are valid only during their callback and reject stale use after return. Destroying the public instrument disables future callback work. |
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
 | SDK pipeline | Implemented | Independent `SdkMeterProvider`, one or more periodic readers, resource/scope propagation, force flush, and shutdown. |
-| OTLP Metrics | Implemented | HTTP/protobuf endpoint, headers, timeout, and cumulative/delta/low-memory temporality preference. |
+| OTLP Metrics | Implemented | HTTP/protobuf by default plus optional gRPC/tonic, explicit transport selection, endpoint, headers/ASCII metadata, timeout, transport-specific compression, and cumulative/delta/low-memory temporality preference. |
 | Views | Implemented | Exact or single-wildcard name selection, meter/unit/kind selection, stream metadata, attribute allow-list, cardinality limit, default/drop/sum/last-value/explicit histogram/base-2 exponential histogram aggregation. |
 | Split-artifact linking | Implemented | C integration links separate API/SDK shared libraries and verifies OTLP Metrics bytes through the API-owned global slot. |
 | C and C++ headers | Implemented | All Metrics headers compile standalone as C11; the combined pipeline headers compile as C++17. |
@@ -23,6 +23,12 @@ experimental `0.x` C ABI.
 - Metrics are experimental and may change incompatibly between `0.x` releases.
 - The Rust 0.32 periodic reader controls collection on its worker thread; its force flush may
   block, and its shutdown uses the upstream reader's fixed timeout behavior.
+- The gRPC exporter owns one bounded Tokio runtime for its complete reader/provider lifetime.
+  C callers do not supply a runtime. This does not implement the async periodic reader tracked
+  by issue #14.
+- gRPC binary `-bin` metadata and custom certificate/key configuration are not exposed.
+  HTTPS requires the opt-in `grpc-tls-ring` Cargo feature, which uses upstream tonic TLS with
+  native/platform roots.
 - Observable callbacks cannot be unregistered from the upstream Rust SDK. Destroying the C
   handle disables callback work and releases user data after any in-flight callback. Metrics
   shutdown/destroy also removes the SDK's global provider registration when still current.

@@ -18,8 +18,8 @@ instrumentation library depend only on the API, while the application owns the S
   and Metrics provider slots with safe no-op defaults. Depends only on the internal ABI
   crate — never on the SDK/OTLP.
   Instrumentation links **this library only**.
-- **[sdk/](sdk/)** — package `opentelemetry-c-sdk`. The **SDK**: OTLP HTTP/protobuf trace
-  and Metrics exporters, a batch span processor, periodic Metrics readers, declarative
+- **[sdk/](sdk/)** — package `opentelemetry-c-sdk`. The **SDK**: OTLP HTTP/protobuf trace,
+  HTTP/protobuf and optional gRPC Metrics exporters, a batch span processor, periodic Metrics readers, declarative
   Metrics views, and signal-specific lifecycle operations. Applications link **this plus
   the API**.
 - **[abi/](abi/)** — package `opentelemetry-c-abi`. An **internal, Rust-only** rlib holding
@@ -130,16 +130,17 @@ points, so more exporter/processor kinds can be added later without breaking the
 `build`/`set_exporter`/`add_span_processor` transfers ownership on `OTEL_STATUS_OK`; see the
 [sdk/README.md](sdk/README.md) and the pipeline headers for the exact rules.
 
-The SDK **core** is separate from any exporter implementation: the OTLP HTTP/protobuf exporter
-is an **optional** cargo feature (`otlp`), enabled by default. Building `opentelemetry-c-sdk`
-with `--no-default-features` excludes `opentelemetry-otlp`, `reqwest`, and all TLS backends
-while the SDK core still builds; the OTLP builder symbols remain but return
-`OTEL_STATUS_INVALID_CONFIG`. See [sdk/README.md](sdk/README.md#cargo-features-optional-otlp).
+The SDK **core** is separate from any exporter implementation. `otlp` remains a compatibility
+alias for the default HTTP/protobuf transport; `otlp-http` and `otlp-grpc` can be selected
+independently. Building with `--no-default-features` excludes all OTLP transports while the
+SDK core and public builder symbols remain available. See
+[sdk/README.md](sdk/README.md#cargo-features-optional-otlp).
 
 ## Current scope
 
 The binding exposes trace spans plus the complete synchronous and observable Metrics
-instrument families. Metrics supports OTLP HTTP/protobuf export, one or more periodic
+instrument families. Metrics supports default OTLP HTTP/protobuf and optional OTLP/gRPC
+export, one or more periodic
 readers, delta/cumulative/low-memory temporality preferences, and declarative views for
 selection, stream renaming, attribute allow-lists, cardinality limits, and default/drop/sum/
 last-value/explicit-histogram/base-2-exponential-histogram aggregation.

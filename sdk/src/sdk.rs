@@ -349,7 +349,7 @@ pub unsafe extern "C" fn otel_sdk_build(
             SdkMeterProvider::builder().with_resource(build_resource(builder));
         for reader in metric_readers {
             match reader {
-                #[cfg(feature = "otlp")]
+                #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
                 PeriodicMetricReaderImpl::Otlp(reader) => {
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
                 }
@@ -691,23 +691,23 @@ pub unsafe extern "C" fn otel_sdk_destroy(sdk: *mut OtelSdk) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use crate::batch_processor::{
         otel_batch_span_processor_builder_build, otel_batch_span_processor_builder_destroy,
         otel_batch_span_processor_builder_new, otel_batch_span_processor_builder_set_exporter,
     };
     use crate::metric_exporter::TestMetricExporterLifecycle;
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use crate::otlp_exporter::{
         otel_otlp_trace_exporter_builder_build, otel_otlp_trace_exporter_builder_destroy,
         otel_otlp_trace_exporter_builder_new, otel_otlp_trace_exporter_builder_set_endpoint,
     };
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use crate::span_processor::otel_span_processor_destroy;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{Arc, Barrier, Condvar};
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     fn sv(s: &str) -> OtelStringView {
         OtelStringView {
             ptr: s.as_ptr().cast::<std::os::raw::c_char>(),
@@ -717,7 +717,7 @@ mod tests {
 
     /// Build a real (batch + OTLP) span processor via the pipeline builders, for tests that
     /// need a live `otel_span_processor_t`.
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     fn build_processor() -> *mut OtelSpanProcessor {
         unsafe {
             let eb = otel_otlp_trace_exporter_builder_new();
@@ -860,7 +860,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     #[test]
     fn set_as_global_registers_sdk_vtable_with_api() {
         // Prove the SDK installs *its* vtable + a non-null provider context into the API's
@@ -894,7 +894,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     #[test]
     fn add_span_processor_ownership_transfer() {
         unsafe {

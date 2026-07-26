@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <opentelemetry_c/api.h>
 #include <opentelemetry_c/otlp_metric_exporter.h>
@@ -37,13 +38,20 @@ int main(void) {
     otel_histogram_f64_t* histogram = NULL;
     otel_observable_gauge_u64_t* observable = NULL;
     callback_state_t* callback_state = NULL;
+    const char* transport = getenv("OTEL_C_METRICS_TRANSPORT");
+    int use_grpc = transport != NULL && strcmp(transport, "grpc") == 0;
     const char* endpoint = getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
     if (endpoint == NULL) {
-        endpoint = "http://localhost:4318/v1/metrics";
+        endpoint = use_grpc ? "http://localhost:4317" :
+                              "http://localhost:4318/v1/metrics";
     }
 
     exporter_builder = otel_otlp_metric_exporter_builder_new();
     if (exporter_builder == NULL ||
+        otel_otlp_metric_exporter_builder_set_transport(
+            exporter_builder, use_grpc ? OTEL_OTLP_METRIC_TRANSPORT_GRPC :
+                                         OTEL_OTLP_METRIC_TRANSPORT_HTTP_PROTOBUF) !=
+            OTEL_STATUS_OK ||
         otel_otlp_metric_exporter_builder_set_endpoint(exporter_builder,
                                                        otel_cstr(endpoint)) != OTEL_STATUS_OK ||
         otel_otlp_metric_exporter_builder_set_timeout_millis(exporter_builder, 5000) !=

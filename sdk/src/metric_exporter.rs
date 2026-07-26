@@ -1,13 +1,183 @@
 //! Opaque Metrics exporter handle.
 
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use std::time::Duration;
+
+#[cfg(feature = "otlp-grpc")]
+use opentelemetry_sdk::error::OTelSdkError;
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::error::OTelSdkResult;
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::metrics::data::ResourceMetrics;
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+use opentelemetry_sdk::metrics::Temporality;
+
 use crate::handle::{destroy, guard_unit, HasMagic};
 
 pub(crate) enum MetricExporterImpl {
-    #[cfg(feature = "otlp")]
-    Otlp(opentelemetry_otlp::MetricExporter),
+    #[cfg(feature = "otlp-http")]
+    OtlpHttp(opentelemetry_otlp::MetricExporter),
+    #[cfg(feature = "otlp-grpc")]
+    OtlpGrpc(GrpcMetricExporter),
     #[cfg(test)]
     #[allow(dead_code)]
     Test(TestMetricExporter),
+}
+
+#[cfg(feature = "otlp-grpc")]
+pub(crate) struct GrpcMetricExporter {
+    // Drop explicitly takes the exporter before releasing the runtime guard. Options prevent
+    // automatic field drop from creating a second, ordering-independent destruction path.
+    exporter: Option<opentelemetry_otlp::MetricExporter>,
+    runtime: Option<GrpcRuntimeGuard>,
+}
+
+#[cfg(feature = "otlp-grpc")]
+pub(crate) struct GrpcRuntimeGuard(Option<tokio::runtime::Runtime>);
+
+#[cfg(feature = "otlp-grpc")]
+impl GrpcRuntimeGuard {
+    pub(crate) fn new(runtime: tokio::runtime::Runtime) -> Self {
+        Self(Some(runtime))
+    }
+
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Runtime {
+        self.0
+            .as_ref()
+            .expect("gRPC runtime is present until guard drop")
+    }
+}
+
+#[cfg(feature = "otlp-grpc")]
+impl Drop for GrpcRuntimeGuard {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            dispose_grpc_runtime(runtime);
+        }
+    }
+}
+
+#[cfg(feature = "otlp-grpc")]
+impl GrpcMetricExporter {
+    pub(crate) fn new(
+        exporter: opentelemetry_otlp::MetricExporter,
+        runtime: GrpcRuntimeGuard,
+    ) -> Self {
+        Self {
+            exporter: Some(exporter),
+            runtime: Some(runtime),
+        }
+    }
+
+    fn exporter(&self) -> &opentelemetry_otlp::MetricExporter {
+        self.exporter
+            .as_ref()
+            .expect("gRPC exporter is present until drop")
+    }
+
+    fn runtime(&self) -> &tokio::runtime::Runtime {
+        self.runtime
+            .as_ref()
+            .expect("gRPC runtime is present until drop")
+            .runtime()
+    }
+}
+
+#[cfg(feature = "otlp-grpc")]
+impl Drop for GrpcMetricExporter {
+    fn drop(&mut self) {
+        let runtime = self.runtime.take();
+        drop(self.exporter.take());
+        drop(runtime);
+    }
+}
+
+#[cfg(feature = "otlp-grpc")]
+fn dispose_grpc_runtime(runtime: tokio::runtime::Runtime) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(current) if current.id() == runtime.handle().id() => {
+            // The runtime handle is private and the exporter is never moved into its tasks,
+            // so public C destruction cannot reach this branch. Joining a disposer thread
+            // from the runtime's own worker would deadlock; retain a non-panicking fail-safe
+            // for an internal ownership violation.
+            runtime.shutdown_background();
+        }
+        Ok(_) => {
+            // Tokio forbids blocking Runtime destruction inside an entered runtime. Move
+            // disposal to a neutral thread and join it so no SDK runtime work survives the
+            // C destruction call or the documented dynamic-library unload boundary.
+            std::thread::Builder::new()
+                .name("otel-c-otlp-grpc-shutdown".to_owned())
+                .spawn(move || drop(runtime))
+                .expect("spawn OTLP gRPC runtime disposer")
+                .join()
+                .expect("OTLP gRPC runtime disposer panicked");
+        }
+        Err(_) => drop(runtime),
+    }
+}
+
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+impl PushMetricExporter for MetricExporterImpl {
+    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.export(metrics).await,
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => {
+                // The current thread-based PeriodicReader invokes export from its dedicated
+                // OS thread. Fail closed if a future reader drives this synchronous wrapper
+                // from inside Tokio, where Runtime::block_on would panic.
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    return Err(OTelSdkError::InternalFailure(
+                        "synchronous OTLP gRPC Metrics export cannot call block_on from an \
+                         entered Tokio runtime"
+                            .to_owned(),
+                    ));
+                }
+                exporter
+                    .runtime()
+                    .block_on(exporter.exporter().export(metrics))
+            }
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.export(metrics).await,
+        }
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.force_flush(),
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => exporter.exporter().force_flush(),
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.force_flush(),
+        }
+    }
+
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.shutdown_with_timeout(timeout),
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => exporter.exporter().shutdown_with_timeout(timeout),
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.shutdown_with_timeout(timeout),
+        }
+    }
+
+    fn temporality(&self) -> Temporality {
+        match self {
+            #[cfg(feature = "otlp-http")]
+            Self::OtlpHttp(exporter) => exporter.temporality(),
+            #[cfg(feature = "otlp-grpc")]
+            Self::OtlpGrpc(exporter) => exporter.exporter().temporality(),
+            #[cfg(test)]
+            Self::Test(exporter) => exporter.temporality(),
+        }
+    }
 }
 
 #[cfg(test)]

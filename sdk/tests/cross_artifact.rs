@@ -18,14 +18,31 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(feature = "otlp-grpc")]
+use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+#[cfg(feature = "otlp-grpc")]
+use opentelemetry_proto::tonic::collector::metrics::v1::{
+    metrics_service_server::{MetricsService, MetricsServiceServer},
+    ExportMetricsServiceResponse,
+};
 use opentelemetry_proto::tonic::common::v1::{any_value, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point};
 use prost::Message;
+#[cfg(feature = "otlp-grpc")]
+use tokio::net::TcpListener as TokioTcpListener;
+#[cfg(feature = "otlp-grpc")]
+use tokio::sync::oneshot;
+#[cfg(feature = "otlp-grpc")]
+use tokio_stream::wrappers::TcpListenerStream;
+#[cfg(feature = "otlp-grpc-gzip")]
+use tonic::codec::CompressionEncoding;
+#[cfg(feature = "otlp-grpc")]
+use tonic::{Request, Response, Status};
 
 fn find_cc() -> Option<String> {
     if let Ok(cc) = std::env::var("CC") {
@@ -61,6 +78,48 @@ fn is_ci() -> bool {
     std::env::var("CI")
         .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
+}
+
+#[cfg(feature = "otlp-grpc")]
+fn output_with_timeout(command: &mut Command, timeout: Duration) -> Output {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn child process");
+    let mut stdout = child.stdout.take().expect("capture child stdout");
+    let mut stderr = child.stderr.take().expect("capture child stderr");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).expect("read child stdout");
+        output
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stderr.read_to_end(&mut output).expect("read child stderr");
+        output
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().expect("query child status") {
+            break (status, false);
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("terminate timed-out child");
+            break (child.wait().expect("reap timed-out child"), true);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = Output {
+        status,
+        stdout: stdout_thread.join().expect("join stdout reader"),
+        stderr: stderr_thread.join().expect("join stderr reader"),
+    };
+    if timed_out {
+        panic!(
+            "child process timed out after {timeout:?}:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    output
 }
 
 /// Find a target profile dir that contains BOTH cdylibs.
@@ -176,6 +235,13 @@ extern void otel_batch_span_processor_builder_destroy(otel_batch_span_processor_
 extern void otel_span_processor_destroy(otel_span_processor_t*);
 extern otel_otlp_metric_exporter_builder_t* otel_otlp_metric_exporter_builder_new(void);
 extern int otel_otlp_metric_exporter_builder_set_endpoint(otel_otlp_metric_exporter_builder_t*, otel_string_view_t);
+extern int otel_otlp_metric_exporter_builder_set_transport(otel_otlp_metric_exporter_builder_t*, uint32_t);
+extern int otel_otlp_metric_exporter_builder_set_compression(
+    otel_otlp_metric_exporter_builder_t*, uint32_t);
+extern int otel_otlp_metric_exporter_builder_set_timeout_millis(
+    otel_otlp_metric_exporter_builder_t*, uint64_t);
+extern int otel_otlp_metric_exporter_builder_add_header(
+    otel_otlp_metric_exporter_builder_t*, otel_string_view_t, otel_string_view_t);
 extern int otel_otlp_metric_exporter_builder_build(const otel_otlp_metric_exporter_builder_t*, otel_metric_exporter_t**);
 extern void otel_otlp_metric_exporter_builder_destroy(otel_otlp_metric_exporter_builder_t*);
 extern void otel_metric_exporter_destroy(otel_metric_exporter_t*);
@@ -383,6 +449,23 @@ int main(void){
             meb,cs(getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")))!=0){
         result=13; goto cleanup;
     }
+    if (otel_otlp_metric_exporter_builder_set_timeout_millis(meb,5000)!=0){
+        result=78; goto cleanup;
+    }
+    if (getenv("OTEL_TEST_METRICS_GRPC") &&
+        otel_otlp_metric_exporter_builder_set_transport(meb,1)!=0){
+        result=75; goto cleanup;
+    }
+    if (getenv("OTEL_TEST_METRICS_COMPRESSION") &&
+        otel_otlp_metric_exporter_builder_set_compression(
+            meb,(uint32_t)atoi(getenv("OTEL_TEST_METRICS_COMPRESSION")))!=0){
+        result=77; goto cleanup;
+    }
+    if (getenv("OTEL_TEST_METRICS_GRPC") &&
+        otel_otlp_metric_exporter_builder_add_header(
+            meb,cs("x-tenant"),cs("integration"))!=0){
+        result=76; goto cleanup;
+    }
     if (otel_otlp_metric_exporter_builder_build(meb,&mex)!=0||!mex){
         result=14; goto cleanup;
     }
@@ -424,7 +507,8 @@ cleanup:
         observable=(void*)0;
     }
     if (sdk){
-        otel_sdk_metrics_shutdown(sdk,5000);
+        if (getenv("OTEL_TEST_SKIP_METRICS_SHUTDOWN")==NULL)
+            otel_sdk_metrics_shutdown(sdk,5000);
         otel_sdk_shutdown(sdk,5000);
         otel_sdk_destroy(sdk);
     }
@@ -531,6 +615,96 @@ fn start_mock() -> MockCollector {
     }
 }
 
+#[cfg(feature = "otlp-grpc")]
+#[derive(Clone)]
+struct GrpcMetricsService {
+    requests: Arc<(Mutex<Vec<ExportMetricsServiceRequest>>, std::sync::Condvar)>,
+    metadata_verified: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "otlp-grpc")]
+#[tonic::async_trait]
+impl MetricsService for GrpcMetricsService {
+    async fn export(
+        &self,
+        request: Request<ExportMetricsServiceRequest>,
+    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+        if request
+            .metadata()
+            .get("x-tenant")
+            .and_then(|value| value.to_str().ok())
+            == Some("integration")
+        {
+            self.metadata_verified.store(true, Ordering::Release);
+        }
+        let (requests, arrived) = &*self.requests;
+        requests.lock().unwrap().push(request.into_inner());
+        arrived.notify_all();
+        Ok(Response::new(ExportMetricsServiceResponse::default()))
+    }
+}
+
+#[cfg(feature = "otlp-grpc")]
+struct GrpcCollector {
+    port: u16,
+    requests: Arc<(Mutex<Vec<ExportMetricsServiceRequest>>, std::sync::Condvar)>,
+    metadata_verified: Arc<AtomicBool>,
+    shutdown: oneshot::Sender<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+#[cfg(feature = "otlp-grpc")]
+fn start_grpc_collector() -> GrpcCollector {
+    let requests = Arc::new((Mutex::new(Vec::new()), std::sync::Condvar::new()));
+    let server_requests = Arc::clone(&requests);
+    let metadata_verified = Arc::new(AtomicBool::new(false));
+    let server_metadata_verified = Arc::clone(&metadata_verified);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build gRPC collector runtime");
+        runtime.block_on(async move {
+            let listener = TokioTcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind gRPC collector");
+            ready_tx
+                .send(
+                    listener
+                        .local_addr()
+                        .expect("gRPC collector address")
+                        .port(),
+                )
+                .expect("publish gRPC collector port");
+            let service = MetricsServiceServer::new(GrpcMetricsService {
+                requests: server_requests,
+                metadata_verified: server_metadata_verified,
+            });
+            #[cfg(feature = "otlp-grpc-gzip")]
+            let service = service.accept_compressed(CompressionEncoding::Gzip);
+            tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve gRPC collector");
+        });
+    });
+    let port = ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("gRPC collector startup timed out");
+    GrpcCollector {
+        port,
+        requests,
+        metadata_verified,
+        shutdown: shutdown_tx,
+        thread,
+    }
+}
+
 fn has_string_attribute(attributes: &[KeyValue], key: &str, expected: &str) -> bool {
     attributes.iter().any(|attribute| {
         attribute.key == key
@@ -546,7 +720,10 @@ fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
         .iter()
         .map(|body| ExportMetricsServiceRequest::decode(body.as_slice()).expect("decode OTLP"))
         .collect::<Vec<_>>();
+    assert_metric_requests(&requests);
+}
 
+fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
     let mut resource_verified = false;
     let mut scope_verified = false;
     let mut counter_verified = false;
@@ -554,7 +731,7 @@ fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
     let mut histogram_verified = false;
     let mut observable_verified = false;
 
-    for request in &requests {
+    for request in requests {
         for resource_metrics in &request.resource_metrics {
             if let Some(resource) = &resource_metrics.resource {
                 resource_verified |=
@@ -771,4 +948,160 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     );
     assert_decoded_metrics(&metric_bodies);
     eprintln!("cross-artifact export OK: {received} protobuf bytes via API-only path");
+}
+
+#[cfg(feature = "otlp-grpc")]
+#[test]
+fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
+    if !cfg!(unix) {
+        return;
+    }
+    let cc = find_cc().expect("a C compiler is required for the gRPC cross-artifact test");
+    let lib_dir = find_lib_dir()
+        .expect("cdylibs must be built with otlp-grpc before the gRPC cross-artifact test runs");
+    let unique = format!(
+        "otel_c_cross_artifact_grpc_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let out = std::env::temp_dir().join(unique);
+    let src = out.with_extension("c");
+    std::fs::write(&src, HARNESS_C).expect("write gRPC harness");
+
+    let compile = Command::new(&cc)
+        .arg("-std=c11")
+        .arg(&src)
+        .arg("-L")
+        .arg(&lib_dir)
+        .arg("-lopentelemetry_c_api")
+        .arg("-lopentelemetry_c_sdk")
+        .arg(format!("-Wl,-rpath,{}", lib_dir.display()))
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .expect("compile gRPC harness");
+    assert!(
+        compile.status.success(),
+        "gRPC harness failed to compile/link:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let trace_collector = start_mock();
+    let metrics_collector = start_grpc_collector();
+    let trace_endpoint = format!("http://127.0.0.1:{}/v1/traces", trace_collector.port);
+    let metrics_endpoint = format!("http://127.0.0.1:{}", metrics_collector.port);
+    let mut command = Command::new(&out);
+    command
+        .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &trace_endpoint)
+        .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+        .env("OTEL_TEST_METRICS_GRPC", "1")
+        .env("DYLD_LIBRARY_PATH", &lib_dir)
+        .env("LD_LIBRARY_PATH", &lib_dir);
+    let run = output_with_timeout(&mut command, Duration::from_secs(10));
+
+    let (request_mutex, arrived) = &*metrics_collector.requests;
+    let (requests, first_wait) = arrived
+        .wait_timeout_while(
+            request_mutex.lock().unwrap(),
+            Duration::from_secs(5),
+            |requests| requests.is_empty(),
+        )
+        .expect("wait for gRPC Metrics request");
+    assert!(!first_wait.timed_out(), "gRPC Metrics export timed out");
+    drop(requests);
+
+    let mut command_without_shutdown = Command::new(&out);
+    command_without_shutdown
+        .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &trace_endpoint)
+        .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+        .env("OTEL_TEST_METRICS_GRPC", "1")
+        .env("OTEL_TEST_SKIP_METRICS_SHUTDOWN", "1")
+        .env("DYLD_LIBRARY_PATH", &lib_dir)
+        .env("LD_LIBRARY_PATH", &lib_dir);
+    let run_without_shutdown =
+        output_with_timeout(&mut command_without_shutdown, Duration::from_secs(10));
+    let (requests, second_wait) = arrived
+        .wait_timeout_while(
+            request_mutex.lock().unwrap(),
+            Duration::from_secs(5),
+            |requests| requests.len() < 2,
+        )
+        .expect("wait for second gRPC Metrics request");
+    assert!(
+        !second_wait.timed_out(),
+        "gRPC Metrics export during SDK destruction timed out"
+    );
+    drop(requests);
+
+    #[cfg(feature = "otlp-grpc-gzip")]
+    let compressed_run = {
+        let mut compressed_command = Command::new(&out);
+        compressed_command
+            .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &trace_endpoint)
+            .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+            .env("OTEL_TEST_METRICS_GRPC", "1")
+            .env("OTEL_TEST_METRICS_COMPRESSION", "1")
+            .env("DYLD_LIBRARY_PATH", &lib_dir)
+            .env("LD_LIBRARY_PATH", &lib_dir);
+        let run = output_with_timeout(&mut compressed_command, Duration::from_secs(10));
+        let (requests, compressed_wait) = arrived
+            .wait_timeout_while(
+                request_mutex.lock().unwrap(),
+                Duration::from_secs(5),
+                |requests| requests.len() < 3,
+            )
+            .expect("wait for compressed gRPC Metrics request");
+        assert!(
+            !compressed_wait.timed_out(),
+            "gzip gRPC Metrics export timed out"
+        );
+        drop(requests);
+        run
+    };
+    let requests = request_mutex.lock().unwrap().clone();
+    assert!(
+        metrics_collector.metadata_verified.load(Ordering::Acquire),
+        "configured gRPC metadata did not reach the collector"
+    );
+
+    trace_collector.stop.store(true, Ordering::Release);
+    trace_collector.thread.join().expect("join trace collector");
+    metrics_collector
+        .shutdown
+        .send(())
+        .expect("request gRPC collector shutdown");
+    metrics_collector
+        .thread
+        .join()
+        .expect("join gRPC collector");
+
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+
+    assert!(
+        run.status.success(),
+        "gRPC harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert!(
+        run_without_shutdown.status.success(),
+        "gRPC harness without explicit shutdown failed ({:?}):\nstdout: {}\nstderr: {}",
+        run_without_shutdown.status.code(),
+        String::from_utf8_lossy(&run_without_shutdown.stdout),
+        String::from_utf8_lossy(&run_without_shutdown.stderr),
+    );
+    #[cfg(feature = "otlp-grpc-gzip")]
+    assert!(
+        compressed_run.status.success(),
+        "gzip gRPC harness failed ({:?}):\nstdout: {}\nstderr: {}",
+        compressed_run.status.code(),
+        String::from_utf8_lossy(&compressed_run.stdout),
+        String::from_utf8_lossy(&compressed_run.stderr),
+    );
+    assert_metric_requests(&requests);
 }

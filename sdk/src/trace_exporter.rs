@@ -5,7 +5,7 @@
 //! concrete exporter kinds this SDK supports. It implements
 //! [`opentelemetry_sdk::trace::SpanExporter`], so a span processor can drive it uniformly
 //! regardless of which exporter is inside. The OTLP HTTP/protobuf exporter is one **optional**
-//! variant (feature `otlp`), not SDK core: with `--no-default-features` the enum has no
+//! variant (feature `otlp-http`), not SDK core: with `--no-default-features` the enum has no
 //! variants and the SDK core still builds. Adding a new exporter kind is a new variant plus a
 //! builder — no change to the public C ABI or handle shape.
 
@@ -20,18 +20,18 @@ use crate::handle::{destroy, guard_unit, HasMagic};
 pub(crate) const TRACE_EXPORTER_MAGIC: u64 = 0x4F54_4C43_5452_4558; // "OTLCTREX"
 
 /// Internal trace-exporter implementation. Each variant is a concrete exporter kind; the enum
-/// dispatches the [`SpanExporter`] trait to the active one. OTLP is optional (`otlp` feature);
+/// dispatches the [`SpanExporter`] trait to the active one. OTLP is optional (`otlp-http`);
 /// with no exporter feature enabled the enum is uninhabited and cannot be constructed.
 #[derive(Debug)]
 pub(crate) enum TraceExporterImpl {
-    /// OTLP HTTP/protobuf exporter (optional; feature `otlp`).
-    #[cfg(feature = "otlp")]
+    /// OTLP HTTP/protobuf exporter (optional; feature `otlp-http`).
+    #[cfg(feature = "otlp-http")]
     Otlp(opentelemetry_otlp::SpanExporter),
 }
 
 // Dispatch the SpanExporter trait to the active variant. Split by feature so the OTLP-disabled
 // build (an uninhabited enum) is handled without an unreachable placeholder variant.
-#[cfg(feature = "otlp")]
+#[cfg(feature = "otlp-http")]
 impl SpanExporter for TraceExporterImpl {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
         match self {
@@ -55,7 +55,7 @@ impl SpanExporter for TraceExporterImpl {
     }
 }
 
-#[cfg(not(feature = "otlp"))]
+#[cfg(not(feature = "otlp-http"))]
 impl SpanExporter for TraceExporterImpl {
     async fn export(&self, _batch: Vec<SpanData>) -> OTelSdkResult {
         // Uninhabited when no exporter feature is enabled: cannot be constructed or called.
