@@ -74,6 +74,15 @@ jobs:
       - name: Compile fuzz targets
         run: cargo +nightly fuzz build
 
+  linux-shared-libraries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Verify debug and release shared libraries
+        run: scripts/verify-shared-libraries.sh
+
   test:
     runs-on: ubuntu-latest
     steps:
