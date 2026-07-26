@@ -1,6 +1,6 @@
 //! Cross-artifact custom Metrics exporter and manual-reader proof.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn find_cc() -> Option<String> {
@@ -19,13 +19,24 @@ fn find_cc() -> Option<String> {
     })
 }
 
+fn resolve_target_dir(workspace_root: &Path, configured: Option<PathBuf>) -> PathBuf {
+    match configured {
+        Some(dir) if dir.is_absolute() => dir,
+        Some(dir) => workspace_root.join(dir),
+        None => workspace_root.join("target"),
+    }
+}
+
 fn find_lib_dir() -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("workspace root")
-        .to_path_buf();
+        .expect("workspace root");
+    let configured = std::env::var_os("CARGO_TARGET_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from);
+    let target_dir = resolve_target_dir(workspace_root, configured);
     for profile in ["debug", "release"] {
-        let directory = root.join("target").join(profile);
+        let directory = target_dir.join(profile);
         let api = ["libopentelemetry_c_api.dylib", "libopentelemetry_c_api.so"]
             .into_iter()
             .any(|name| directory.join(name).is_file());
@@ -37,6 +48,24 @@ fn find_lib_dir() -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[test]
+fn target_dir_resolution_honors_absolute_and_workspace_relative_values() {
+    let workspace_root = std::env::temp_dir().join("otel-c-workspace");
+    let absolute = std::env::temp_dir().join("otel-c-target");
+    assert_eq!(
+        resolve_target_dir(&workspace_root, Some(absolute.clone())),
+        absolute
+    );
+    assert_eq!(
+        resolve_target_dir(&workspace_root, Some(PathBuf::from("build/target"))),
+        workspace_root.join("build/target")
+    );
+    assert_eq!(
+        resolve_target_dir(&workspace_root, None),
+        workspace_root.join("target")
+    );
 }
 
 fn is_ci() -> bool {

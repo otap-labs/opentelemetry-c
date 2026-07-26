@@ -39,6 +39,14 @@ experimental `0.x` C ABI.
 - gRPC binary `-bin` metadata and custom certificate/key configuration are not exposed.
   HTTPS requires the opt-in `grpc-tls-ring` Cargo feature, which uses upstream tonic TLS with
   native/platform roots.
+- OTLP Metrics exposes HTTP/protobuf and gRPC/tonic only; the upstream HTTP/JSON encoding is
+  not part of the current C transport enum.
+- `OTEL_METRIC_TEMPORALITY_DEFAULT` selects cumulative temporality for custom exporters. OTLP
+  exporters instead defer the default preference to the upstream environment/configuration
+  resolution.
+- Exemplar visitor callbacks are wired for every supported metric data type, but the pinned
+  Rust SDK 0.32.1 currently emits empty exemplar lists, so those callbacks are not invoked in
+  practice.
 - Observable callbacks cannot be unregistered from the upstream Rust SDK. Destroying the C
   handle disables callback work and releases user data after any in-flight callback. Metrics
   shutdown/destroy also removes the SDK's global provider registration when still current.

@@ -187,6 +187,11 @@ _Static_assert(sizeof(otel_custom_metric_exporter_callbacks_t) == 40,
                "otel_custom_metric_exporter_callbacks_t ABI mismatch");
 #endif
 
+/*
+ * Create a callback-backed exporter. OTEL_METRIC_TEMPORALITY_DEFAULT selects cumulative
+ * temporality for custom exporters, matching the OpenTelemetry Metrics default. On success
+ * the exporter owns user_data and invokes callbacks->destroy exactly once.
+ */
 otel_status_t otel_custom_metric_exporter_new(
     const otel_custom_metric_exporter_callbacks_t* callbacks,
     void* user_data,
