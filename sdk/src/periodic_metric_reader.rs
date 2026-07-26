@@ -800,7 +800,7 @@ mod tests {
 
     #[cfg(feature = "metrics-async-runtime")]
     #[test]
-    fn async_reader_applies_export_timeout_and_flushes_successfully() {
+    fn async_reader_maps_timeout_for_cooperative_exporter_and_flushes_successfully() {
         let timeout_drops = Arc::new(AtomicUsize::new(0));
         let timeout_exports = Arc::new(AtomicUsize::new(0));
         let (reader, runtime) = unsafe {

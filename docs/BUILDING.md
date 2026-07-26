@@ -70,7 +70,9 @@ names the required feature when the selected transport or compression is unavail
 The periodic Metrics reader remains blocking by default. Enabling
 `metrics-async-runtime` allows C code to select an SDK-owned async reader with one Tokio
 worker and at most one blocking thread; applications never provide a Rust runtime. The async
-reader supports HTTP and custom exporters, but rejects the synchronous OTLP/gRPC wrapper.
+reader supports HTTP and custom exporters, but rejects the synchronous OTLP/gRPC wrapper. Its
+reader timeout is cooperative and cannot interrupt synchronous HTTP or custom callback work;
+use the HTTP exporter timeout and bounded callback implementations for those exporters.
 
 ## Compile and link a C application
 

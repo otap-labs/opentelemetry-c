@@ -21,7 +21,10 @@ enum {
  * The pinned OpenTelemetry Rust 0.32 PeriodicReader uses a fixed five-second exporter
  * timeout while shutting down. otel_sdk_metrics_shutdown() cannot override that reader
  * timeout; its timeout_millis argument is currently advisory for Metrics. The optional async
- * reader instead applies its configured export timeout to interval and force-flush exports.
+ * reader instead passes its configured export timeout to interval and force-flush exports.
+ * This is a cooperative async timeout: it cannot interrupt a synchronous exporter call. The
+ * current HTTP exporter and custom C callbacks execute synchronously, so callers must also
+ * configure the HTTP exporter's transport timeout and ensure custom callbacks return promptly.
  * Both runtimes are SDK-owned; callers never provide or enter a Rust runtime.
  */
 otel_periodic_metric_reader_builder_t* otel_periodic_metric_reader_builder_new(void);
@@ -36,8 +39,10 @@ otel_status_t otel_periodic_metric_reader_builder_set_runtime(
 otel_status_t otel_periodic_metric_reader_builder_set_interval_millis(
     otel_periodic_metric_reader_builder_t* builder, uint64_t interval_millis);
 /*
- * Configure the per-export timeout for the ASYNC reader. Zero selects the upstream default.
- * A non-zero timeout with the BLOCKING reader is rejected at build time.
+ * Configure the upstream cooperative per-export timeout for the ASYNC reader. Zero selects the
+ * upstream default. It is enforced only while an exporter future yields; it does not preempt
+ * synchronous HTTP or custom callback execution. A non-zero timeout with the BLOCKING reader is
+ * rejected at build time.
  */
 otel_status_t otel_periodic_metric_reader_builder_set_timeout_millis(
     otel_periodic_metric_reader_builder_t* builder, uint64_t timeout_millis);

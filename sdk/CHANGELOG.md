@@ -8,8 +8,9 @@
   gauge, and histogram recording, with direct OpenTelemetry Rust baselines for separating C
   conversion/FFI overhead from SDK aggregation cost.
 - Optional async periodic Metrics reader behind `metrics-async-runtime`. It owns one bounded
-  Tokio runtime, supports configurable per-export timeouts and multiple readers, requires no
-  caller-managed runtime, and shuts its runtime down after reader/provider destruction. HTTP
+  Tokio runtime, maps the upstream cooperative export timeout, supports multiple readers,
+  requires no caller-managed runtime, and shuts its runtime down after reader/provider
+  destruction. The timeout cannot preempt synchronous HTTP or custom callback execution. HTTP
   and custom exporters are supported; the synchronous OTLP/gRPC wrapper is rejected.
 - C callback-backed Metrics exporters and worker-free manual readers. Export callbacks
   traverse callback-scoped resource, scope, metric, point, histogram, exponential histogram,
