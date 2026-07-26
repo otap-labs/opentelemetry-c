@@ -32,7 +32,8 @@ experimental `0.x` C ABI.
 - Observable callbacks cannot be unregistered from the upstream Rust SDK. Destroying the C
   handle disables callback work and releases user data after any in-flight callback. Metrics
   shutdown/destroy also removes the SDK's global provider registration when still current.
-- The supported shared-global deployment model is one dynamically loaded API library on
-  Linux or macOS. Windows dynamic linking remains unverified.
+- The supported shared-global deployment model is one shared API library on Linux or macOS,
+  loaded before the matching SDK and retained for process lifetime after use. Windows
+  shared-library use and static deployment are unsupported.
 - Logs, custom readers/exporters, and asynchronous user-controlled collection are not
   exposed.

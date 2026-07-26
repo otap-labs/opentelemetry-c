@@ -1,9 +1,12 @@
 # Changelog
 
-## vNext
+## Unreleased
 
 ### Added
 
+- Documented the coordinated, experimental, source-only product release policy. Consumers
+  build matching API and SDK libraries from one tag; no native binaries or crates.io
+  packages are distributed.
 - Optional OTLP/gRPC Metrics export with explicit additive C transport and compression
   selectors. HTTP/protobuf remains the default. The gRPC path owns one bounded Tokio runtime
   per exporter, maps existing string headers to validated ASCII tonic metadata, supports

@@ -14,7 +14,8 @@
  *     span per thread or synchronize externally. Distinct spans are independent.
  *   - A builder handle is NOT thread-safe; confine it to a single thread.
  *   - No *_destroy may race with any other call on the same handle.
- *   - There are no callbacks: the library never calls back into C code.
+ *   - The Metrics API may invoke registered observable callbacks during collection. See
+ *     metrics.h for callback concurrency and lifetime requirements.
  * Version and error queries are thread-safe; the last-error message is thread-local.
  *
  * Handle validity

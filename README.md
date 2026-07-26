@@ -11,6 +11,16 @@ instrumentation library depend only on the API, while the application owns the S
 
 > ⚠️ **Experimental.** The C ABI is not yet stable and may change between `0.x` releases.
 
+Releases are **source-only**: one version and tag cover the API, SDK, and internal ABI
+packages. No prebuilt native binaries or crates.io packages are distributed, and API/SDK
+artifacts from different tags must not be mixed. Linux and macOS shared-library use are
+supported; Windows shared-library use and static deployment are unsupported.
+
+Build from source using [docs/BUILDING.md](docs/BUILDING.md). See
+[VERSIONING.md](VERSIONING.md), [RELEASING.md](RELEASING.md),
+[SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and the
+[examples](sdk/examples).
+
 ## Project structure
 
 - **[api/](api/)** — package `opentelemetry-c-api`. The public C **API** facade (trace and
@@ -233,11 +243,10 @@ intentionally omitted here to avoid extra Makefile/link/CI maintenance for margi
 
 ## Supported model
 
-The shared-global model is validated on **Unix-like dynamic linking (Linux and macOS)** with
-a single loaded `libopentelemetry_c_api`. **Windows dynamic linking is not yet verified**, and
-static-linking the API into more than one artifact creates separate global provider slots (not
-the shared-global model) — neither is claimed as supported. See the api/sdk READMEs for
-details.
+The supported model is Linux or macOS shared-library use with exactly one API library loaded
+before the matching SDK library. Keep both loaded after use; `dlclose` is unsupported.
+Windows shared-library use and static deployment are unsupported. See
+[VERSIONING.md](VERSIONING.md#supported-shared-library-model).
 
 ## License
 

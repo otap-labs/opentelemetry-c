@@ -51,7 +51,8 @@ The shared-global model is only guaranteed under **dynamic linking with exactly 
   installation receives a registration token: `otel_sdk_metrics_shutdown` and
   `otel_sdk_destroy` remove the Metrics global only if that SDK still owns the slot, without
   clearing a newer installation. Explicitly acquired trace/Metrics handles must also be
-  destroyed before unloading the SDK library.
+  destroyed while both libraries remain loaded. Unloading either library after use is
+  unsupported.
 
 ## Headers
 
@@ -101,12 +102,10 @@ cc -std=c11 my_instr.c \
 Applications additionally link `libopentelemetry_c_sdk` — see that crate's README and the
 `c-basic-traces` example.
 
-**Static-linking caveat.** The static library is emitted, but statically linking the API into
-**more than one artifact** (e.g. an instrumentation library *and* the application) gives each
-copy its own global provider slot, so an installed SDK is invisible across them (see *Linking
-& library lifetime* above). The guaranteed shared-global model is dynamic linking with a
-single loaded `libopentelemetry_c_api`; static linking is only equivalent in a single binary
-that embeds exactly one copy of the API.
+**Static-linking caveat.** The static library is emitted, but supported static deployment
+has not been designed or validated. Multiple API copies create independent global provider
+slots, and a static API in an executable combined with a dynamically loaded SDK is
+unsupported.
 
 ## Platform support
 
@@ -114,12 +113,14 @@ The dynamic API/SDK split (instrumentation links the API only; the SDK registers
 API-owned global slot) is verified on **Unix-like dynamic linking — Linux and macOS**. The
 cross-artifact proof test runs there.
 
-**Windows is not yet verified.** The SDK cdylib references the API cdylib's `otel_api_*`
+**Windows shared-library use is unsupported.** The SDK cdylib references the API cdylib's `otel_api_*`
 symbols, which on Windows requires linking against the API's generated import library
 (`.dll.lib`) rather than the load-time dynamic-lookup resolution used on Unix. Producing and
-wiring that import library is follow-up work; until then, treat Windows dynamic linking as
-unsupported. (Rust `cargo check`/`clippy` of the crates still succeed on Windows because they
-do not link the cdylibs.)
+wiring that import library is follow-up work.
+
+After either shared library has been used, unloading it with `dlclose` is unsupported.
+Using `fork()` without an immediate `exec()` after SDK background workers start is also
+unsupported.
 
 ## Ownership & safety
 

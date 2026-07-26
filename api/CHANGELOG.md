@@ -1,8 +1,11 @@
 # Changelog
 
-## vNext
+## Unreleased
 
 ### Added
+
+- Documented the coordinated, experimental, source-only product release policy. The API,
+  SDK, and ABI packages share one tag and are not published independently.
 
 - Experimental Metrics API with independent API-owned global `MeterProvider`, API-only no-op
   behavior, all nine synchronous numeric instrument combinations, all seven observable

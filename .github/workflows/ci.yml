@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -10,6 +11,58 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  release-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check coordinated release metadata
+        run: scripts/check-release-metadata.sh
+
+  msrv:
+    # Set this repository variable only after maintainers validate the locked workspace and
+    # update all three manifests to the chosen product MSRV.
+    env:
+      VALIDATED_MSRV: ${{ vars.OPENTELEMETRY_C_VALIDATED_MSRV }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report unresolved MSRV policy
+        if: env.VALIDATED_MSRV == '' && github.ref_type != 'tag'
+        run: |
+          echo "::warning::MSRV validation is gated until OPENTELEMETRY_C_VALIDATED_MSRV is configured"
+      - name: Block release tags without a validated MSRV
+        if: env.VALIDATED_MSRV == '' && github.ref_type == 'tag'
+        run: |
+          echo "::error::Release tags require OPENTELEMETRY_C_VALIDATED_MSRV"
+          exit 1
+      - name: Check validated MSRV metadata
+        if: env.VALIDATED_MSRV != ''
+        run: scripts/check-release-metadata.sh
+      - name: Install validated MSRV
+        if: env.VALIDATED_MSRV != ''
+        # Pin the action because this job gates source-release tags.
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: ${{ env.VALIDATED_MSRV }}
+      - name: Check product libraries at validated MSRV
+        if: env.VALIDATED_MSRV != ''
+        run: |
+          cargo check --locked -p opentelemetry-c-api --lib
+          cargo check --locked -p opentelemetry-c-sdk --lib
+          cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features
+          cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features --features otlp-grpc
+          cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features \
+            --features otlp-http,rustls-tls,otlp-grpc,grpc-tls-ring,otlp-http-gzip,otlp-http-zstd,otlp-grpc-gzip,otlp-grpc-zstd
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit locked dependencies
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   test:
     runs-on: ubuntu-latest
     steps:
