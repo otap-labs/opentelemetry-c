@@ -20,8 +20,9 @@ Applications link **both** libraries and put both include directories on the sea
 (this header includes the API's `common.h`/`trace.h`). Instrumentation libraries link only
 the API. The SDK cdylib references the API cdylib's internal registration symbols, resolved
 at load time — so the application must link the API alongside the SDK. This load-time
-resolution is verified on **Unix-like dynamic linking (Linux, macOS)**; **Windows is not yet
-verified** and needs an import-library follow-up (see the API README's Platform support).
+resolution is supported on **Unix-like dynamic linking (Linux, macOS)**. **Windows
+shared-library use is unsupported** because the required import-library linkage is not
+implemented.
 
 ```sh
 cargo build --release -p opentelemetry-c-api -p opentelemetry-c-sdk
@@ -33,9 +34,9 @@ cc -std=c11 my_app.c \
    -Wl,-rpath,path/to/target/release -o my_app
 ```
 
-Static linking may require additional native/system libraries from the Rust, TLS, and HTTP
-dependencies; discover them with
-`cargo rustc --release --lib -- --print native-static-libs`.
+Cargo may emit static libraries, but supported static deployment has not been designed or
+validated. Multiple API copies and a static API combined with a dynamically loaded SDK are
+unsupported.
 
 ### Library lifetime
 
@@ -49,10 +50,10 @@ handle, but the slot keeps referencing this library's vtable/provider. The slot 
 only when **another provider replaces it** (a subsequent `otel_sdk_set_as_global` /
 registration).
 
-Therefore, after a successful global install, **`libopentelemetry_c_sdk` must remain loaded
-until process exit, or until another provider replaces the global slot** — shutting down and
-destroying the SDK does **not** make unloading it safe. Any live SDK-backed handles (tracer
-provider, tracer, span obtained after `set_as_global`) must also be destroyed before unload.
+After either library has been used, both must remain loaded until process exit. Replacing a
+provider, shutting down, and destroying handles do **not** make `dlclose` supported. Any live
+SDK-backed handles (tracer provider, tracer, span, MeterProvider, meter, instrument, or
+callback) must remain within that library lifetime.
 Statically linking the API into multiple artifacts creates separate global slots and is
 **not** the shared-global model.
 
@@ -61,7 +62,11 @@ Metrics global installation is intentionally different: each successful
 `otel_sdk_metrics_shutdown` and `otel_sdk_destroy` remove the Metrics global reference only
 when that token still owns the slot. If another SDK installed a newer Metrics provider, the
 older SDK's shutdown is a no-op for the global slot. Explicitly acquired MeterProvider/meter
-handles remain caller-owned and must be destroyed before unloading the SDK library.
+handles remain caller-owned and must be destroyed for normal cleanup while both libraries
+remain loaded.
+
+Using `fork()` without an immediate `exec()` after SDK background workers start is
+unsupported.
 
 Ready-to-run examples that link both libraries are in
 [`examples/c-basic-traces/`](examples/c-basic-traces) and
@@ -125,6 +130,8 @@ Building with `--no-default-features` produces the SDK core **without** `opentel
 ABI is identical across feature sets), but `otel_otlp_trace_exporter_builder_build` returns
 `OTEL_STATUS_INVALID_CONFIG` with a last-error explaining the `otlp` feature is disabled.
 Enabling `otlp` without a TLS feature builds an HTTP-only OTLP exporter (no HTTPS).
+Do not enable both TLS backends for a release build. See
+[`docs/BUILDING.md`](../docs/BUILDING.md) for consumer commands.
 
 ### Ownership transfer rules
 

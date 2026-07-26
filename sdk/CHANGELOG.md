@@ -1,8 +1,12 @@
 # Changelog
 
-## vNext
+## Unreleased
 
 ### Added
+
+- Documented the coordinated, experimental, source-only product release policy. Consumers
+  build matching API and SDK libraries from one tag; no native binaries or crates.io
+  packages are distributed.
 
 - Experimental Metrics SDK: OTLP HTTP/protobuf exporter, periodic reader, multiple-reader
   pipelines, independent Metrics global install/flush/shutdown, cumulative/delta/low-memory

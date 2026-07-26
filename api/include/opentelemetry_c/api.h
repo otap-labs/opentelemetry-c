@@ -24,17 +24,14 @@
  *   - The shared global provider is guaranteed ONLY under dynamic linking with exactly one
  *     loaded `libopentelemetry_c_api`. Statically linking this library into more than one
  *     artifact gives each copy its OWN global slot and no-op default (not the shared model).
- *   - Once otel_sdk_set_as_global() succeeds, the SDK's static vtable and provider object
- *     live in the API global slot. otel_sdk_shutdown()/otel_sdk_destroy() do NOT clear that
- *     slot; it is cleared only when another provider replaces it. So after a global install,
- *     `libopentelemetry_c_sdk` must stay loaded until process exit OR until another provider
- *     replaces the slot. Shutdown+destroy does NOT make unloading the SDK safe. (Live
- *     SDK-backed handles must also be destroyed before any such unload.)
+ *   - After either API or SDK library has been used, both must remain loaded until process
+ *     exit. Replacing providers, shutdown, and handle destruction do NOT make dlclose
+ *     supported.
  *
  * Platform status
  * ---------------
  * The shared-global model is verified on Unix-like dynamic linking (Linux and macOS).
- * Windows dynamic linking is NOT yet verified/supported — the SDK's undefined otel_api_*
+ * Windows shared-library use is unsupported — the SDK's undefined otel_api_*
  * symbols need the API's import library at link time (follow-up work); see README.md.
  *
  * Status: EXPERIMENTAL. The C ABI is not yet stable (see README.md).

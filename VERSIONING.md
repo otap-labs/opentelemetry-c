@@ -1,25 +1,51 @@
-# Versioning and compatibility
+# Versioning, compatibility, and release policy
 
-OpenTelemetry C is experimental. Until the project explicitly declares a stable release,
-its public C API and ABI may change between `0.x` releases.
+This document is the authoritative release policy for `opentelemetry-c`.
 
-This document describes the intended compatibility policy during that experimental period.
-It is not a promise of `1.0` stability.
+## Product identity
 
-## Releases
+`opentelemetry-c` is one coordinated native C product consisting of the C API library, the
+C SDK library, and the internal Rust ABI crate used by both. The project-owned Cargo
+packages `opentelemetry-c-api`, `opentelemetry-c-sdk`, and `opentelemetry-c-abi`:
 
-The `opentelemetry-c-api`, `opentelemetry-c-sdk`, and internal
-`opentelemetry-c-abi` crates are developed and released as one coordinated component.
-Consumers should use API and SDK libraries from the same release.
+- use one product version;
+- are released from one `vMAJOR.MINOR.PATCH` Git tag and one GitHub Release;
+- are not independently released or supported;
+- must not be mixed across releases.
 
-During `0.x`:
+The Cargo crates are implementation components used to build the C product. They are not
+currently supported as independent Rust APIs and have `publish = false`.
 
-- minor releases may make source- or binary-incompatible changes;
-- patch releases should remain source- and binary-compatible when practical;
-- an incompatibility in a patch release must be called out prominently in the changelog;
-- deprecated APIs may be removed in a later minor release without waiting for `1.0`.
+## Experimental source-only releases
 
-The API and SDK changelogs record user-visible changes for their respective artifacts.
+Before 1.0, releases are source-only:
+
+- GitHub Releases use the repository tag's automatically generated `.tar.gz` and `.zip`;
+- no native binaries, static/import libraries, header bundles, installers, or custom source
+  archives are attached;
+- checksums are not advertised for GitHub-generated archives because their byte
+  representation is not guaranteed to remain stable;
+- the project does not run `cargo publish` or publish placeholder crates;
+- consumers build the API and SDK locally from the same tag.
+
+`Cargo.lock` remains committed so a release tag selects the dependency versions validated
+for that release. Maintainers must monitor dependency advisories and issue an updated
+release when a relevant dependency vulnerability requires remediation.
+
+## Pre-1.0 compatibility
+
+The C API and ABI are experimental before 1.0:
+
+- minor `0.x` releases may intentionally change C source or native ABI compatibility;
+- patch releases preserve both C source compatibility and native ABI compatibility within
+  their minor release;
+- an incompatible change requires a new minor release;
+- source compatibility is the primary practical promise because consumers build from
+  source, but ABI compatibility still matters when replacing a library without recompiling;
+- the project does not yet claim production readiness or a stable ABI.
+
+Deprecated APIs may be removed in a later minor release. The coordinated API and SDK
+changelogs distinguish changes to each artifact without implying independent releases.
 
 ## Public C API and ABI
 
@@ -51,12 +77,59 @@ API and SDK libraries from different releases are not supported unless a release
 documents that combination as compatible. An internal compatibility check may reject a
 mismatched pair rather than allowing unsafe dispatch.
 
-## Dependency versions
+The internal vtable ABI is reserved for this project and is not a supported third-party
+extension interface.
+
+## ABI crate invariant
+
+The internal ABI crate may contain shared types, constants, layouts, and validation helpers.
+It must not own process-global mutable state or define exported `#[no_mangle] extern "C"`
+symbols. It is intentionally linked into both API and SDK artifacts; global state or
+exported C symbols there could duplicate state or symbols across the libraries. The API
+library is the sole owner of the process-global trace and Metrics provider slots.
+
+## Supported shared-library model
+
+The supported deployment model is:
+
+- exactly one shared API library owns the process-global trace and Metrics provider slots;
+- the matching SDK library registers providers through that API library;
+- API and SDK are built from the same release;
+- the API library is already present in the process's global symbol scope before the SDK is
+  loaded, through normal application linking or platform-appropriate global loading;
+- both libraries remain loaded for the lifetime of every provider, tracer, span, meter,
+  instrument, observable callback, global registration, and other handle that may call
+  their code or vtables;
+- neither library is unloaded after use; `dlclose` after API or SDK use is unsupported.
+
+Linux and macOS shared-library use are supported. Windows shared-library use is currently
+unsupported because the SDK-to-API cross-library link mechanism has no Windows
+implementation.
+
+The following configurations are unsupported:
+
+- multiple statically linked API copies, which create independent global provider slots;
+- a static API in an executable combined with a dynamically loaded SDK;
+- any static deployment as a supported distribution model. Static libraries may remain
+  buildable from source, but deployment is experimental and unsupported.
+
+Using POSIX `fork()` without an immediate `exec()` after the SDK starts background workers
+is unsupported. The child does not retain those worker threads or runtime in a usable state.
+
+## Dependency and Rust toolchain policy
 
 The Rust OpenTelemetry dependencies are implementation details. Updating them may change
 behavior or require public C API changes, which follow the release rules above.
 
-The minimum supported Rust version is declared by each crate's `rust-version` field.
+All three project manifests must declare the same validated minimum supported Rust version
+(MSRV), and release CI must check the locked workspace with it. The committed dependency
+set is part of that claim.
+
+The current `rust-version = "1.75.0"` declarations are not yet a verified release promise:
+the committed lockfile contains dependencies that require newer Cargo/Rust language
+support. The first source release is blocked until maintainers either pin a dependency set
+that builds on Rust 1.75 and enforce it in CI, or choose and validate a higher product MSRV.
+See [RELEASING.md](RELEASING.md).
 
 ## Stable compatibility
 

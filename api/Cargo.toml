@@ -9,6 +9,7 @@ repository = "https://github.com/otap-labs/opentelemetry-c/tree/main/api"
 keywords = ["opentelemetry", "tracing", "ffi", "c"]
 categories = ["development-tools::debugging", "api-bindings"]
 license = "Apache-2.0"
+publish = false
 
 # The API library. `cdylib`/`staticlib` are what C/C++ instrumentation links against;
 # `rlib` keeps it usable from this crate's own Rust tests. It owns the single process

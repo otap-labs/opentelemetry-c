@@ -9,6 +9,7 @@ repository = "https://github.com/otap-labs/opentelemetry-c/tree/main/sdk"
 keywords = ["opentelemetry", "tracing", "ffi", "c", "otlp"]
 categories = ["development-tools::debugging", "api-bindings"]
 license = "Apache-2.0"
+publish = false
 
 # The SDK library. C consumers link this PLUS `libopentelemetry_c_api`; the SDK cdylib
 # links against the API cdylib to call its registration ABI (see build.rs).
@@ -17,6 +18,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 opentelemetry-c-abi = { path = "../abi" }
+# Deliberately do not add `opentelemetry-c-api` here. The SDK calls the API through
+# external C symbols; a Rust path dependency could embed another API instance and duplicate
+# the process-global provider slots.
 opentelemetry = { workspace = true, features = ["trace", "metrics"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "spec_unstable_metrics_views"] }
 # The OTLP HTTP/protobuf trace exporter is an OPTIONAL exporter implementation, not SDK core.

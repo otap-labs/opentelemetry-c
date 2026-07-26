@@ -48,25 +48,23 @@
  * loaded `libopentelemetry_c_api`. Statically linking the API into multiple artifacts
  * creates separate global slots and is NOT the shared-global model.
  *
- * Platform status: verified on Unix-like dynamic linking (Linux, macOS). Windows is not yet
- * verified — the SDK's undefined otel_api_* symbols need the API's import library at link
- * time; see the API README's "Platform support" section.
+ * Platform status: shared-library use is supported on Linux and macOS. Windows
+ * shared-library use is unsupported because SDK-to-API import-library linkage is not
+ * implemented.
  *
  * Library lifetime
  * ----------------
  * Once otel_sdk_set_as_global() succeeds, it publishes this library's static implementation
  * vtable and an SDK-owned provider object into the API global slot. otel_sdk_shutdown() and
  * otel_sdk_destroy() do NOT clear that slot (they stop/free the otel_sdk_t handle only); the
- * slot is cleared only when another provider replaces it. Therefore, after a global install,
- * `libopentelemetry_c_sdk` must remain loaded until process exit OR until another provider
- * replaces the global slot. Shutdown+destroy does NOT make unloading the SDK safe. Any live
- * SDK-backed handles (tracer provider, tracer, span) must also be destroyed before unload.
+ * After either API or SDK library has been used, both must remain loaded until process exit.
+ * Replacing providers, shutdown, and handle destruction do NOT make dlclose supported.
  *
  * Metrics unregistration or shutdown alone also does NOT make unloading the SDK safe.
- * Before unloading, ensure the SDK is no longer globally installed; destroy every SDK-backed
- * MeterProvider, Meter, and instrument handle; wait for all observable callbacks to finish;
- * and ensure no thread can call through an SDK Metrics vtable. Existing handles retain
- * function pointers into `libopentelemetry_c_sdk`.
+ * Existing handles retain function pointers into `libopentelemetry_c_sdk`; destroy them for
+ * normal lifecycle cleanup, but do not unload either library afterward.
+ *
+ * Using fork() without an immediate exec() after SDK background workers start is unsupported.
  *
  * Typical lifecycle
  * -----------------

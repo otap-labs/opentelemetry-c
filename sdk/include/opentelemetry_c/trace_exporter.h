@@ -4,8 +4,9 @@
  * The generic **trace exporter** handle (`otel_trace_exporter_t`) — the opaque object a span
  * processor builder consumes. A concrete exporter is produced by an exporter builder (today
  * only the OTLP HTTP/protobuf exporter; see otlp_trace_exporter.h). This header is the stable
- * extension point: additional exporter kinds can be added later behind the same opaque handle
- * without breaking the ABI. No custom-callback exporter is provided yet.
+ * extension point: additional exporter kinds can be added later behind the same opaque
+ * handle without reshaping the current C interface. No custom-callback exporter is provided
+ * yet.
  *
  * Ownership: a trace exporter is owned by the caller until it is transferred into a span
  * processor builder via otel_batch_span_processor_builder_set_exporter() (ownership moves on
