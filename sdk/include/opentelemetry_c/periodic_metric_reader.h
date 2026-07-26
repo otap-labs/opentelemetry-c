@@ -23,16 +23,16 @@ enum {
  * timeout; its timeout_millis argument is currently advisory for Metrics. The optional async
  * reader instead passes its configured export timeout to interval and force-flush exports.
  * This is a cooperative async timeout: it cannot interrupt a synchronous exporter call. The
- * current HTTP exporter and custom C callbacks execute synchronously, so callers must also
- * configure the HTTP exporter's transport timeout and ensure custom callbacks return promptly.
- * Both runtimes are SDK-owned; callers never provide or enter a Rust runtime.
+ * custom C callbacks execute synchronously, so callers must ensure those callbacks return
+ * promptly. Both runtimes are SDK-owned; callers never provide or enter a Rust runtime.
  */
 otel_periodic_metric_reader_builder_t* otel_periodic_metric_reader_builder_new(void);
 void otel_periodic_metric_reader_builder_destroy(otel_periodic_metric_reader_builder_t* builder);
 /*
  * Select the reader implementation. BLOCKING is the default and is available in every build.
  * ASYNC requires the `metrics-async-runtime` Cargo feature and owns one bounded Tokio worker.
- * The current synchronous OTLP/gRPC wrapper is intentionally incompatible with ASYNC.
+ * The current blocking OTLP/HTTP and synchronous OTLP/gRPC wrappers are intentionally
+ * incompatible with ASYNC. ASYNC currently supports custom exporters.
  */
 otel_status_t otel_periodic_metric_reader_builder_set_runtime(
     otel_periodic_metric_reader_builder_t* builder, otel_metric_reader_runtime_t runtime);
@@ -41,8 +41,8 @@ otel_status_t otel_periodic_metric_reader_builder_set_interval_millis(
 /*
  * Configure the upstream cooperative per-export timeout for the ASYNC reader. Zero selects the
  * upstream default. It is enforced only while an exporter future yields; it does not preempt
- * synchronous HTTP or custom callback execution. A non-zero timeout with the BLOCKING reader is
- * rejected at build time.
+ * synchronous custom callback execution. A non-zero timeout with the BLOCKING reader is rejected
+ * at build time.
  */
 otel_status_t otel_periodic_metric_reader_builder_set_timeout_millis(
     otel_periodic_metric_reader_builder_t* builder, uint64_t timeout_millis);

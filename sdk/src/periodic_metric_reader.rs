@@ -310,6 +310,13 @@ fn build_async_reader(
     interval: Option<Duration>,
     timeout: Option<Duration>,
 ) -> Result<PeriodicMetricReaderImpl, OtelStatus> {
+    #[cfg(feature = "otlp-http")]
+    if matches!(&exporter, MetricExporterImpl::OtlpHttp(_)) {
+        return Err(fail(
+            OtelStatus::InvalidConfig,
+            "the blocking OTLP/HTTP Metrics exporter is incompatible with the async reader",
+        ));
+    }
     #[cfg(feature = "otlp-grpc")]
     if matches!(&exporter, MetricExporterImpl::OtlpGrpc(_)) {
         return Err(fail(
@@ -419,6 +426,17 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_build(
                     OtelStatus::InvalidConfig,
                     "the synchronous OTLP/gRPC Metrics exporter is incompatible with the async \
                      reader",
+                );
+            }
+            #[cfg(all(feature = "metrics-async-runtime", feature = "otlp-http"))]
+            if matches!(
+                builder.exporter.as_ref(),
+                Some(MetricExporterImpl::OtlpHttp(_))
+            ) {
+                return fail(
+                    OtelStatus::InvalidConfig,
+                    "the blocking OTLP/HTTP Metrics exporter is incompatible with the async \
+                      reader",
                 );
             }
         }
@@ -532,14 +550,21 @@ mod tests {
     use crate::metric_exporter::TestMetricExporterLifecycle;
     use crate::metric_exporter::{OtelMetricExporter, TestMetricExporter};
     #[cfg(all(feature = "metrics-async-runtime", feature = "otlp-grpc"))]
+    use crate::otlp_metric_exporter::otel_otlp_metric_exporter_builder_set_transport;
+    #[cfg(all(
+        feature = "metrics-async-runtime",
+        any(feature = "otlp-http", feature = "otlp-grpc")
+    ))]
     use crate::otlp_metric_exporter::{
         otel_otlp_metric_exporter_builder_build, otel_otlp_metric_exporter_builder_destroy,
         otel_otlp_metric_exporter_builder_new, otel_otlp_metric_exporter_builder_set_endpoint,
-        otel_otlp_metric_exporter_builder_set_transport,
     };
     #[cfg(feature = "metrics-async-runtime")]
     use opentelemetry::metrics::MeterProvider;
-    #[cfg(all(feature = "metrics-async-runtime", feature = "otlp-grpc"))]
+    #[cfg(all(
+        feature = "metrics-async-runtime",
+        any(feature = "otlp-http", feature = "otlp-grpc")
+    ))]
     use opentelemetry_c_abi::OtelStringView;
     #[cfg(feature = "metrics-async-runtime")]
     use opentelemetry_sdk::error::OTelSdkError;
@@ -976,6 +1001,66 @@ mod tests {
             assert!(reader.is_null());
             assert!(crate::api_ffi::test_probe::last_error()
                 .contains("synchronous OTLP/gRPC Metrics exporter"));
+
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_runtime(
+                    reader_builder,
+                    READER_RUNTIME_BLOCKING,
+                ),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_periodic_metric_reader_builder_build(reader_builder, &mut reader),
+                OtelStatus::Ok
+            );
+            otel_periodic_metric_reader_destroy(reader);
+            otel_periodic_metric_reader_builder_destroy(reader_builder);
+        }
+    }
+
+    #[cfg(all(feature = "metrics-async-runtime", feature = "otlp-http"))]
+    #[test]
+    fn async_reader_rejects_blocking_http_exporter() {
+        unsafe {
+            let exporter_builder = otel_otlp_metric_exporter_builder_new();
+            let endpoint = "http://127.0.0.1:9/v1/metrics";
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(
+                    exporter_builder,
+                    OtelStringView {
+                        ptr: endpoint.as_ptr().cast(),
+                        len: endpoint.len(),
+                    },
+                ),
+                OtelStatus::Ok
+            );
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(exporter_builder, &mut exporter),
+                OtelStatus::Ok
+            );
+            otel_otlp_metric_exporter_builder_destroy(exporter_builder);
+
+            let reader_builder = otel_periodic_metric_reader_builder_new();
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_runtime(
+                    reader_builder,
+                    READER_RUNTIME_ASYNC,
+                ),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_periodic_metric_reader_builder_set_exporter(reader_builder, exporter),
+                OtelStatus::Ok
+            );
+            let mut reader = std::ptr::null_mut();
+            assert_eq!(
+                otel_periodic_metric_reader_builder_build(reader_builder, &mut reader),
+                OtelStatus::InvalidConfig
+            );
+            assert!(reader.is_null());
+            assert!(crate::api_ffi::test_probe::last_error()
+                .contains("blocking OTLP/HTTP Metrics exporter"));
 
             assert_eq!(
                 otel_periodic_metric_reader_builder_set_runtime(

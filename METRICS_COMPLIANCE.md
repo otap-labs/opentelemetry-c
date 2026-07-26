@@ -31,9 +31,11 @@ experimental `0.x` C ABI.
 - The gRPC exporter owns one bounded Tokio runtime for its complete reader/provider lifetime.
   C callers do not supply a runtime. Its synchronous runtime wrapper is incompatible with the
   optional async periodic reader and is rejected during reader construction.
-- The async reader's upstream timeout is cooperative and cannot preempt the current synchronous
-  HTTP exporter or a custom C callback. HTTP callers should also configure the exporter transport
-  timeout; custom callbacks must return promptly.
+- The blocking OTLP/HTTP exporter is also incompatible with the async reader because reqwest's
+  blocking client cannot run safely inside Tokio. The async reader currently supports custom
+  exporters only.
+- The async reader's upstream timeout is cooperative and cannot preempt a custom C callback;
+  custom callbacks must return promptly.
 - gRPC binary `-bin` metadata and custom certificate/key configuration are not exposed.
   HTTPS requires the opt-in `grpc-tls-ring` Cargo feature, which uses upstream tonic TLS with
   native/platform roots.

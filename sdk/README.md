@@ -124,11 +124,11 @@ Periodic readers use the blocking upstream reader unless
 `OTEL_METRIC_READER_RUNTIME_ASYNC` is selected. The async reader requires the
 `metrics-async-runtime` feature, owns one Tokio worker and at most one blocking thread, and
 passes its configured cooperative export timeout to interval and force-flush exports. The
-timeout cannot preempt synchronous work: the current HTTP exporter and custom C callbacks run
-synchronously, so configure the HTTP exporter timeout separately and ensure custom callbacks
-return promptly. The async reader supports HTTP and custom exporters. The synchronous OTLP/gRPC
-wrapper is rejected because it cannot safely drive its private runtime from inside the async
-reader runtime.
+timeout cannot preempt synchronous custom C callback work, so callbacks must return promptly.
+The async reader currently supports custom exporters. The blocking OTLP/HTTP exporter is
+rejected because reqwest's blocking client cannot run safely inside Tokio, and the synchronous
+OTLP/gRPC wrapper is rejected because it cannot safely drive its private runtime from inside the
+async reader runtime.
 
 Custom exporter callbacks are configured through `metric_exporter.h`. The export callback
 receives a callback-thread-local batch token and may synchronously traverse complete
