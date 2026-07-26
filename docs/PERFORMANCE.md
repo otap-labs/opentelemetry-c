@@ -60,6 +60,7 @@ not require a collector:
 ```sh
 cargo bench -p opentelemetry-c-api
 cargo bench -p opentelemetry-c-sdk
+cargo bench -p opentelemetry-c-sdk --bench metrics_allocations
 ```
 
 - `api_hotpath` measures the API-only, no-SDK path. It isolates opaque-handle,
@@ -83,6 +84,25 @@ Criterion records time per operation under stable groups:
 `api_no_sdk_metrics_attributes`, `sdk_backed_metrics_attributes`, and
 `rust_sdk_metrics_attributes`. Published results should include `rustc -Vv`, the target,
 release profile, and Cargo feature flags.
+
+`metrics_allocations` reports steady-state allocation count and allocated bytes per operation
+for the same Metrics matrix. It warms each case before enabling a process-local counting
+allocator and uses a custom exporter plus manual reader for the C SDK path, so no worker,
+collection, export, or network activity can contaminate the measurements. The counters cover
+allocations made by all threads while a sample is active; this benchmark intentionally creates
+no background worker threads.
+
+Run the repeatable Linux VM protocol with:
+
+```sh
+METRICS_BENCH_REPEATS=3 scripts/benchmark-metrics.sh
+```
+
+The script records the exact SHA, Rust and Cargo versions, kernel, CPU, memory, persistent-disk
+space, load, profile, features, command output, and GNU `time -v` peak RSS. Criterion reports
+the median estimate, confidence interval, and outliers. Compare repeated runs only when VM load
+is materially similar. These results are informational; shared VM timing is not a CI gate, and
+regression thresholds require a history from stable hardware.
 
 Both suites call the real `#[no_mangle] extern "C"` symbols used by C consumers. Header
 compilation and the C examples cover C source-level linkage separately. Any future

@@ -69,6 +69,10 @@ harness = false
 # keeps `cargo bench --no-default-features` from trying to compile a bench that cannot work.
 required-features = ["otlp-http"]
 
+[[bench]]
+name = "metrics_allocations"
+harness = false
+
 [features]
 # Default preserves today's experience: the OTLP HTTP/protobuf exporter with OS/platform TLS.
 default = ["native-tls"]
