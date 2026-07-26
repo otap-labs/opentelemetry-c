@@ -1,15 +1,39 @@
 # OpenTelemetry C
 
-| Status    |              |
-| --------- | ------------ |
-| Stability | alpha        |
-| Owners    |              |
+A **Rust-backed C implementation** of OpenTelemetry traces and Metrics, delivered as one
+component split into separate **API** and **SDK** libraries (plus an internal ABI crate).
+This split lets a C or C-compatible instrumentation library depend only on the API, while
+the application owns the SDK.
 
-A **Rust-backed C binding** for OpenTelemetry traces and metrics, delivered as one component split into
-separate **API** and **SDK** libraries (plus an internal ABI crate). This split lets a C/C++
-instrumentation library depend only on the API, while the application owns the SDK.
+> [!WARNING]
+> **Experimental and not production-ready.** The public C API and ABI may change between
+> `0.x` minor releases. Pin the complete release and do not mix API and SDK artifacts from
+> different tags.
 
-> ⚠️ **Experimental.** The C ABI is not yet stable and may change between `0.x` releases.
+## Project status
+
+OpenTelemetry implementations mature at different rates by signal and component. A single
+repository-wide label would hide that this project has broad Metrics coverage, partial trace
+coverage, and no logs implementation.
+
+| Signal | C API | Native ABI | C SDK | OTLP exporter | Current scope |
+| --- | --- | --- | --- | --- | --- |
+| **Traces** | Alpha, partial | Alpha | Alpha, partial | Alpha: HTTP/protobuf | Spans, events, scalar attributes, status, batch processing, and lifecycle are implemented. Sampling configuration, propagation, links, limits, and other items remain in the [traces epic](https://github.com/otap-labs/opentelemetry-c/issues/4). |
+| **Metrics** | Alpha | Alpha | Alpha | Alpha: HTTP/protobuf and optional gRPC | Synchronous and observable instruments, periodic readers, views, temporality, and lifecycle are implemented. See the [compliance ledger](METRICS_COMPLIANCE.md) and [Metrics epic](https://github.com/otap-labs/opentelemetry-c/issues/5) for constraints and remaining extensions. |
+| **Logs** | Not implemented | Not implemented | Not implemented | Not implemented | Tracked by the [logs epic](https://github.com/otap-labs/opentelemetry-c/issues/6). |
+
+Component stability is also explicit:
+
+| Component | Status | Compatibility meaning |
+| --- | --- | --- |
+| Public C API (headers and behavior) | Alpha | Experimental for the implemented trace and Metrics surfaces. |
+| Public native ABI (`otel_*` symbols, layouts, ownership) | Alpha | No stable ABI promise before the project explicitly declares one. |
+| C SDK and exporters | Alpha | Experimental pipeline configuration, lifecycle, and transport surface. |
+| Internal API-to-SDK ABI crate and vtables | Internal | Version-checked for fail-closed dispatch, but not a public or third-party extension interface. |
+
+These labels describe the maturity of **this C surface**, not the stability of the underlying
+OpenTelemetry Rust crates or the OpenTelemetry specification. “Implemented” in a compliance
+ledger describes feature coverage; it does not upgrade that component from Alpha.
 
 Releases are **source-only**: one version and tag cover the API, SDK, and internal ABI
 packages. No prebuilt native binaries or crates.io packages are distributed, and API/SDK
@@ -29,9 +53,9 @@ Build from source using [docs/BUILDING.md](docs/BUILDING.md). See
   crate — never on the SDK/OTLP.
   Instrumentation links **this library only**.
 - **[sdk/](sdk/)** — package `opentelemetry-c-sdk`. The **SDK**: OTLP HTTP/protobuf trace,
-  HTTP/protobuf and optional gRPC Metrics exporters, a batch span processor, periodic Metrics readers, declarative
-  Metrics views, and signal-specific lifecycle operations. Applications link **this plus
-  the API**.
+  HTTP/protobuf and optional gRPC Metrics exporters, a batch span processor, periodic
+  Metrics readers, declarative Metrics views, and signal-specific lifecycle operations.
+  Applications link **this plus the API**.
 - **[abi/](abi/)** — package `opentelemetry-c-abi`. An **internal, Rust-only** rlib holding
   the shared `#[repr(C)]` types and the implementation vtable used across the API/SDK
   boundary. It has no exported C symbols and is not consumed directly by C.
@@ -42,204 +66,39 @@ Build from source using [docs/BUILDING.md](docs/BUILDING.md). See
   and Metrics calls are safe no-ops until an application installs the corresponding SDK
   provider, then they dispatch to it.
 - **Applications** link `libopentelemetry_c_api` **and** `libopentelemetry_c_sdk` (include
-  `sdk.h` plus the pipeline headers); they build the trace pipeline, install it globally,
-  flush, and shut down each configured signal.
+  `sdk.h` plus the pipeline headers); they build the required signal pipelines, install
+  their providers globally, flush, and shut down each configured signal.
 
-## Minimal C usage
+## Getting started
 
-### Instrumentation library: API only
-
-Instrumentation libraries include only `api.h` and link only `libopentelemetry_c_api`. Calls
-are safe no-ops until the application installs an SDK.
-
-```c
-#include <opentelemetry_c/api.h>
-
-void do_work(void) {
-    otel_tracer_provider_t* provider = otel_global_tracer_provider();
-    otel_tracer_t* tracer = otel_tracer_provider_get_tracer(
-        provider, otel_cstr("my-instrumentation"), otel_cstr("0.1.0"),
-        otel_string_view_empty());
-
-    otel_span_t* span = otel_tracer_start_span(tracer, otel_cstr("work"), NULL);
-    otel_span_set_string_attribute(span, otel_cstr("example.key"), otel_cstr("value"));
-    otel_span_set_ok(span);
-    otel_span_end(span);
-
-    otel_span_destroy(span);
-    otel_tracer_destroy(tracer);
-    otel_tracer_provider_destroy(provider);
-}
-```
-
-### Application: SDK setup
-
-Applications link both `libopentelemetry_c_api` and `libopentelemetry_c_sdk`. They configure
-the trace pipeline and install it globally before instrumentation runs.
-
-```c
-#include <opentelemetry_c/api.h>
-#include <opentelemetry_c/batch_span_processor.h>
-#include <opentelemetry_c/otlp_trace_exporter.h>
-#include <opentelemetry_c/sdk.h>
-
-int main(void) {
-    otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
-    otel_otlp_trace_exporter_builder_set_endpoint(
-        eb, otel_cstr("http://localhost:4318/v1/traces"));
-
-    otel_trace_exporter_t* exporter = NULL;
-    otel_otlp_trace_exporter_builder_build(eb, &exporter);
-    otel_otlp_trace_exporter_builder_destroy(eb);
-
-    otel_batch_span_processor_builder_t* pb = otel_batch_span_processor_builder_new();
-    otel_batch_span_processor_builder_set_exporter(pb, exporter);
-
-    otel_span_processor_t* processor = NULL;
-    otel_batch_span_processor_builder_build(pb, &processor);
-    otel_batch_span_processor_builder_destroy(pb);
-
-    otel_sdk_builder_t* sb = otel_sdk_builder_new();
-    otel_sdk_builder_set_service_name(sb, otel_cstr("example-service"));
-    otel_sdk_builder_add_span_processor(sb, processor);
-
-    otel_sdk_t* sdk = NULL;
-    otel_sdk_build(sb, &sdk);
-    otel_sdk_builder_destroy(sb);
-    otel_sdk_set_as_global(sdk);
-
-    do_work();
-
-    otel_sdk_force_flush(sdk, 5000);
-    otel_sdk_shutdown(sdk, 5000);
-    otel_sdk_destroy(sdk);
-    return 0;
-}
-```
-
-The complete buildable version with error handling and a `Makefile` is
-[`sdk/examples/c-basic-traces`](sdk/examples/c-basic-traces).
-
-The complete Metrics pipeline and instrumentation example, including synchronous and
-observable instruments, is [`sdk/examples/c-metrics`](sdk/examples/c-metrics).
-
-## Pipeline object model (SDK)
-
-The SDK configures a trace pipeline from separate, composable objects that map to
-OpenTelemetry concepts, rather than one monolithic builder:
-
-1. Build a **trace exporter** (today: OTLP HTTP/protobuf — `otlp_trace_exporter.h`) →
-   `otel_trace_exporter_t`.
-2. Wrap it in a **span processor** (today: batch — `batch_span_processor.h`), which consumes
-   the exporter → `otel_span_processor_t`.
-3. Add the processor to the **SDK builder** (`sdk.h`), which consumes it, then build and
-   install the SDK.
-
-The generic `otel_trace_exporter_t` / `otel_span_processor_t` handles are opaque extension
-points, so more exporter/processor kinds can be added later without breaking the C ABI. Each
-`build`/`set_exporter`/`add_span_processor` transfers ownership on `OTEL_STATUS_OK`; see the
-[sdk/README.md](sdk/README.md) and the pipeline headers for the exact rules.
-
-The SDK **core** is separate from any exporter implementation. `otlp` remains a compatibility
-alias for the default HTTP/protobuf transport; `otlp-http` and `otlp-grpc` can be selected
-independently. Building with `--no-default-features` excludes all OTLP transports while the
-SDK core and public builder symbols remain available. See
-[sdk/README.md](sdk/README.md#cargo-features-optional-otlp).
-
-## Current scope
-
-The binding exposes trace spans plus the complete synchronous and observable Metrics
-instrument families. Metrics supports default OTLP HTTP/protobuf and optional OTLP/gRPC
-export, one or more periodic
-readers, delta/cumulative/low-memory temporality preferences, and declarative views for
-selection, stream renaming, attribute allow-lists, cardinality limits, and default/drop/sum/
-last-value/explicit-histogram/base-2-exponential-histogram aggregation.
-
-Not yet exposed, but intended as additive extensions over the same ABI shape:
-
-- sampler configuration;
-- span limits;
-- ID generator configuration;
-- propagation inject/extract;
-- span links;
-- array-valued attributes (current attributes are scalar string/bool/int64/double only);
-- simple span processor;
-- custom/user-provided trace exporter;
-- logs.
-
-The generic `otel_trace_exporter_t` and `otel_span_processor_t` handles are designed so new
-exporter and processor kinds can be added without reshaping the SDK builder.
-
-See [api/README.md](api/README.md) and [sdk/README.md](sdk/README.md) for build/link
-commands, ownership rules, and the runnable `sdk/examples/c-basic-traces` example.
-
-## Hot-path performance contract
-
-The C API/SDK is a **thin ABI boundary** over the Rust OpenTelemetry SDK. It must not add
-runtime machinery on telemetry hot paths beyond required FFI marshalling and the Rust SDK's
-own internals. This is a standing design invariant, not a one-off.
-
-**Setup / cold path may allocate and use locks** — SDK/exporter/processor/resource builders,
-OTLP and batch config, `otel_sdk_build`, `set_as_global`, `force_flush`/`shutdown`
-coordination, and tests/examples.
-
-**Span, tracer, and synchronous Metrics hot paths** — `otel_tracer_start_span`, the `otel_span_set_*` /
-`otel_span_add_event` / `otel_span_set_status` / `otel_span_update_name` / `otel_span_end` /
-`otel_span_destroy` calls and the SDK vtable functions they dispatch to — **must not** add, at
-the C layer: new locks/`OnceLock`/registries/global maps, C-side batching or intermediate span
-records, per-span clones of the provider/exporter/processor/config, exporter/processor/builder
-access, environment-variable or config lookups, callbacks into user code, or extra
-routing/dispatch beyond the signal-specific API→SDK implementation vtable. SDK-backed
-Metrics handles own the concrete Rust instrument, so recording performs no provider lookup,
-global lock, registry lookup, exporter access, or callback dispatch.
-
-**Accepted, required costs on hot paths:** opaque handle validation; API→SDK vtable
-dispatch (normally one per operation; `otel_span_destroy` may call both `span_end` and
-`span_free` to preserve best-effort end-before-free semantics); validating C
-pointers/tags/lengths; converting borrowed C string/key/value views into SDK-owned values
-(one owned allocation per key/value/name — borrowed C memory must not outlive the call);
-allocating the real OTel span/tracer/handle objects; and the Rust SDK's own processing. The
-single `RwLock` read and `Arc` clone used to retain the global provider happen **only when
-resolving a tracer from the global provider** (`otel_tracer_provider_get_tracer`), never per
-span/attribute/event — so cache the returned `otel_tracer_t` and reuse it. At the C
-API/vtable layer, span operations take no global locks (the one-span-per-thread contract lets
-the SDK vtable take `&mut` without C-layer synchronization). API hot-path entry points that
-report failures clear the thread-local last-error slot at entry; that clear uses no global
-lock and performs no heap allocation.
-
-## Benchmarks
-
-Two [Criterion](https://crates.io/crates/criterion) benchmark suites protect the hot-path
-performance contract above. They cover trace and Metrics recording, run explicitly (never
-as part of `cargo test` or a required CI gate), and require **no running collector**:
+Build the coordinated API and SDK libraries from one source release:
 
 ```sh
-cargo bench -p opentelemetry-c-api   # api_hotpath: API-only, no-SDK (no-op provider) path
-cargo bench -p opentelemetry-c-sdk   # sdk_hotpath: API + real SDK pipeline (requires otlp)
+cargo build --locked --release -p opentelemetry-c-api -p opentelemetry-c-sdk
 ```
 
-- **`api_hotpath` (no-SDK)** measures the pure C boundary cost — opaque handle
-  allocation/validation and the panic-guarded no-op dispatch — with no SDK installed, so the
-  global provider resolves to the no-op default. It isolates FFI-marshalling overhead.
-- **`sdk_hotpath` (SDK-backed)** installs a real OTLP-exporter + batch-span-processor pipeline
-  as the global provider through the public C SDK API, then drives the same C API entrypoints.
-  It measures span/attribute/event cost through the C boundary **plus** the Rust SDK's own
-  machinery. It **requires the `otlp` feature** (part of default features) — the `[[bench]]`
-  target sets `required-features = ["otlp"]`, so it is skipped under `--no-default-features`. No
-  collector is required: the OTLP exporter targets a closed loopback port, so background export
-  attempts may fail fast (connection refused) and are discarded. It is **not** an
-  exporter/network throughput benchmark and is **not** a default regression guard for export.
+Then start with a complete, buildable example:
 
-Both suites separate setup (pipeline build, global install, tracer acquisition) from the
-measured loop and cache the tracer handle, so span benchmarks do not measure tracer
-acquisition. Any future exporter/network benchmark must stay opt-in and out of the default
-regression set.
+- [C traces](sdk/examples/c-basic-traces) — API instrumentation, OTLP exporter, batch
+  processor, global installation, flush, and shutdown.
+- [C Metrics](sdk/examples/c-metrics) — synchronous and observable instruments, periodic
+  reader, views, OTLP export, and lifecycle.
 
-Both suites call the real `#[no_mangle] extern "C"` ABI symbols that C consumers link
-against, so they exercise the actual C caller path at the ABI level (C source-level linkage
-is already covered by the header-compile tests and the `c-basic-traces` example). A native
-C-source timing harness linked against the cdylibs is a possible low-priority follow-up; it is
-intentionally omitted here to avoid extra Makefile/link/CI maintenance for marginal coverage.
+See [Building from a source release](docs/BUILDING.md) for Cargo features, both required
+header include roots, native linking, and platform constraints.
+
+## Documentation
+
+- [C API](api/README.md) — headers, ownership, thread safety, no-op behavior, and API-only
+  instrumentation.
+- [C SDK](sdk/README.md) — trace and Metrics pipelines, Cargo features, exporters, readers,
+  views, and lifecycle.
+- [Metrics compliance](METRICS_COMPLIANCE.md) — implemented surface and experimental
+  constraints.
+- [Performance](docs/PERFORMANCE.md) — hot-path contract and opt-in benchmarks.
+- [Versioning](VERSIONING.md) and [releasing](RELEASING.md) — compatibility and source-only
+  release policy.
+- [Contributing](CONTRIBUTING.md) and [security](SECURITY.md).
 
 ## Supported model
 

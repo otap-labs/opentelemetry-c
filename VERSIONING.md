@@ -47,6 +47,18 @@ The C API and ABI are experimental before 1.0:
 Deprecated APIs may be removed in a later minor release. The coordinated API and SDK
 changelogs distinguish changes to each artifact without implying independent releases.
 
+## Component maturity
+
+Maturity is reported independently by signal and component in the root
+[README](README.md#project-status). Trace, Metrics, and logs coverage can differ, and the
+public C API, public native ABI, SDK, and exporters do not become stable merely because the
+underlying OpenTelemetry Rust component or specification is stable.
+
+Feature coverage and compatibility maturity are separate claims. A surface described as
+implemented or compliant may still be Alpha and subject to the pre-1.0 compatibility policy
+above. The internal API-to-SDK ABI is version-checked for safe dispatch, but remains an
+internal interface rather than a separately stable component.
+
 ## Public C API and ABI
 
 The installed C headers and exported `otel_*` symbols form the public interface. Public
