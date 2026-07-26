@@ -51,14 +51,32 @@ extern "C" {
 typedef uint32_t otel_status_t;
 enum {
     OTEL_STATUS_OK = 0,               /* Success. */
-    OTEL_STATUS_INVALID_ARGUMENT = 1, /* NULL/invalid pointer or handle. */
+    OTEL_STATUS_INVALID_ARGUMENT = 1, /* NULL/invalid handle or malformed argument. */
     OTEL_STATUS_INVALID_UTF8 = 2,     /* A UTF-8 string argument was malformed. */
-    OTEL_STATUS_INVALID_CONFIG = 3,   /* SDK builder configuration was invalid. */
+    OTEL_STATUS_INVALID_CONFIG = 3,   /* Readable config/ABI incompatible or unavailable. */
     OTEL_STATUS_ALREADY_SHUTDOWN = 4, /* The SDK/provider was already shut down. */
     OTEL_STATUS_TIMEOUT = 5,          /* Operation did not finish within the timeout. */
-    OTEL_STATUS_EXPORT_FAILED = 6,    /* A runtime export failed (non-fatal). */
-    OTEL_STATUS_INTERNAL_ERROR = 7    /* Unexpected internal error (incl. caught panic). */
+    OTEL_STATUS_EXPORT_FAILED = 6,    /* Exporter/callback pipeline failed (non-fatal). */
+    OTEL_STATUS_INTERNAL_ERROR = 7    /* Wrapper/infrastructure failure or caught panic. */
 };
+
+/*
+ * Status classification policy:
+ *   - INVALID_ARGUMENT: an immediate argument is NULL, a project handle has the wrong
+ *     type/state, an output pointer is invalid, or an immediate scalar/discriminant is
+ *     malformed.
+ *   - INVALID_CONFIG: readable configuration or one of its field values is invalid or
+ *     incompatible, including an ABI kind/version/required-size mismatch or a requested
+ *     feature/transport omitted from this build.
+ *   - TIMEOUT: an operation with an enforced time bound exceeded that bound.
+ *   - EXPORT_FAILED: an exporter or callback-driven export pipeline failed at runtime.
+ *   - INTERNAL_ERROR: the wrapper/SDK infrastructure failed unexpectedly, including a
+ *     caught panic, allocation failure, or worker-thread creation failure.
+ *
+ * Meaningful failures record a diagnostic for otel_last_error_message(). Diagnostics name
+ * invalid fields or metadata keys where useful but do not include credential/header values.
+ * Pointer readability and object lifetime remain caller obligations as documented above.
+ */
 
 /*
  * Boolean type. Crosses the ABI as a fixed-width uint32_t (not a C enum) so that any bit

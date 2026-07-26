@@ -128,6 +128,11 @@ unsupported.
   `*_destroy`. Pass only NULL or a live project handle. A common raw prefix rejects a live
   handle of the wrong OpenTelemetry C type before full typed access. Foreign pointers,
   use-after-destroy, double destruction, and destruction races remain undefined behavior.
+- Status classification is repository-wide: malformed immediate arguments use
+  `OTEL_STATUS_INVALID_ARGUMENT`; readable but incompatible ABI/configuration or unavailable
+  compiled support uses `OTEL_STATUS_INVALID_CONFIG`; bounded overruns use
+  `OTEL_STATUS_TIMEOUT`; export/callback pipeline failures use `OTEL_STATUS_EXPORT_FAILED`;
+  wrapper/infrastructure failures use `OTEL_STATUS_INTERNAL_ERROR`.
 - Strings are borrowed `otel_string_view_t` values, copied before return.
 - All entry points are panic-safe (a Rust panic is caught, never unwound into C).
 - SDK/provider/tracer handles are safe to share across threads; a single span handle is

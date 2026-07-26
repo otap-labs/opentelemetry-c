@@ -26,7 +26,7 @@ use opentelemetry_c_abi::{
 };
 
 use crate::api_ffi;
-use crate::error::{clear_last_error, fail, fail_owned, status_from_sdk_error};
+use crate::error::{clear_last_error, fail, fail_owned, status_from_export_pipeline_error};
 use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, take,
     HasHandleHeader,
@@ -509,7 +509,7 @@ pub unsafe extern "C" fn otel_sdk_set_as_global(sdk: *mut OtelSdk) -> OtelStatus
 fn map_flush_result(result: opentelemetry_sdk::error::OTelSdkResult) -> OtelStatus {
     match result {
         Ok(()) => OtelStatus::Ok,
-        Err(err) => status_from_sdk_error(&err),
+        Err(err) => status_from_export_pipeline_error(&err),
     }
 }
 
@@ -603,7 +603,7 @@ pub unsafe extern "C" fn otel_sdk_shutdown(sdk: *mut OtelSdk, timeout_millis: u6
         let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
         match sdk.provider.shutdown_with_timeout(timeout) {
             Ok(()) => OtelStatus::Ok,
-            Err(err) => status_from_sdk_error(&err),
+            Err(err) => status_from_export_pipeline_error(&err),
         }
     })
 }
@@ -671,7 +671,7 @@ pub unsafe extern "C" fn otel_sdk_metrics_shutdown(
         let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
         let shutdown_status = match sdk.meter_provider.shutdown_with_timeout(timeout) {
             Ok(()) => OtelStatus::Ok,
-            Err(err) => status_from_sdk_error(&err),
+            Err(err) => status_from_export_pipeline_error(&err),
         };
         if unregister_status != OtelStatus::Ok {
             unregister_status

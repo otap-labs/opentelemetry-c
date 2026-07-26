@@ -47,6 +47,7 @@
   exporter, batch span processor, and `otel_sdk_*` lifecycle behind the C ABI. Installing as
   global (or fetching a provider handle) registers the SDK's implementation into the API
   cdylib's global provider slot across the C ABI, so API-only instrumentation observes it.
+
   Selectable TLS backend (`native-tls` default, or `rustls-tls`); bounded C-provided batch
   sizes; panic-safe entry points; local parent/child span semantics; force-flush and
   shutdown. A `cross_artifact` integration test proves API-only spans export through the SDK
@@ -69,3 +70,8 @@
   (case-insensitively, so `Authorization` and `authorization` collide) with
   `OTEL_STATUS_INVALID_ARGUMENT` (and a `otel_last_error_message()` diagnostic) instead of
   silently overwriting the previously added value.
+
+### Changed
+
+- Documented and tested the existing distinction between export-pipeline failures and
+  wrapper/infrastructure failures under the shared status policy.

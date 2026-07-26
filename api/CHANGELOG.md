@@ -38,3 +38,8 @@
   `otel_span_set_ok` / `otel_span_set_error` (`trace.h`). They are `static inline` (guarded for
   C99+/C++ like the existing `otel_cstr`), build POD by value with no allocation/copy, and
   (for the status shorthands) perform exactly the one `otel_span_set_status()` call they wrap.
+
+### Changed
+
+- Trace and Metrics ABI kind/version/size incompatibilities now consistently report
+  `OTEL_STATUS_INVALID_CONFIG`; the public status classification policy is documented.

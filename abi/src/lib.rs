@@ -115,15 +115,17 @@ impl OtelStatus {
     pub const InvalidArgument: Self = Self(1);
     /// A string argument was not valid UTF-8 where UTF-8 is required.
     pub const InvalidUtf8: Self = Self(2);
-    /// Configuration supplied to the SDK builder was invalid.
+    /// Readable configuration was incompatible, invalid as a whole, or requested support
+    /// that was not compiled in.
     pub const InvalidConfig: Self = Self(3);
     /// The SDK (or provider) has already been shut down.
     pub const AlreadyShutdown: Self = Self(4);
     /// The operation did not complete within the supplied timeout.
     pub const Timeout: Self = Self(5);
-    /// A span export failed at runtime. This never crashes the process.
+    /// An exporter or callback-driven export pipeline failed at runtime.
     pub const ExportFailed: Self = Self(6);
-    /// An unexpected internal error occurred (including a caught Rust panic).
+    /// The C wrapper or SDK infrastructure failed unexpectedly, including a caught panic,
+    /// allocation failure, or worker-thread creation failure.
     pub const InternalError: Self = Self(7);
 }
 

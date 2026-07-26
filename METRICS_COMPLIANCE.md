@@ -17,6 +17,7 @@ experimental `0.x` C ABI.
 | C and C++ headers | Implemented | All Metrics headers compile standalone as C11; the combined pipeline headers compile as C++17. |
 | Hot path | Implemented | SDK-backed synchronous handles own concrete Rust instruments; recording does not resolve providers, lock global state, or access readers/exporters/views. |
 | ABI compatibility | Implemented | Separate Metrics vtable with prefix-only version/size checks plus a common opaque-handle kind prefix validated before full typed access. |
+| Status/error policy | Implemented | Malformed arguments, incompatible configuration/ABI, timeout, export-pipeline failure, and internal infrastructure failure have signal-independent classifications and last-error diagnostics. |
 
 ## Known experimental constraints
 

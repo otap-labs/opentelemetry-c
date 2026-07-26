@@ -29,8 +29,13 @@ pub(crate) fn fail_abi(err: AbiError) -> OtelStatus {
     fail(err.status, err.message)
 }
 
-/// Map an [`OTelSdkError`] onto a status, recording the detail message.
-pub(crate) fn status_from_sdk_error(err: &OTelSdkError) -> OtelStatus {
+/// Map an SDK export-pipeline lifecycle failure onto a status and record its detail.
+///
+/// Upstream uses `InternalFailure` for exporter failures surfaced by force-flush/shutdown.
+/// At this public boundary those are export-pipeline failures, not failures of the C wrapper
+/// itself. Wrapper panics, allocation failures, and worker creation failures use
+/// [`OtelStatus::InternalError`] at their source.
+pub(crate) fn status_from_export_pipeline_error(err: &OTelSdkError) -> OtelStatus {
     match err {
         OTelSdkError::AlreadyShutdown => fail(
             OtelStatus::AlreadyShutdown,
@@ -43,5 +48,30 @@ pub(crate) fn status_from_sdk_error(err: &OTelSdkError) -> OtelStatus {
         OTelSdkError::InternalFailure(msg) => {
             fail_owned(OtelStatus::ExportFailed, format!("internal failure: {msg}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdk_pipeline_error_statuses_follow_public_policy() {
+        assert_eq!(
+            status_from_export_pipeline_error(&OTelSdkError::AlreadyShutdown),
+            OtelStatus::AlreadyShutdown
+        );
+        assert_eq!(
+            status_from_export_pipeline_error(&OTelSdkError::Timeout(
+                std::time::Duration::from_millis(1)
+            )),
+            OtelStatus::Timeout
+        );
+        assert_eq!(
+            status_from_export_pipeline_error(&OTelSdkError::InternalFailure(
+                "exporter rejected batch".to_owned()
+            )),
+            OtelStatus::ExportFailed
+        );
     }
 }
