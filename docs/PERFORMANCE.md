@@ -127,3 +127,17 @@ the C harness while exercising the normal Rust shared libraries because rustc do
 a general UBSan mode. Cross-artifact tests honor `CARGO_BUILD_TARGET`, `CARGO_TARGET_DIR`, and
 simple whitespace-separated `CFLAGS` so instrumented target-triple builds are found and the C
 executable links the corresponding sanitizer runtime.
+
+## Lifecycle stress
+
+Deterministic lifecycle tests use barriers, channels, and condition variables to force the
+relevant ordering. Repeat the highest-risk Metrics cases without retries or sleeps:
+
+```sh
+METRICS_STRESS_ITERATIONS=100 scripts/stress-metrics.sh
+```
+
+The loop covers provider replacement and retention, concurrent installs, older-SDK shutdown,
+destroy-without-shutdown, observable callback versus destruction, exporter export versus
+shutdown, multiple manual and async readers, and fail-closed async reentrancy. A failed
+iteration stops immediately; rerunning a failure is not treated as a pass.
