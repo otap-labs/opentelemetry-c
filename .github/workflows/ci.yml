@@ -27,9 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Report unresolved MSRV policy
-        if: env.VALIDATED_MSRV == ''
+        if: env.VALIDATED_MSRV == '' && github.ref_type != 'tag'
         run: |
           echo "::warning::MSRV validation is gated until OPENTELEMETRY_C_VALIDATED_MSRV is configured"
+      - name: Block release tags without a validated MSRV
+        if: env.VALIDATED_MSRV == '' && github.ref_type == 'tag'
+        run: |
+          echo "::error::Release tags require OPENTELEMETRY_C_VALIDATED_MSRV"
+          exit 1
       - name: Check validated MSRV metadata
         if: env.VALIDATED_MSRV != ''
         run: scripts/check-release-metadata.sh
