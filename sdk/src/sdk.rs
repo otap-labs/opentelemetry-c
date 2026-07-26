@@ -167,7 +167,8 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
     })
 }
 
-/// Transfer a Metrics view into an SDK builder.
+/// Transfer a Metrics view into an SDK builder. On success the original `view` pointer is
+/// invalid and must never be accessed again; on failure it remains caller-owned.
 ///
 /// # Safety
 ///
@@ -193,7 +194,7 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_view(
 }
 
 /// Transfer a periodic Metrics reader into an SDK builder. On success the SDK builder owns
-/// `reader`.
+/// the reader and the original `reader` pointer is invalid; on failure it remains caller-owned.
 ///
 /// # Safety
 ///
@@ -220,8 +221,9 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_reader(
     })
 }
 
-/// Transfer a manual Metrics reader into an SDK builder. On success the SDK builder owns
-/// `reader`; application-controlled collection is driven through
+/// Transfer a manual Metrics reader into an SDK builder. On success the SDK builder owns the
+/// reader and the original `reader` pointer is invalid; on failure it remains caller-owned.
+/// Application-controlled collection is driven through
 /// [`otel_sdk_metrics_force_flush`].
 ///
 /// # Safety
@@ -315,8 +317,8 @@ pub unsafe extern "C" fn otel_sdk_builder_add_resource_attribute(
 }
 
 /// Add (transfer) a span processor built by a span-processor builder. On `OTEL_STATUS_OK`,
-/// ownership of `processor` moves into the SDK builder and the caller must not destroy it. On
-/// failure (invalid builder or processor), the caller still owns `processor`.
+/// ownership of `processor` moves into the SDK builder and the original pointer becomes
+/// invalid. On failure (invalid builder or processor), the caller still owns `processor`.
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract; `processor` must be NULL or a live
@@ -893,7 +895,6 @@ mod tests {
                 otel_sdk_builder_add_metric_reader(builder, reader),
                 OtelStatus::Ok
             );
-            crate::periodic_metric_reader::otel_periodic_metric_reader_destroy(reader);
             assert_eq!(drops.load(AtomicOrdering::SeqCst), 0);
 
             let mut sdk = std::ptr::null_mut();
@@ -1030,16 +1031,14 @@ mod tests {
             );
             otel_span_processor_destroy(processor); // still owned by caller: frees it
 
-            // Success: ownership transfers into the SDK builder. A subsequent destroy of the
-            // transferred handle is a safe no-op (poisoned), and destroying the builder frees
-            // the processor exactly once.
+            // Success: ownership transfers into the SDK builder and invalidates the original
+            // pointer. Destroying the builder frees the processor exactly once.
             let processor = build_processor();
             let b = otel_sdk_builder_new();
             assert_eq!(
                 otel_sdk_builder_add_span_processor(b, processor),
                 OtelStatus::Ok
             );
-            otel_span_processor_destroy(processor); // no-op: builder owns it now
             otel_sdk_builder_destroy(b); // frees the transferred processor
         }
     }

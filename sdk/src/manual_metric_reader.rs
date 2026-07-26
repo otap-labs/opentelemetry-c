@@ -113,7 +113,8 @@ impl HasHandleHeader for OtelManualMetricReader {
     }
 }
 
-/// Transfer an exporter into a manual reader.
+/// Transfer an exporter into a manual reader. On success the original exporter pointer is
+/// invalid; on failure the exporter remains caller-owned.
 ///
 /// # Safety
 ///
@@ -152,7 +153,8 @@ pub unsafe extern "C" fn otel_manual_metric_reader_new(
     })
 }
 
-/// Destroy an untransferred manual reader, shutting down its exporter.
+/// Destroy an untransferred manual reader, shutting down its exporter. After a successful
+/// transfer into an SDK builder, the original pointer is invalid and must not be passed here.
 ///
 /// # Safety
 ///

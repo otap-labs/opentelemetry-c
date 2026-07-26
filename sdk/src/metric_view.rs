@@ -607,7 +607,8 @@ pub unsafe extern "C" fn otel_metric_view_builder_build(
     })
 }
 
-/// Destroy a Metrics view.
+/// Destroy an untransferred Metrics view. After a successful transfer into an SDK builder, the
+/// original pointer is invalid and must not be passed here.
 ///
 /// # Safety
 ///

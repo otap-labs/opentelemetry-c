@@ -25,9 +25,9 @@ extern "C" {
 typedef struct otel_trace_exporter_t otel_trace_exporter_t;
 
 /*
- * Destroy a trace-exporter handle (no-op on NULL). Do NOT call this on an exporter that was
- * successfully transferred into a span processor builder (that builder owns it now). Must not
- * race with any other use of the same handle.
+ * Destroy an untransferred trace-exporter handle (no-op on NULL). A successful transfer into a
+ * span processor builder consumes the handle and invalidates the original pointer; never access
+ * or destroy that pointer afterward. Must not race with any other use of the same handle.
  */
 void otel_trace_exporter_destroy(otel_trace_exporter_t* exporter);
 

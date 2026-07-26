@@ -190,8 +190,11 @@ Do not enable both HTTP TLS backends for a release build. See
   builder **on `OTEL_STATUS_OK`**; on failure the caller still owns it.
 - `otel_sdk_builder_add_span_processor` transfers the processor into the SDK builder **on
   `OTEL_STATUS_OK`**; on failure the caller still owns it.
-- After a successful transfer, do **not** destroy the transferred handle (its destroy becomes
-  a safe no-op).
+- Metrics exporters transfer into periodic/manual readers, and Metrics readers/views transfer
+  into the SDK builder, under the same rule.
+- After a successful transfer, the original pointer is invalid. Set the caller's variable to
+  `NULL` and never access or destroy the consumed handle. On failure, ownership remains with
+  the caller.
 - Destroying a builder frees any transferred children it still owns (i.e. that a later
   `build` did not consume). All `*_destroy` functions are NULL-safe and must not race with
   other use of the same handle.

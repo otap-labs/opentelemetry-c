@@ -193,6 +193,10 @@ otel_status_t otel_custom_metric_exporter_new(
     otel_metric_temporality_t temporality,
     otel_metric_exporter_t** out);
 
+/*
+ * Destroy an untransferred exporter (no-op on NULL). Do NOT call this after a reader accepted
+ * the exporter: successful transfer consumes the handle and invalidates the original pointer.
+ */
 void otel_metric_exporter_destroy(otel_metric_exporter_t* exporter);
 
 #ifdef __cplusplus

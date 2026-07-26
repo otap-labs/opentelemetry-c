@@ -89,5 +89,8 @@
 
 ### Changed
 
+- Ownership-transfer documentation now states the actual uniform contract: a successful
+  transfer consumes the handle and immediately invalidates its original pointer. Tests no
+  longer access or destroy consumed pointers.
 - Documented and tested the existing distinction between export-pipeline failures and
   wrapper/infrastructure failures under the shared status policy.

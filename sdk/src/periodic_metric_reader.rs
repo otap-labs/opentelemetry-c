@@ -208,7 +208,8 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_set_timeout_millis(
     })
 }
 
-/// Transfer an exporter into a periodic reader builder.
+/// Transfer an exporter into a periodic reader builder. On success the original exporter
+/// pointer is invalid; on failure the exporter remains caller-owned.
 ///
 /// # Safety
 ///
@@ -474,7 +475,8 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_build(
     })
 }
 
-/// Destroy a periodic Metrics reader handle.
+/// Destroy an untransferred periodic Metrics reader handle. After a successful transfer into an
+/// SDK builder, the original pointer is invalid and must not be passed here.
 ///
 /// # Safety
 ///
@@ -1148,7 +1150,6 @@ mod tests {
                 otel_periodic_metric_reader_builder_set_exporter(builder, first),
                 OtelStatus::Ok
             );
-            otel_metric_exporter_destroy(first);
             assert_eq!(first_drops.load(Ordering::SeqCst), 0);
 
             let second = test_exporter(&second_drops);

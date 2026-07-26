@@ -86,8 +86,8 @@ impl HasHandleHeader for OtelSpanProcessor {
 /// Destroy a span-processor handle (no-op on NULL).
 ///
 /// Do **not** call this on a processor that was successfully transferred into an SDK builder
-/// via `otel_sdk_builder_add_span_processor` — that builder owns it now (a transferred
-/// handle's magic is poisoned, so this degrades to a safe no-op).
+/// via `otel_sdk_builder_add_span_processor` — the original pointer is invalid after transfer
+/// and that builder owns the processor.
 ///
 /// # Safety
 /// `processor` must be NULL or a live processor handle, not destroyed concurrently.

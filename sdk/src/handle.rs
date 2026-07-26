@@ -85,10 +85,11 @@ pub(crate) unsafe fn destroy<T: HasHandleHeader>(ptr: *mut T) {
 }
 
 /// Take ownership of a handle for an **ownership transfer** (e.g. moving an exporter into a
-/// processor builder). Validates the handle, poisons its magic so a subsequent (erroneous)
-/// `destroy` on the same pointer is a safe no-op rather than a double-free, and returns the
-/// owned `Box`. Returns `None` (with the last-error set) for a NULL/wrong/dead handle — in
-/// which case nothing is consumed and the caller still owns the original handle.
+/// processor builder). Validates the handle, poisons its magic, and returns the owned `Box`.
+/// Once `Some` is returned, the original pointer is consumed and must never be accessed again;
+/// the returned box may be moved out of and deallocated immediately. Returns `None` (with the
+/// last-error set) for a NULL/wrong/dead handle — in which case nothing is consumed and the
+/// caller still owns the original handle.
 ///
 /// # Safety
 /// `ptr` must be NULL or a live handle of the exact type `T` from [`into_raw`], not used
@@ -108,7 +109,7 @@ pub(crate) unsafe fn take<T: HasHandleHeader>(ptr: *mut T) -> Option<Box<T>> {
         return None;
     }
     let handle = unsafe { &mut *ptr };
-    // Poison so a later destroy on this pointer no-ops instead of double-freeing.
+    // Reject accidental use while the handle allocation remains alive inside a new owner.
     handle.header_mut().poison();
     Some(unsafe { Box::from_raw(ptr) })
 }

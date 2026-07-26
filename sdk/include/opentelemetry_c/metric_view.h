@@ -75,6 +75,10 @@ otel_status_t otel_metric_view_builder_set_exponential_histogram(
     otel_bool_t record_min_max);
 otel_status_t otel_metric_view_builder_build(
     otel_metric_view_builder_t* builder, otel_metric_view_t** out);
+/*
+ * Destroy an untransferred view (no-op on NULL). Do NOT call this after an SDK builder accepted
+ * the view: successful transfer consumes it and invalidates the original pointer.
+ */
 void otel_metric_view_destroy(otel_metric_view_t* view);
 
 #ifdef __cplusplus

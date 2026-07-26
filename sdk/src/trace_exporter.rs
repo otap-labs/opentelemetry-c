@@ -101,8 +101,8 @@ impl HasHandleHeader for OtelTraceExporter {
 /// Destroy a trace-exporter handle (no-op on NULL).
 ///
 /// Do **not** call this on an exporter that was successfully transferred into a span
-/// processor builder via `otel_batch_span_processor_builder_set_exporter` — that builder owns
-/// it now (a transferred handle's magic is poisoned, so this degrades to a safe no-op).
+/// processor builder via `otel_batch_span_processor_builder_set_exporter` — the original
+/// pointer is invalid after transfer and that builder owns the exporter.
 ///
 /// # Safety
 /// `exporter` must be NULL or a live exporter handle, not destroyed concurrently.

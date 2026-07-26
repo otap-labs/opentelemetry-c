@@ -37,10 +37,10 @@ void otel_batch_span_processor_builder_destroy(otel_batch_span_processor_builder
 /*
  * Set (transfer) the trace exporter this processor exports through.
  *
- * Ownership: on OTEL_STATUS_OK, ownership of `exporter` transfers to the builder and the
- * caller must NOT call otel_trace_exporter_destroy() on it. On failure (invalid builder or
- * exporter), the caller still owns `exporter`. Setting an exporter when one was already set
- * frees the previous one.
+ * Ownership: on OTEL_STATUS_OK, ownership of `exporter` transfers to the builder, the original
+ * pointer becomes invalid, and the caller must not access or destroy it. On failure (invalid
+ * builder or exporter), the caller still owns `exporter`. Setting an exporter when one was
+ * already set frees the previous one.
  */
 otel_status_t otel_batch_span_processor_builder_set_exporter(
     otel_batch_span_processor_builder_t* builder, otel_trace_exporter_t* exporter);

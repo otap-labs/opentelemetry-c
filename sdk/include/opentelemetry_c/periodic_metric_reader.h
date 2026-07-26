@@ -46,10 +46,18 @@ otel_status_t otel_periodic_metric_reader_builder_set_interval_millis(
  */
 otel_status_t otel_periodic_metric_reader_builder_set_timeout_millis(
     otel_periodic_metric_reader_builder_t* builder, uint64_t timeout_millis);
+/*
+ * On OTEL_STATUS_OK the exporter is consumed and its original pointer becomes invalid. On
+ * failure the caller still owns the exporter.
+ */
 otel_status_t otel_periodic_metric_reader_builder_set_exporter(
     otel_periodic_metric_reader_builder_t* builder, otel_metric_exporter_t* exporter);
 otel_status_t otel_periodic_metric_reader_builder_build(
     otel_periodic_metric_reader_builder_t* builder, otel_periodic_metric_reader_t** out);
+/*
+ * Destroy an untransferred reader (no-op on NULL). Do NOT call this after an SDK builder
+ * accepted the reader: successful transfer consumes it and invalidates the original pointer.
+ */
 void otel_periodic_metric_reader_destroy(otel_periodic_metric_reader_t* reader);
 
 #ifdef __cplusplus

@@ -142,23 +142,27 @@ otel_status_t otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t* builde
  * span-processor builder (e.g. batch_span_processor.h), which in turn consumes a trace
  * exporter (e.g. otlp_trace_exporter.h).
  *
- * Ownership: on OTEL_STATUS_OK, ownership of `processor` transfers to the SDK builder and
- * the caller must NOT call otel_span_processor_destroy() on it. On failure (invalid builder
- * or processor), the caller still owns `processor`. Add more than one processor to fan spans
- * out to multiple pipelines. A builder with no span processor still builds a valid SDK whose
- * spans are simply not exported.
+ * Ownership: on OTEL_STATUS_OK, ownership of `processor` transfers to the SDK builder, the
+ * original pointer becomes invalid, and the caller must not access or destroy it. On failure
+ * (invalid builder or processor), the caller still owns `processor`. Add more than one
+ * processor to fan spans out to multiple pipelines. A builder with no span processor still
+ * builds a valid SDK whose spans are simply not exported.
  */
 otel_status_t otel_sdk_builder_add_span_processor(otel_sdk_builder_t* builder,
                                                   otel_span_processor_t* processor);
 
-/* Add a periodic Metrics reader. Ownership transfers only on OTEL_STATUS_OK. More than one
- * reader may be added; each maintains independent aggregation/temporality state. */
+/* Add a periodic Metrics reader. On OTEL_STATUS_OK the reader is consumed and its original
+ * pointer becomes invalid; on failure the caller still owns it. More than one reader may be
+ * added; each maintains independent aggregation/temporality state. */
 otel_status_t otel_sdk_builder_add_metric_reader(otel_sdk_builder_t* builder,
                                                  otel_periodic_metric_reader_t* reader);
 /* Add (transfer) a manual reader. A manual reader has no worker thread; after build,
- * otel_sdk_metrics_force_flush() performs its collection/export cycle. */
+ * otel_sdk_metrics_force_flush() performs its collection/export cycle. On OTEL_STATUS_OK the
+ * reader is consumed and its original pointer becomes invalid; on failure the caller owns it. */
 otel_status_t otel_sdk_builder_add_manual_metric_reader(
     otel_sdk_builder_t* builder, otel_manual_metric_reader_t* reader);
+/* Add (transfer) a Metrics view. On OTEL_STATUS_OK the view is consumed and its original pointer
+ * becomes invalid; on failure the caller still owns it. */
 otel_status_t otel_sdk_builder_add_metric_view(otel_sdk_builder_t* builder,
                                                otel_metric_view_t* view);
 

@@ -5,8 +5,8 @@
 //! dedicated OS thread and exports on the spec's batching schedule.
 //!
 //! Ownership: `set_exporter` transfers the exporter into this builder on `OTEL_STATUS_OK`
-//! (the caller must not destroy it afterwards). Destroying this builder frees a transferred
-//! exporter if `build` was not completed; a successful `build` moves it into the processor.
+//! and invalidates the original pointer. Destroying this builder frees a transferred exporter
+//! if `build` was not completed; a successful `build` moves it into the processor.
 
 use std::time::Duration;
 
@@ -102,8 +102,8 @@ pub unsafe extern "C" fn otel_batch_span_processor_builder_destroy(
 }
 
 /// Set (transfer) the trace exporter this processor exports through. On `OTEL_STATUS_OK`,
-/// ownership of `exporter` moves into the builder and the caller must not destroy it. On
-/// failure (invalid builder or exporter), the caller still owns `exporter`. Replacing a
+/// ownership of `exporter` moves into the builder and the original pointer becomes invalid.
+/// On failure (invalid builder or exporter), the caller still owns `exporter`. Replacing a
 /// previously-set exporter frees the previous one.
 ///
 /// # Safety
@@ -371,9 +371,8 @@ mod tests {
                 otel_batch_span_processor_builder_set_exporter(pb, exporter),
                 OtelStatus::Ok
             );
-            // Transferred: a destroy on the transferred handle is a poisoned no-op, and
-            // destroying the builder frees the exporter exactly once.
-            otel_trace_exporter_destroy(exporter);
+            // Transferred: the original pointer is invalid. Destroying the builder releases the
+            // exporter through its new owner.
             otel_batch_span_processor_builder_destroy(pb);
         }
     }

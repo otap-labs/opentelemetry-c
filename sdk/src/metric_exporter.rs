@@ -322,7 +322,8 @@ impl HasHandleHeader for OtelMetricExporter {
     }
 }
 
-/// Destroy a Metrics exporter handle.
+/// Destroy an untransferred Metrics exporter handle. After a successful transfer into a reader,
+/// the original pointer is invalid and must not be passed here.
 ///
 /// # Safety
 ///
