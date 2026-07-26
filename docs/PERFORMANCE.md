@@ -107,3 +107,23 @@ regression thresholds require a history from stable hardware.
 Both suites call the real `#[no_mangle] extern "C"` symbols used by C consumers. Header
 compilation and the C examples cover C source-level linkage separately. Any future
 exporter/network benchmark should remain opt-in and outside the default regression set.
+
+## Sanitizer validation
+
+Linux sanitizer runs are explicit because they require nightly Rust, `rust-src`, Clang, and
+substantially more time and disk than ordinary CI:
+
+```sh
+rustup toolchain install nightly --component rust-src
+scripts/sanitize-metrics.sh address
+scripts/sanitize-metrics.sh thread
+scripts/sanitize-metrics.sh leak
+scripts/sanitize-metrics.sh undefined
+```
+
+Address, thread, and leak modes instrument the Rust standard library, API and SDK tests, and
+the custom-exporter/manual-reader split-library C flow. UndefinedBehaviorSanitizer instruments
+the C harness while exercising the normal Rust shared libraries because rustc does not expose
+a general UBSan mode. Cross-artifact tests honor `CARGO_BUILD_TARGET`, `CARGO_TARGET_DIR`, and
+simple whitespace-separated `CFLAGS` so instrumented target-triple builds are found and the C
+executable links the corresponding sanitizer runtime.

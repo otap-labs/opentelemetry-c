@@ -27,6 +27,17 @@ fn resolve_target_dir(workspace_root: &Path, configured: Option<PathBuf>) -> Pat
     }
 }
 
+fn profile_dirs(target_dir: &Path, configured_target: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if let Some(target) = configured_target {
+        directories.push(target_dir.join(&target).join("debug"));
+        directories.push(target_dir.join(target).join("release"));
+    }
+    directories.push(target_dir.join("debug"));
+    directories.push(target_dir.join("release"));
+    directories
+}
+
 fn find_lib_dir() -> Option<PathBuf> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -35,8 +46,10 @@ fn find_lib_dir() -> Option<PathBuf> {
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from);
     let target_dir = resolve_target_dir(workspace_root, configured);
-    for profile in ["debug", "release"] {
-        let directory = target_dir.join(profile);
+    let configured_target = std::env::var_os("CARGO_BUILD_TARGET")
+        .filter(|target| !target.is_empty())
+        .map(PathBuf::from);
+    for directory in profile_dirs(&target_dir, configured_target) {
         let api = ["libopentelemetry_c_api.dylib", "libopentelemetry_c_api.so"]
             .into_iter()
             .any(|name| directory.join(name).is_file());
@@ -65,6 +78,25 @@ fn target_dir_resolution_honors_absolute_and_workspace_relative_values() {
     assert_eq!(
         resolve_target_dir(&workspace_root, None),
         workspace_root.join("target")
+    );
+    assert_eq!(
+        profile_dirs(Path::new("/tmp/target"), None),
+        [
+            PathBuf::from("/tmp/target/debug"),
+            PathBuf::from("/tmp/target/release")
+        ]
+    );
+    assert_eq!(
+        profile_dirs(
+            Path::new("/tmp/target"),
+            Some(PathBuf::from("x86_64-unknown-linux-gnu"))
+        ),
+        [
+            PathBuf::from("/tmp/target/x86_64-unknown-linux-gnu/debug"),
+            PathBuf::from("/tmp/target/x86_64-unknown-linux-gnu/release"),
+            PathBuf::from("/tmp/target/debug"),
+            PathBuf::from("/tmp/target/release"),
+        ]
     );
 }
 
@@ -362,6 +394,9 @@ fn custom_exporter_and_manual_reader_work_across_shared_libraries() {
         .arg(format!("-Wl,-rpath,{}", lib_dir.display()))
         .arg("-o")
         .arg(&binary);
+    if let Ok(flags) = std::env::var("CFLAGS") {
+        compile_command.args(flags.split_whitespace());
+    }
     #[cfg(feature = "metrics-async-runtime")]
     compile_command.arg("-DOTEL_TEST_ASYNC_READER=1");
     let compile = compile_command

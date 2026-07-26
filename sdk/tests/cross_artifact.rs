@@ -140,10 +140,18 @@ fn find_lib_dir() -> Option<PathBuf> {
         }
         _ => workspace_root.join("target"),
     };
+    let mut directories = Vec::new();
+    if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET").filter(|target| !target.is_empty())
+    {
+        let target = PathBuf::from(target);
+        directories.push(target_dir.join(&target).join("debug"));
+        directories.push(target_dir.join(target).join("release"));
+    }
     // `scripts/test.sh` builds debug cdylibs immediately before this test. Prefer them over
     // potentially stale release artifacts left by an earlier benchmark run.
-    for profile in ["debug", "release"] {
-        let dir = target_dir.join(profile);
+    directories.push(target_dir.join("debug"));
+    directories.push(target_dir.join("release"));
+    for dir in directories {
         let has = |stem: &str| dylib_names(stem).iter().any(|n| dir.join(n).exists());
         if has("opentelemetry_c_api") && has("opentelemetry_c_sdk") {
             return Some(dir);
@@ -921,6 +929,9 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         .arg(format!("-Wl,-rpath,{}", lib_dir.display()))
         .arg("-o")
         .arg(&out);
+    if let Ok(flags) = std::env::var("CFLAGS") {
+        cmd.args(flags.split_whitespace());
+    }
     let compile = cmd.output().expect("invoke cc");
     assert!(
         compile.status.success(),
@@ -993,7 +1004,8 @@ fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
     let src = out.with_extension("c");
     std::fs::write(&src, HARNESS_C).expect("write gRPC harness");
 
-    let compile = Command::new(&cc)
+    let mut compile_command = Command::new(&cc);
+    compile_command
         .arg("-std=c11")
         .arg(&src)
         .arg("-L")
@@ -1002,9 +1014,11 @@ fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
         .arg("-lopentelemetry_c_sdk")
         .arg(format!("-Wl,-rpath,{}", lib_dir.display()))
         .arg("-o")
-        .arg(&out)
-        .output()
-        .expect("compile gRPC harness");
+        .arg(&out);
+    if let Ok(flags) = std::env::var("CFLAGS") {
+        compile_command.args(flags.split_whitespace());
+    }
+    let compile = compile_command.output().expect("compile gRPC harness");
     assert!(
         compile.status.success(),
         "gRPC harness failed to compile/link:\n{}",
