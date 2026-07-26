@@ -279,6 +279,17 @@ mod tests {
         }
     }
 
+    fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while counter.load(Ordering::SeqCst) != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for callback count {expected}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn untransferred_exporter_shuts_down_and_destroys_state_once() {
         let state = Arc::new(LifecycleState {
@@ -341,7 +352,7 @@ mod tests {
             otel_periodic_metric_reader_destroy(reader);
         }
         assert_eq!(state.shutdowns.load(Ordering::SeqCst), 1);
-        assert_eq!(state.destroys.load(Ordering::SeqCst), 1);
+        wait_for_count(&state.destroys, 1);
     }
 
     #[test]

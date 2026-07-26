@@ -11,7 +11,8 @@ instrumentation that links only [`opentelemetry-c-api`](../api) exports through 
 
 HTTP uses the blocking `reqwest` client. The optional Metrics gRPC transport owns one
 bounded Tokio runtime per exporter and keeps it alive through reader/provider shutdown.
-In either case, **no user-managed async runtime is required**.
+Periodic Metrics export uses the blocking reader by default. The optional async reader owns
+its own bounded Tokio runtime. **No user-managed async runtime is required.**
 
 > ⚠️ **Experimental.** The C ABI is not yet stable and may change between `0.x` releases.
 
@@ -119,6 +120,13 @@ shutdown are independent from trace lifecycle. A manual reader owns no worker th
 `otel_sdk_metrics_force_flush` collects and exports once on the calling thread. Aggregation
 selection remains declarative through Metrics views.
 
+Periodic readers use the blocking upstream reader unless
+`OTEL_METRIC_READER_RUNTIME_ASYNC` is selected. The async reader requires the
+`metrics-async-runtime` feature, owns one Tokio worker and at most one blocking thread, and
+applies its configured export timeout to interval and force-flush exports. It supports HTTP
+and custom exporters. The synchronous OTLP/gRPC wrapper is rejected because it cannot safely
+drive its private runtime from inside the async reader runtime.
+
 Custom exporter callbacks are configured through `metric_exporter.h`. The export callback
 receives a callback-thread-local batch token and may synchronously traverse complete
 resource/scope/metric/point/exemplar data with `otel_metric_batch_visit`. All visitor buffers
@@ -138,9 +146,10 @@ default and the existing `otlp` feature remains a compatibility alias:
 
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `otlp` | ✅ (via `native-tls`) | Compatibility alias for `otlp-http`. |
+| `otlp` | ❌ | Compatibility alias for `otlp-http`. |
 | `otlp-http` | ✅ | OTLP HTTP/protobuf traces and Metrics using blocking reqwest. |
 | `otlp-grpc` | ❌ | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
+| `metrics-async-runtime` | ❌ | SDK-owned async periodic Metrics reader with configurable export timeout. |
 | `native-tls` | ✅ | Implies `otlp-http`; HTTP HTTPS via the platform TLS stack. |
 | `rustls-tls` | ❌ | Implies `otlp-http`; HTTP HTTPS via rustls. |
 | `grpc-tls-ring` | ❌ | Implies `otlp-grpc`; tonic TLS using the ring provider and native/platform roots. |
@@ -200,8 +209,8 @@ Do not enable both HTTP TLS backends for a release build. See
 - [`metric_exporter.h`](include/opentelemetry_c/metric_exporter.h) — generic exporter handle,
   custom C callbacks, and callback-scoped aggregated Metrics visitor types.
 - [`periodic_metric_reader.h`](include/opentelemetry_c/periodic_metric_reader.h) — periodic
-  export interval and exporter ownership. Reader shutdown timeout behavior is controlled by
-  the pinned upstream SDK.
+  runtime selection, export interval/timeout, and exporter ownership. Blocking-reader shutdown
+  timeout behavior is controlled by the pinned upstream SDK.
 - [`manual_metric_reader.h`](include/opentelemetry_c/manual_metric_reader.h) — worker-free
   application-controlled collection using a transferred Metrics exporter.
 - [`metric_view.h`](include/opentelemetry_c/metric_view.h) — instrument selection, stream

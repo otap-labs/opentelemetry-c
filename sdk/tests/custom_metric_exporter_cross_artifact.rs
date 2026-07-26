@@ -209,6 +209,77 @@ int main(void) {
     if (state.shutdowns != 1 || state.destroys != 1) {
         return 20;
     }
+
+#ifdef OTEL_TEST_ASYNC_READER
+    state_t async_state;
+    memset(&async_state, 0, sizeof(async_state));
+    otel_metric_exporter_t* async_exporter = NULL;
+    if (otel_custom_metric_exporter_new(
+            &callbacks, &async_state, OTEL_METRIC_TEMPORALITY_CUMULATIVE, &async_exporter) !=
+        OTEL_STATUS_OK) {
+        return 21;
+    }
+    otel_periodic_metric_reader_builder_t* reader_builder =
+        otel_periodic_metric_reader_builder_new();
+    if (reader_builder == NULL ||
+        otel_periodic_metric_reader_builder_set_runtime(
+            reader_builder, OTEL_METRIC_READER_RUNTIME_ASYNC) != OTEL_STATUS_OK ||
+        otel_periodic_metric_reader_builder_set_interval_millis(reader_builder, 60000) !=
+            OTEL_STATUS_OK ||
+        otel_periodic_metric_reader_builder_set_timeout_millis(reader_builder, 1000) !=
+            OTEL_STATUS_OK ||
+        otel_periodic_metric_reader_builder_set_exporter(reader_builder, async_exporter) !=
+            OTEL_STATUS_OK) {
+        return 22;
+    }
+    otel_periodic_metric_reader_t* async_reader = NULL;
+    if (otel_periodic_metric_reader_builder_build(reader_builder, &async_reader) !=
+        OTEL_STATUS_OK) {
+        return 23;
+    }
+    otel_periodic_metric_reader_builder_destroy(reader_builder);
+    builder = otel_sdk_builder_new();
+    if (builder == NULL ||
+        otel_sdk_builder_add_metric_reader(builder, async_reader) != OTEL_STATUS_OK) {
+        return 24;
+    }
+    sdk = NULL;
+    if (otel_sdk_build(builder, &sdk) != OTEL_STATUS_OK) {
+        return 25;
+    }
+    otel_sdk_builder_destroy(builder);
+    if (otel_sdk_set_metrics_as_global(sdk) != OTEL_STATUS_OK) {
+        return 26;
+    }
+    provider = otel_global_meter_provider();
+    meter = otel_meter_provider_get_meter(
+        provider, otel_cstr("custom-async-cross-artifact"), otel_cstr(""), otel_cstr(""));
+    counter = NULL;
+    if (meter == NULL ||
+        otel_meter_create_u64_counter(
+            meter, otel_cstr("cross_artifact_requests"), &options, &counter) !=
+            OTEL_STATUS_OK ||
+        otel_counter_u64_add(counter, 29, NULL, 0) != OTEL_STATUS_OK) {
+        return 27;
+    }
+    size_t exports_before_flush = async_state.exports;
+    if (otel_sdk_metrics_force_flush(sdk, 0) != OTEL_STATUS_OK ||
+        async_state.exports <= exports_before_flush ||
+        !async_state.saw_name || async_state.value != 29) {
+        return 28;
+    }
+    otel_counter_u64_destroy(counter);
+    otel_meter_destroy(meter);
+    otel_meter_provider_destroy(provider);
+    if (otel_sdk_metrics_shutdown(sdk, 1000) != OTEL_STATUS_OK) {
+        return 29;
+    }
+    otel_sdk_destroy(sdk);
+    if (async_state.shutdowns != 1 || async_state.destroys != 1) {
+        return 30;
+    }
+#endif
+
     return 0;
 }
 "#;
@@ -247,7 +318,8 @@ fn custom_exporter_and_manual_reader_work_across_shared_libraries() {
     let source = binary.with_extension("c");
     std::fs::write(&source, HARNESS).expect("write custom Metrics harness");
 
-    let compile = Command::new(cc)
+    let mut compile_command = Command::new(cc);
+    compile_command
         .arg("-std=c11")
         .arg(&source)
         .arg("-I")
@@ -260,7 +332,10 @@ fn custom_exporter_and_manual_reader_work_across_shared_libraries() {
         .arg("-lopentelemetry_c_sdk")
         .arg(format!("-Wl,-rpath,{}", lib_dir.display()))
         .arg("-o")
-        .arg(&binary)
+        .arg(&binary);
+    #[cfg(feature = "metrics-async-runtime")]
+    compile_command.arg("-DOTEL_TEST_ASYNC_READER=1");
+    let compile = compile_command
         .output()
         .expect("compile custom Metrics harness");
     assert!(

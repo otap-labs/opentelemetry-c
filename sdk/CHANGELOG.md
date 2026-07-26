@@ -4,6 +4,10 @@
 
 ### Added
 
+- Optional async periodic Metrics reader behind `metrics-async-runtime`. It owns one bounded
+  Tokio runtime, supports configurable per-export timeouts and multiple readers, requires no
+  caller-managed runtime, and shuts its runtime down after reader/provider destruction. HTTP
+  and custom exporters are supported; the synchronous OTLP/gRPC wrapper is rejected.
 - C callback-backed Metrics exporters and worker-free manual readers. Export callbacks
   traverse callback-scoped resource, scope, metric, point, histogram, exponential histogram,
   exemplar, and scalar/array attribute views; stale/cross-thread batch use fails closed.

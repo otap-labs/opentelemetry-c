@@ -35,6 +35,7 @@ The current `sdk/Cargo.toml` feature graph is:
 | `otlp` | No | Compatibility alias that enables `otlp-http`. |
 | `otlp-http` | Via `native-tls` | OTLP HTTP/protobuf trace and Metrics exporters. |
 | `otlp-grpc` | No | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
+| `metrics-async-runtime` | No | SDK-owned async periodic Metrics reader with configurable export timeout. |
 | `rustls-tls` | No | Implies `otlp-http`; HTTP HTTPS through rustls. |
 | `grpc-tls-ring` | No | Implies `otlp-grpc`; gRPC TLS using ring and platform roots. |
 | `otlp-http-gzip` | No | HTTP gzip compression; implies `otlp-http`. |
@@ -65,6 +66,11 @@ HTTP TLS backends (`native-tls` and `rustls-tls`) for a release build. Cargo fea
 compile-time capabilities: selecting a C transport or compression enum does not prove that
 capability was compiled in. Exporter construction returns `OTEL_STATUS_INVALID_CONFIG` and
 names the required feature when the selected transport or compression is unavailable.
+
+The periodic Metrics reader remains blocking by default. Enabling
+`metrics-async-runtime` allows C code to select an SDK-owned async reader with one Tokio
+worker and at most one blocking thread; applications never provide a Rust runtime. The async
+reader supports HTTP and custom exporters, but rejects the synchronous OTLP/gRPC wrapper.
 
 ## Compile and link a C application
 

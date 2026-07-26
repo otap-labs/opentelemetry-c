@@ -103,7 +103,9 @@ pub use otlp_metric_exporter::{
 pub use periodic_metric_reader::{
     otel_periodic_metric_reader_builder_build, otel_periodic_metric_reader_builder_destroy,
     otel_periodic_metric_reader_builder_new, otel_periodic_metric_reader_builder_set_exporter,
-    otel_periodic_metric_reader_builder_set_interval_millis, otel_periodic_metric_reader_destroy,
+    otel_periodic_metric_reader_builder_set_interval_millis,
+    otel_periodic_metric_reader_builder_set_runtime,
+    otel_periodic_metric_reader_builder_set_timeout_millis, otel_periodic_metric_reader_destroy,
     OtelPeriodicMetricReader, OtelPeriodicMetricReaderBuilder,
 };
 pub use sdk::{

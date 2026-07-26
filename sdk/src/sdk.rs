@@ -33,6 +33,8 @@ use crate::handle::{
 };
 use crate::manual_metric_reader::{OtelManualMetricReader, SharedManualMetricReader};
 use crate::metric_view::{MetricViewConfig, OtelMetricView};
+#[cfg(feature = "metrics-async-runtime")]
+use crate::periodic_metric_reader::AsyncRuntimeGuard;
 use crate::periodic_metric_reader::{OtelPeriodicMetricReader, PeriodicMetricReaderImpl};
 use crate::span_processor::{OtelSpanProcessor, SpanProcessorImpl};
 use crate::vtable;
@@ -86,6 +88,8 @@ pub struct OtelSdk {
     shutdown: AtomicBool,
     metrics_lifecycle: Mutex<MetricsLifecycle>,
     flush_in_flight: Arc<AtomicBool>,
+    #[cfg(feature = "metrics-async-runtime")]
+    metric_runtime_guards: Vec<AsyncRuntimeGuard>,
 }
 
 #[derive(Default)]
@@ -116,6 +120,13 @@ impl OtelSdk {
         self.metrics_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(feature = "metrics-async-runtime")]
+    fn is_current_metric_runtime(&self) -> bool {
+        self.metric_runtime_guards
+            .iter()
+            .any(AsyncRuntimeGuard::is_current)
     }
 }
 
@@ -389,6 +400,8 @@ pub unsafe extern "C" fn otel_sdk_build(
         #[allow(unused_mut)]
         let mut meter_provider_builder =
             SdkMeterProvider::builder().with_resource(build_resource(builder));
+        #[cfg(feature = "metrics-async-runtime")]
+        let mut metric_runtime_guards = Vec::new();
         for reader in metric_readers {
             match reader {
                 MetricReaderImpl::Periodic(PeriodicMetricReaderImpl::Reader(reader)) => {
@@ -400,6 +413,11 @@ pub unsafe extern "C" fn otel_sdk_build(
                 }
                 MetricReaderImpl::Manual(reader) => {
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
+                }
+                #[cfg(feature = "metrics-async-runtime")]
+                MetricReaderImpl::Periodic(PeriodicMetricReaderImpl::Async { reader, runtime }) => {
+                    meter_provider_builder = meter_provider_builder.with_reader(reader);
+                    metric_runtime_guards.push(runtime);
                 }
             }
         }
@@ -415,6 +433,8 @@ pub unsafe extern "C" fn otel_sdk_build(
             shutdown: AtomicBool::new(false),
             metrics_lifecycle: Mutex::new(MetricsLifecycle::default()),
             flush_in_flight: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "metrics-async-runtime")]
+            metric_runtime_guards,
         });
         unsafe { *out_sdk = sdk };
         OtelStatus::Ok
@@ -668,6 +688,13 @@ pub unsafe extern "C" fn otel_sdk_metrics_force_flush(
             Some(sdk) => sdk,
             None => return OtelStatus::InvalidArgument,
         };
+        #[cfg(feature = "metrics-async-runtime")]
+        if sdk.is_current_metric_runtime() {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "cannot force flush Metrics reentrantly from an async reader callback",
+            );
+        }
         if sdk.metrics_lifecycle().shutdown_started {
             return fail(
                 OtelStatus::AlreadyShutdown,
@@ -696,6 +723,13 @@ pub unsafe extern "C" fn otel_sdk_metrics_shutdown(
             Some(sdk) => sdk,
             None => return OtelStatus::InvalidArgument,
         };
+        #[cfg(feature = "metrics-async-runtime")]
+        if sdk.is_current_metric_runtime() {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "cannot shut down Metrics reentrantly from an async reader callback",
+            );
+        }
         let registration_id = {
             let mut lifecycle = sdk.metrics_lifecycle();
             if lifecycle.shutdown_started {
@@ -729,7 +763,18 @@ pub unsafe extern "C" fn otel_sdk_metrics_shutdown(
 /// `sdk` must be NULL or a live SDK not used or destroyed concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn otel_sdk_destroy(sdk: *mut OtelSdk) {
-    guard_unit(|| unsafe { destroy(sdk) });
+    guard_unit(|| {
+        #[cfg(feature = "metrics-async-runtime")]
+        if unsafe { checked_ref(sdk) }.is_some_and(|sdk: &OtelSdk| sdk.is_current_metric_runtime())
+        {
+            let _ = fail(
+                OtelStatus::InvalidConfig,
+                "cannot destroy an SDK reentrantly from an async reader callback",
+            );
+            return;
+        }
+        unsafe { destroy(sdk) };
+    });
 }
 
 #[cfg(test)]
@@ -858,6 +903,40 @@ mod tests {
             otel_sdk_destroy(sdk);
             assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
             wait_for_exporter_drop(&dropped);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
+        }
+    }
+
+    #[cfg(feature = "metrics-async-runtime")]
+    #[test]
+    fn async_reader_lifecycle_calls_fail_closed_on_owned_runtime() {
+        unsafe {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let reader = crate::periodic_metric_reader::test_async_reader(Arc::clone(&drops));
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+            let runtime = (&(*sdk).metric_runtime_guards)[0].handle();
+            runtime.block_on(async {
+                assert_eq!(
+                    otel_sdk_metrics_force_flush(sdk, 0),
+                    OtelStatus::InvalidConfig
+                );
+                assert!(crate::api_ffi::test_probe::last_error()
+                    .contains("reentrantly from an async reader callback"));
+                assert_eq!(otel_sdk_metrics_shutdown(sdk, 0), OtelStatus::InvalidConfig);
+                otel_sdk_destroy(sdk);
+                assert!(crate::api_ffi::test_probe::last_error()
+                    .contains("cannot destroy an SDK reentrantly"));
+            });
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 0);
+            drop(runtime);
+            otel_sdk_destroy(sdk);
             assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
         }
     }

@@ -189,6 +189,10 @@ impl PushMetricExporter for MetricExporterImpl {
 pub(crate) struct TestMetricExporter {
     drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     lifecycle: Option<TestMetricExporterLifecycle>,
+    #[cfg(feature = "metrics-async-runtime")]
+    exports: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    #[cfg(feature = "metrics-async-runtime")]
+    export_delay: Option<Duration>,
 }
 
 #[cfg(test)]
@@ -204,6 +208,10 @@ impl TestMetricExporter {
         Self {
             drops,
             lifecycle: None,
+            #[cfg(feature = "metrics-async-runtime")]
+            exports: None,
+            #[cfg(feature = "metrics-async-runtime")]
+            export_delay: None,
         }
     }
 
@@ -214,6 +222,24 @@ impl TestMetricExporter {
         Self {
             drops,
             lifecycle: Some(lifecycle),
+            #[cfg(feature = "metrics-async-runtime")]
+            exports: None,
+            #[cfg(feature = "metrics-async-runtime")]
+            export_delay: None,
+        }
+    }
+
+    #[cfg(feature = "metrics-async-runtime")]
+    pub(crate) fn with_async_probe(
+        drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        exports: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        export_delay: Duration,
+    ) -> Self {
+        Self {
+            drops,
+            lifecycle: None,
+            exports: Some(exports),
+            export_delay: Some(export_delay),
         }
     }
 }
@@ -238,6 +264,15 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for TestMetricExpo
         &self,
         _metrics: &opentelemetry_sdk::metrics::data::ResourceMetrics,
     ) -> opentelemetry_sdk::error::OTelSdkResult {
+        #[cfg(feature = "metrics-async-runtime")]
+        {
+            if let Some(exports) = &self.exports {
+                exports.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let Some(delay) = self.export_delay {
+                tokio::time::sleep(delay).await;
+            }
+        }
         Ok(())
     }
 

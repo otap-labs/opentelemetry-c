@@ -14,6 +14,7 @@ experimental `0.x` C ABI.
 | SDK pipeline | Implemented | Independent `SdkMeterProvider`, multiple periodic/manual readers, resource/scope propagation, force flush, and shutdown. |
 | Custom export | Implemented | C callback-backed push exporter with complete resource/scope/metric/point/exemplar visitation, scalar/array attributes, exact callback-state destruction, and callback-scoped batch tokens. |
 | Manual collection | Implemented | Worker-free manual reader; `otel_sdk_metrics_force_flush` performs one synchronous collection/export cycle on the caller thread. |
+| Async periodic collection | Implemented | Optional SDK-owned single-worker Tokio runtime, configurable per-export timeout, multiple-reader support, and deterministic runtime disposal. Blocking remains the default. |
 | OTLP Metrics | Implemented | HTTP/protobuf by default plus optional gRPC/tonic, explicit transport selection, endpoint, headers/ASCII metadata, timeout, transport-specific compression, and cumulative/delta/low-memory temporality preference. |
 | Views | Implemented | Exact or single-wildcard name selection, scope name/version/schema/required-attribute selection, unit/kind selection, stream metadata, attribute allow-list, cardinality limit, and all supported aggregations. |
 | Split-artifact linking | Implemented | C integration links separate API/SDK shared libraries and verifies OTLP Metrics bytes through the API-owned global slot. |
@@ -25,11 +26,11 @@ experimental `0.x` C ABI.
 ## Known experimental constraints
 
 - Metrics are experimental and may change incompatibly between `0.x` releases.
-- The Rust 0.32 periodic reader controls collection on its worker thread; its force flush may
-  block, and its shutdown uses the upstream reader's fixed timeout behavior.
+- The default Rust 0.32 blocking periodic reader controls collection on its worker thread; its
+  force flush may block, and its shutdown uses the upstream reader's fixed timeout behavior.
 - The gRPC exporter owns one bounded Tokio runtime for its complete reader/provider lifetime.
-  C callers do not supply a runtime. This does not implement the async periodic reader tracked
-  by issue #14.
+  C callers do not supply a runtime. Its synchronous runtime wrapper is incompatible with the
+  optional async periodic reader and is rejected during reader construction.
 - gRPC binary `-bin` metadata and custom certificate/key configuration are not exposed.
   HTTPS requires the opt-in `grpc-tls-ring` Cargo feature, which uses upstream tonic TLS with
   native/platform roots.

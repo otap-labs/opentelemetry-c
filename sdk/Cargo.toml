@@ -104,6 +104,11 @@ otlp-http-gzip = ["otlp-http", "opentelemetry-otlp/gzip-http"]
 otlp-http-zstd = ["otlp-http", "opentelemetry-otlp/zstd-http"]
 otlp-grpc-gzip = ["otlp-grpc", "opentelemetry-otlp/gzip-tonic"]
 otlp-grpc-zstd = ["otlp-grpc", "opentelemetry-otlp/zstd-tonic"]
+# SDK-owned Tokio runtime driving the pinned experimental async periodic Metrics reader.
+metrics-async-runtime = [
+    "dep:tokio",
+    "opentelemetry_sdk/experimental_metrics_periodicreader_with_async_runtime",
+]
 
 [lints]
 workspace = true
