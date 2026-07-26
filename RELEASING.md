@@ -33,4 +33,6 @@ Releases are coordinated, experimental, and source-only. Follow
     `README.md`, `VERSIONING.md`, `RELEASING.md`, both changelogs, and examples.
 
 The first release remains blocked until the MSRV and private security-reporting channel are
-resolved and enforced.
+resolved and enforced. After choosing and validating the MSRV, update all three manifests
+and set the `OPENTELEMETRY_C_VALIDATED_MSRV` repository variable to the exact same version;
+the dedicated CI job then checks the locked workspace with that toolchain.

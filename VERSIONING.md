@@ -129,6 +129,7 @@ The current `rust-version = "1.75.0"` declarations are not yet a verified releas
 the committed lockfile contains dependencies that require newer Cargo/Rust language
 support. The first source release is blocked until maintainers either pin a dependency set
 that builds on Rust 1.75 and enforce it in CI, or choose and validate a higher product MSRV.
+Until then, the MSRV CI build is gated rather than running a known-incompatible toolchain.
 See [RELEASING.md](RELEASING.md).
 
 ## Stable compatibility

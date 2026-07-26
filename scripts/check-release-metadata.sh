@@ -56,23 +56,35 @@ lock_version() {
 
 manifests=(api/Cargo.toml sdk/Cargo.toml abi/Cargo.toml)
 product_version=""
+declared_msrv=""
 
 for manifest in "${manifests[@]}"; do
     package="$(package_value "$manifest" name)"
     version="$(package_value "$manifest" version)"
+    msrv="$(package_value "$manifest" rust-version)"
     publish="$(package_value "$manifest" publish)"
     [[ -n "$package" ]] || fail "$manifest has no package name"
     [[ -n "$version" ]] || fail "$manifest has no package version"
+    [[ -n "$msrv" ]] || fail "$manifest has no rust-version"
     [[ "$publish" == "false" ]] || fail "$manifest must set package publish = false (found '${publish:-missing}')"
     if [[ -z "$product_version" ]]; then
         product_version="$version"
     elif [[ "$version" != "$product_version" ]]; then
         fail "$manifest version $version does not match product version $product_version"
     fi
+    if [[ -z "$declared_msrv" ]]; then
+        declared_msrv="$msrv"
+    elif [[ "$msrv" != "$declared_msrv" ]]; then
+        fail "$manifest rust-version $msrv does not match product rust-version $declared_msrv"
+    fi
     locked_version="$(lock_version "$package")"
     [[ "$locked_version" == "$version" ]] ||
         fail "Cargo.lock version for $package is '${locked_version:-missing}', expected $version"
 done
+
+if [[ -n "${VALIDATED_MSRV:-}" && "$VALIDATED_MSRV" != "$declared_msrv" ]]; then
+    fail "validated MSRV $VALIDATED_MSRV does not match manifest rust-version $declared_msrv"
+fi
 
 git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1 ||
     fail "Cargo.lock must be tracked"
@@ -101,4 +113,5 @@ if [[ -n "$tag" && "$tag" != "v$product_version" ]]; then
     fail "tag $tag does not match product version v$product_version"
 fi
 
-printf 'release metadata is consistent for opentelemetry-c %s\n' "$product_version"
+printf 'release metadata is consistent for opentelemetry-c %s (declared MSRV %s)\n' \
+    "$product_version" "$declared_msrv"
