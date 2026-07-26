@@ -5,8 +5,8 @@
 //! and **exporters**, which are generic, opaque extension points:
 //!
 //! - `otel_trace_exporter_t` wraps an internal `TraceExporterImpl` (a `SpanExporter`). The OTLP
-//!   HTTP/protobuf exporter is one **optional** variant (cargo feature `otlp`, on by default),
-//!   built by `otlp_exporter`.
+//!   HTTP/protobuf exporter is one **optional** variant (cargo feature `otlp-http`, enabled by
+//!   default through the `otlp` compatibility alias), built by `otlp_exporter`.
 //! - `otel_span_processor_t` wraps an internal `SpanProcessorImpl` (a `SpanProcessor`). The
 //!   batch span processor is one variant (SDK core), built by `batch_processor`.
 //! - The SDK builder (`sdk`) stores a homogeneous `Vec<SpanProcessorImpl>`, so it is coupled to
@@ -28,10 +28,10 @@
 
 #![allow(unsafe_attr_outside_unsafe)]
 
-// `reqwest` is an optional direct dependency (feature `otlp`) solely to select the OTLP
+// `reqwest` is an optional direct dependency (feature `otlp-http`) solely to select the OTLP
 // blocking client's TLS backend via the `native-tls` / `rustls-tls` cargo features; it is
 // never called directly.
-#[cfg(feature = "otlp")]
+#[cfg(feature = "otlp-http")]
 use reqwest as _;
 
 mod api_ffi;
@@ -80,9 +80,11 @@ pub use otlp_exporter::{
 pub use otlp_metric_exporter::{
     otel_otlp_metric_exporter_builder_add_header, otel_otlp_metric_exporter_builder_build,
     otel_otlp_metric_exporter_builder_destroy, otel_otlp_metric_exporter_builder_new,
+    otel_otlp_metric_exporter_builder_set_compression,
     otel_otlp_metric_exporter_builder_set_endpoint,
     otel_otlp_metric_exporter_builder_set_temporality,
-    otel_otlp_metric_exporter_builder_set_timeout_millis, OtelOtlpMetricExporterBuilder,
+    otel_otlp_metric_exporter_builder_set_timeout_millis,
+    otel_otlp_metric_exporter_builder_set_transport, OtelOtlpMetricExporterBuilder,
 };
 pub use periodic_metric_reader::{
     otel_periodic_metric_reader_builder_build, otel_periodic_metric_reader_builder_destroy,

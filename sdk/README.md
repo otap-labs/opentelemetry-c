@@ -2,15 +2,15 @@
 
 [![Apache License][license-image]][license-url]
 
-The **C SDK** of the Rust-backed OpenTelemetry C binding: OTLP **HTTP/protobuf** trace and
-Metrics exporters, a batch span processor, periodic Metrics readers, and declarative
-Metrics views behind C functions. Installing a signal provider registers it into the
-**API library's** corresponding global slot, so instrumentation that links only
-[`opentelemetry-c-api`](../api) exports through it.
+The **C SDK** of the Rust-backed OpenTelemetry C binding: OTLP **HTTP/protobuf** trace
+export, HTTP/protobuf and optional gRPC Metrics export, a batch span processor, periodic
+Metrics readers, and declarative Metrics views behind C functions. Installing a signal
+provider registers it into the **API library's** corresponding global slot, so
+instrumentation that links only [`opentelemetry-c-api`](../api) exports through it.
 
-The exporter uses the blocking `reqwest` client, so the SDK owns all of its own threading
-and **no user-managed async runtime is required**. HTTPS is supported via a selectable TLS
-backend: `native-tls` (default, platform TLS) or `rustls-tls`.
+HTTP uses the blocking `reqwest` client. The optional Metrics gRPC transport owns one
+bounded Tokio runtime per exporter and keeps it alive through reader/provider shutdown.
+In either case, **no user-managed async runtime is required**.
 
 > ⚠️ **Experimental.** The C ABI is not yet stable and may change between `0.x` releases.
 
@@ -115,23 +115,42 @@ shutdown are independent from trace lifecycle.
 
 ### Cargo features (optional OTLP)
 
-The **SDK core** — the builder, `SdkTracerProvider`, the batch span processor, and the generic
-exporter/processor handles — is a separate concern from any exporter implementation. The OTLP
-HTTP/protobuf exporter is an **optional** exporter, enabled by default:
+The **SDK core** is separate from any exporter implementation. HTTP/protobuf remains the
+default and the existing `otlp` feature remains a compatibility alias:
 
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `otlp` | ✅ (via TLS features) | Compile in the OTLP HTTP/protobuf exporter (`opentelemetry-otlp`, `reqwest`). |
-| `native-tls` | ✅ | Implies `otlp`; OTLP HTTPS via the OS TLS stack (`reqwest/native-tls`). |
-| `rustls-tls` | ❌ | Implies `otlp`; OTLP HTTPS via rustls (`reqwest/rustls`). |
+| `otlp` | ✅ (via `native-tls`) | Compatibility alias for `otlp-http`. |
+| `otlp-http` | ✅ | OTLP HTTP/protobuf traces and Metrics using blocking reqwest. |
+| `otlp-grpc` | ❌ | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
+| `native-tls` | ✅ | Implies `otlp-http`; HTTP HTTPS via the platform TLS stack. |
+| `rustls-tls` | ❌ | Implies `otlp-http`; HTTP HTTPS via rustls. |
+| `grpc-tls-ring` | ❌ | Implies `otlp-grpc`; tonic TLS using the ring provider and native/platform roots. |
+| `otlp-http-gzip`, `otlp-http-zstd` | ❌ | HTTP compression for the selected algorithm. |
+| `otlp-grpc-gzip`, `otlp-grpc-zstd` | ❌ | gRPC compression for the selected algorithm. |
 
-Building with `--no-default-features` produces the SDK core **without** `opentelemetry-otlp`,
-`reqwest`, or any TLS backend. The `otel_otlp_trace_exporter_builder_*` symbols remain (the C
-ABI is identical across feature sets), but `otel_otlp_trace_exporter_builder_build` returns
-`OTEL_STATUS_INVALID_CONFIG` with a last-error explaining the `otlp` feature is disabled.
-Enabling `otlp` without a TLS feature builds an HTTP-only OTLP exporter (no HTTPS).
-Do not enable both TLS backends for a release build. See
-[`docs/BUILDING.md`](../docs/BUILDING.md) for consumer commands.
+Building with `--no-default-features` produces the SDK core without any OTLP transport. All
+OTLP builder symbols remain present; requesting a transport that was not compiled returns
+`OTEL_STATUS_INVALID_CONFIG` with a useful last-error message. HTTP-only builds contain no
+tonic or gRPC exporter dependencies, and gRPC-only builds contain no reqwest dependency.
+Reqwest 0.13 itself still resolves Tokio transitively even for its blocking client; issue #13
+does not add or use an SDK-owned Tokio runtime on the HTTP path.
+
+Metrics transport is selected only by
+`otel_otlp_metric_exporter_builder_set_transport`; endpoint syntax never changes transport.
+HTTP endpoints normally include `/v1/metrics`, while gRPC endpoints normally contain only
+scheme and authority, such as `http://localhost:4317`. Programmatic endpoints override the
+upstream OTLP environment endpoint.
+
+The existing header setter maps to HTTP headers or validated ASCII gRPC metadata. Duplicate
+keys are rejected case-insensitively. Binary `-bin` metadata is unsupported, and diagnostics
+name an invalid key without exposing its value. Compression must be compiled for the selected
+transport or build fails; it is never silently disabled. Plaintext `http://` gRPC works with
+`otlp-grpc`; `https://` additionally requires `grpc-tls-ring`. Custom certificates and keys
+are not exposed.
+
+Do not enable both HTTP TLS backends for a release build. See
+[`docs/BUILDING.md`](../docs/BUILDING.md) for consumer feature combinations and commands.
 
 ### Ownership transfer rules
 
@@ -159,7 +178,7 @@ Do not enable both TLS backends for a release build. See
 - [`trace_exporter.h`](include/opentelemetry_c/trace_exporter.h) /
   [`span_processor.h`](include/opentelemetry_c/span_processor.h) — the generic opaque handles.
 - [`otlp_metric_exporter.h`](include/opentelemetry_c/otlp_metric_exporter.h) — OTLP Metrics
-  endpoint, headers, timeout, and temporality preference.
+  transport, endpoint, headers/metadata, compression, timeout, and temporality preference.
 - [`periodic_metric_reader.h`](include/opentelemetry_c/periodic_metric_reader.h) — periodic
   export interval and exporter ownership. Reader shutdown timeout behavior is controlled by
   the pinned upstream SDK.
@@ -174,6 +193,9 @@ Do not enable both TLS backends for a release build. See
 - Batch queue / export-batch sizes from C are bounded; oversized values are rejected with
   `OTEL_STATUS_INVALID_ARGUMENT`, `0` selects the SDK default.
 - All entry points are panic-safe. Runtime export failures never crash the process.
+- gRPC runtime creation, channel construction, and transport selection happen only during
+  exporter construction/export. Synchronous Metrics recording performs no runtime lookup,
+  transport branch, exporter access, allocation, or additional lock.
 - The SDK library never re-exports the API/trace/common functions, so linking both
   libraries produces no duplicate symbols.
 
@@ -182,8 +204,9 @@ Do not enable both TLS backends for a release build. See
 `cargo test -p opentelemetry-c-sdk --all-features` covers trace and Metrics vtable behavior,
 global registration, callback lifetime, batch bounds, and force-flush cleanup. The
 `cross_artifact` integration test compiles a C program, links it against **both** built
-cdylibs, and confirms API-only spans and Metrics export through the SDK to a mock collector
-after installation — proving both shared global providers.
+cdylibs, and confirms API-only spans and Metrics export through the SDK. With `otlp-grpc`,
+it also runs a bounded local tonic MetricsService and proves that an ordinary C process with
+no Tokio runtime exports, flushes, shuts down, and destroys the pipeline.
 
 Because `cargo test` does not emit cdylib artifacts, build them first:
 

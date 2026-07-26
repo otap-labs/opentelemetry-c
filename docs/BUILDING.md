@@ -31,30 +31,40 @@ The current `sdk/Cargo.toml` feature graph is:
 
 | Feature | Default | Capability |
 | --- | --- | --- |
-| `native-tls` | Yes | Implies `otlp`; OTLP HTTP/protobuf over the platform TLS backend. |
-| `otlp` | Via `native-tls` | OTLP HTTP/protobuf trace and Metrics exporters. |
-| `rustls-tls` | No | Implies `otlp`; OTLP HTTP/protobuf over rustls. |
+| `native-tls` | Yes | Implies `otlp-http`; HTTP HTTPS through the platform TLS backend. |
+| `otlp` | Via `native-tls` | Compatibility alias for `otlp-http`. |
+| `otlp-http` | Via `native-tls` | OTLP HTTP/protobuf trace and Metrics exporters. |
+| `otlp-grpc` | No | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
+| `rustls-tls` | No | Implies `otlp-http`; HTTP HTTPS through rustls. |
+| `grpc-tls-ring` | No | Implies `otlp-grpc`; gRPC TLS using ring and platform roots. |
+| `otlp-http-gzip` | No | HTTP gzip compression; implies `otlp-http`. |
+| `otlp-http-zstd` | No | HTTP zstd compression; implies `otlp-http`. |
+| `otlp-grpc-gzip` | No | gRPC gzip compression; implies `otlp-grpc`. |
+| `otlp-grpc-zstd` | No | gRPC zstd compression; implies `otlp-grpc`. |
 
 The default is OTLP HTTP/protobuf with native TLS. Native TLS can require platform TLS or
-OpenSSL development libraries. OTLP/gRPC and OTLP compression feature switches are not
-present in this release line.
+OpenSSL development libraries. OTLP/gRPC is opt-in.
 
-Recommended broad build using the alternative TLS backend:
+Recommended broad build using Rustls for HTTP and ring TLS for gRPC:
 
 ```sh
 cargo build --locked --release -p opentelemetry-c-sdk \
-  --no-default-features --features otlp,rustls-tls
+  --no-default-features \
+  --features otlp-http,rustls-tls,otlp-grpc,grpc-tls-ring,otlp-http-gzip,otlp-http-zstd,otlp-grpc-gzip,otlp-grpc-zstd
 ```
 
-Smaller SDK-core build without OTLP or TLS:
+Smaller plaintext gRPC Metrics build:
 
 ```sh
-cargo build --locked --release -p opentelemetry-c-sdk --no-default-features
+cargo build --locked --release -p opentelemetry-c-sdk \
+  --no-default-features --features otlp-grpc
 ```
 
-Do not enable both TLS backends for a release build. Cargo features are compile-time
-capabilities: selecting a C exporter option does not prove its implementation was compiled
-in. Exporter construction returns `OTEL_STATUS_INVALID_CONFIG` when OTLP is unavailable.
+An SDK-core-only build remains available with `--no-default-features`. Do not enable both
+HTTP TLS backends (`native-tls` and `rustls-tls`) for a release build. Cargo features are
+compile-time capabilities: selecting a C transport or compression enum does not prove that
+capability was compiled in. Exporter construction returns `OTEL_STATUS_INVALID_CONFIG` and
+names the required feature when the selected transport or compression is unavailable.
 
 ## Compile and link a C application
 

@@ -1,6 +1,6 @@
 [package]
 name = "opentelemetry-c-sdk"
-description = "Rust-backed C SDK for OpenTelemetry traces (OTLP exporter, batch processor) that installs into the C API's global provider"
+description = "Rust-backed C SDK for OpenTelemetry traces and Metrics that installs into the C API's global providers"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75.0"
@@ -23,21 +23,24 @@ opentelemetry-c-abi = { path = "../abi" }
 # the process-global provider slots.
 opentelemetry = { workspace = true, features = ["trace", "metrics"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "spec_unstable_metrics_views"] }
-# The OTLP HTTP/protobuf trace exporter is an OPTIONAL exporter implementation, not SDK core.
-# It is enabled by default (via the `otlp`/TLS features below) but the SDK core — builder,
-# batch span processor, and the generic exporter/processor handles — builds without it.
-opentelemetry-otlp = { workspace = true, optional = true, features = [
-    "trace",
-    "metrics",
-    "http-proto",
-    "reqwest-blocking-client",
-] }
+# OTLP transports are optional exporter implementations, not SDK core. HTTP/protobuf is
+# enabled by default; gRPC/tonic is independently selectable.
+opentelemetry-otlp = { workspace = true, optional = true }
 # Optional direct dependency used only to select the OTLP blocking HTTP client's TLS backend
 # via this crate's `native-tls` / `rustls-tls` features. Pulled in only with the `otlp`
-# feature; the exporter is driven through opentelemetry-otlp — this crate never calls reqwest.
+# HTTP feature; the exporter is driven through opentelemetry-otlp — this crate never calls reqwest.
 reqwest = { version = "0.13", optional = true, default-features = false, features = [
     "blocking",
 ] }
+tokio = { version = "1", optional = true, default-features = false, features = [
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+# OpenTelemetry 0.32 declares tonic 0.14.1. Pin that MSRV-compatible release instead of
+# accepting newer 0.14.x releases that require Rust 1.88.
+tonic = { version = "=0.14.1", optional = true, default-features = false }
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "testing", "spec_unstable_metrics_views"] }
@@ -45,28 +48,55 @@ opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "testing
 # slot, span/tracer ops). Linking the API rlib here also resolves this crate's `api_ffi`
 # extern `otel_api_*` imports for the bench binary. Benchmark/test only — never a runtime dep.
 opentelemetry-c-api = { path = "../api" }
-opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics"] }
+opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic", "metrics"] }
 prost = "=0.14.4"
 criterion = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "=0.14.1", default-features = true }
 
 [[bench]]
 name = "sdk_hotpath"
 harness = false
-# Builds a real OTLP exporter, so it requires the `otlp` feature (in default features). This
+# Builds a real HTTP OTLP exporter, so it requires the `otlp-http` feature. This
 # keeps `cargo bench --no-default-features` from trying to compile a bench that cannot work.
-required-features = ["otlp"]
+required-features = ["otlp-http"]
 
 [features]
 # Default preserves today's experience: the OTLP HTTP/protobuf exporter with OS/platform TLS.
 default = ["native-tls"]
-# The OTLP HTTP/protobuf trace exporter (optional). Disabling it (`--no-default-features`)
-# drops `opentelemetry-otlp`, `reqwest`, and all TLS backends; the SDK core still builds and
-# the `otel_otlp_trace_exporter_builder_*` symbols remain, returning OTEL_STATUS_INVALID_CONFIG.
-otlp = ["dep:opentelemetry-otlp", "dep:reqwest"]
-# TLS backend for the OTLP blocking HTTP client (only meaningful with `otlp`, which each
-# implies). For reqwest 0.13 the correct feature names are `native-tls` and `rustls`.
-native-tls = ["otlp", "reqwest/native-tls"]
-rustls-tls = ["otlp", "reqwest/rustls"]
+# Compatibility alias preserving the existing OTLP HTTP/protobuf behavior.
+otlp = ["otlp-http"]
+# Blocking HTTP/protobuf transport for traces and Metrics.
+otlp-http = [
+    "dep:opentelemetry-otlp",
+    "dep:reqwest",
+    "opentelemetry-otlp/trace",
+    "opentelemetry-otlp/metrics",
+    "opentelemetry-otlp/http-proto",
+    "opentelemetry-otlp/reqwest-blocking-client",
+]
+# gRPC/tonic transport for Metrics. The C SDK owns the Tokio runtime used by this transport.
+otlp-grpc = [
+    "dep:opentelemetry-otlp",
+    "dep:tokio",
+    "dep:tonic",
+    "opentelemetry-otlp/metrics",
+    "opentelemetry-otlp/grpc-tonic",
+]
+# TLS backends are transport-specific.
+native-tls = ["otlp-http", "reqwest/native-tls"]
+rustls-tls = ["otlp-http", "reqwest/rustls"]
+grpc-tls-ring = [
+    "otlp-grpc",
+    "opentelemetry-otlp/tls-ring",
+    "opentelemetry-otlp/tls-roots",
+]
+# Compression support remains transport-specific even though the C selector is neutral.
+otlp-http-gzip = ["otlp-http", "opentelemetry-otlp/gzip-http"]
+otlp-http-zstd = ["otlp-http", "opentelemetry-otlp/zstd-http"]
+otlp-grpc-gzip = ["otlp-grpc", "opentelemetry-otlp/gzip-tonic"]
+otlp-grpc-zstd = ["otlp-grpc", "opentelemetry-otlp/zstd-tonic"]
 
 [lints]
 workspace = true

@@ -6,7 +6,7 @@
 //! `rustls-tls` cargo features; the exporter owns its own blocking HTTP client, so no
 //! user-managed async runtime is required.
 //!
-//! OTLP is **optional** (cargo feature `otlp`, on by default). The builder symbols are always
+//! OTLP HTTP is **optional** (cargo feature `otlp-http`, on by default). The builder symbols are always
 //! present so the ABI is stable; when the feature is disabled the config-only setters still
 //! work but `otel_otlp_trace_exporter_builder_build` returns `OTEL_STATUS_INVALID_CONFIG`.
 
@@ -20,10 +20,10 @@ use crate::handle::{
 };
 use crate::trace_exporter::{OtelTraceExporter, TraceExporterImpl};
 
-#[cfg(feature = "otlp")]
+#[cfg(feature = "otlp-http")]
 use std::collections::HashMap;
 
-#[cfg(feature = "otlp")]
+#[cfg(feature = "otlp-http")]
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig, WithHttpConfig};
 
 const OTLP_EXPORTER_BUILDER_MAGIC: u64 = 0x4F54_4C43_4F54_4C42; // "OTLCOTLB"
@@ -176,7 +176,7 @@ pub unsafe extern "C" fn otel_otlp_trace_exporter_builder_set_timeout_millis(
 }
 
 /// Build the OTLP exporter variant of `TraceExporterImpl` from the accumulated config.
-#[cfg(feature = "otlp")]
+#[cfg(feature = "otlp-http")]
 fn build_trace_exporter(config: &OtlpExporterConfig) -> Result<TraceExporterImpl, OtelStatus> {
     let mut builder = SpanExporter::builder()
         .with_http()
@@ -202,7 +202,7 @@ fn build_trace_exporter(config: &OtlpExporterConfig) -> Result<TraceExporterImpl
 
 /// OTLP-disabled stub: the builder is accepted but no OTLP exporter can be built. Kept as a
 /// clear, non-crashing failure so the ABI stays stable across feature configurations.
-#[cfg(not(feature = "otlp"))]
+#[cfg(not(feature = "otlp-http"))]
 fn build_trace_exporter(_config: &OtlpExporterConfig) -> Result<TraceExporterImpl, OtelStatus> {
     Err(fail(
         OtelStatus::InvalidConfig,
@@ -246,7 +246,7 @@ pub unsafe extern "C" fn otel_otlp_trace_exporter_builder_build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     use crate::trace_exporter::otel_trace_exporter_destroy;
 
     fn sv(s: &str) -> OtelStringView {
@@ -256,7 +256,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-http")]
     #[test]
     fn setters_and_build_succeed() {
         unsafe {
@@ -320,7 +320,7 @@ mod tests {
             );
             // With OTLP enabled the builder still builds (the retained first value was never
             // overwritten). The dedup assertions above are exporter-independent.
-            #[cfg(feature = "otlp")]
+            #[cfg(feature = "otlp-http")]
             {
                 let mut exporter: *mut OtelTraceExporter = std::ptr::null_mut();
                 assert_eq!(
@@ -334,7 +334,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "otlp"))]
+    #[cfg(not(feature = "otlp-http"))]
     #[test]
     fn build_without_otlp_feature_returns_invalid_config() {
         unsafe {

@@ -166,6 +166,9 @@ int main(void) {
 
     otel_otlp_metric_exporter_builder_t* meb = otel_otlp_metric_exporter_builder_new();
     otel_otlp_metric_exporter_builder_set_endpoint(meb, otel_cstr("http://localhost:4318/v1/metrics"));
+    otel_otlp_metric_exporter_builder_set_transport(
+        meb, OTEL_OTLP_METRIC_TRANSPORT_HTTP_PROTOBUF);
+    otel_otlp_metric_exporter_builder_set_compression(meb, OTEL_OTLP_COMPRESSION_NONE);
     otel_metric_exporter_t* metric_exporter = NULL;
     otel_otlp_metric_exporter_builder_build(meb, &metric_exporter);
     otel_otlp_metric_exporter_builder_destroy(meb);

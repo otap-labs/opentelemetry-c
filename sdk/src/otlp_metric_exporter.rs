@@ -1,4 +1,4 @@
-//! OTLP HTTP/protobuf Metrics exporter builder.
+//! OTLP Metrics exporter builder with optional HTTP/protobuf and gRPC transports.
 
 use std::time::Duration;
 
@@ -10,14 +10,35 @@ use crate::handle::{
 };
 use crate::metric_exporter::{MetricExporterImpl, OtelMetricExporter};
 
-#[cfg(feature = "otlp")]
-use opentelemetry_otlp::{MetricExporter, Protocol, WithExportConfig, WithHttpConfig};
-#[cfg(feature = "otlp")]
+#[cfg(feature = "otlp-grpc")]
+use opentelemetry_otlp::{tonic_types::metadata::MetadataMap, WithTonicConfig};
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
+use opentelemetry_otlp::{Compression as OtlpCompression, MetricExporter, WithExportConfig};
+#[cfg(feature = "otlp-http")]
+use opentelemetry_otlp::{Protocol, WithHttpConfig};
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
 use opentelemetry_sdk::metrics::Temporality;
-#[cfg(feature = "otlp")]
+#[cfg(feature = "otlp-http")]
 use std::collections::HashMap;
+#[cfg(feature = "otlp-grpc")]
+use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 
 const BUILDER_MAGIC: u64 = 0x4F54_4C43_4D4F_544C;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Transport {
+    #[default]
+    HttpProtobuf,
+    Grpc,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Compression {
+    #[default]
+    None,
+    Gzip,
+    Zstd,
+}
 
 #[derive(Default)]
 struct Config {
@@ -25,6 +46,10 @@ struct Config {
     headers: Vec<(String, String)>,
     timeout: Option<Duration>,
     temporality: u32,
+    transport: Transport,
+    compression: Compression,
+    #[cfg(all(test, feature = "otlp-grpc"))]
+    runtime_thread_stops: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 pub struct OtelOtlpMetricExporterBuilder {
@@ -160,6 +185,61 @@ pub unsafe extern "C" fn otel_otlp_metric_exporter_builder_set_timeout_millis(
     }
 }
 
+/// Select the OTLP Metrics transport: 0=HTTP/protobuf, 1=gRPC.
+///
+/// # Safety
+///
+/// `builder` must be a live builder and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_otlp_metric_exporter_builder_set_transport(
+    builder: *mut OtelOtlpMetricExporterBuilder,
+    transport: u32,
+) -> OtelStatus {
+    unsafe {
+        with_config(builder, |config| {
+            config.transport = match transport {
+                0 => Transport::HttpProtobuf,
+                1 => Transport::Grpc,
+                _ => {
+                    return fail(
+                        OtelStatus::InvalidArgument,
+                        "unknown OTLP metric transport value",
+                    )
+                }
+            };
+            OtelStatus::Ok
+        })
+    }
+}
+
+/// Select OTLP compression: 0=none/default, 1=gzip, 2=zstd.
+///
+/// # Safety
+///
+/// `builder` must be a live builder and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_otlp_metric_exporter_builder_set_compression(
+    builder: *mut OtelOtlpMetricExporterBuilder,
+    compression: u32,
+) -> OtelStatus {
+    unsafe {
+        with_config(builder, |config| {
+            config.compression = match compression {
+                0 => Compression::None,
+                1 => Compression::Gzip,
+                2 => Compression::Zstd,
+                _ => {
+                    return fail(
+                        OtelStatus::InvalidArgument,
+                        "unknown OTLP metric compression value",
+                    )
+                }
+            };
+            OtelStatus::Ok
+        })
+    }
+}
+
 /// Temporality values: 0=environment/default, 1=cumulative, 2=delta, 3=low-memory.
 /// Set the exporter temporality preference.
 ///
@@ -185,8 +265,8 @@ pub unsafe extern "C" fn otel_otlp_metric_exporter_builder_set_temporality(
     }
 }
 
-#[cfg(feature = "otlp")]
-fn build_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
+#[cfg(feature = "otlp-http")]
+fn build_http_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
     let mut builder = MetricExporter::builder()
         .with_http()
         .with_protocol(Protocol::HttpBinary);
@@ -200,21 +280,182 @@ fn build_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
         let headers: HashMap<String, String> = config.headers.iter().cloned().collect();
         builder = builder.with_headers(headers);
     }
+    if let Some(compression) = configured_compression(config.compression) {
+        builder = builder.with_compression(compression);
+    }
     if let Some(temporality) = configured_temporality(config.temporality) {
         builder = builder.with_temporality(temporality);
     }
     builder
         .build()
-        .map(MetricExporterImpl::Otlp)
+        .map(MetricExporterImpl::OtlpHttp)
         .map_err(|err| {
             fail_owned(
                 OtelStatus::InvalidConfig,
-                format!("failed to build OTLP metric exporter: {err}"),
+                format!("failed to build OTLP HTTP metric exporter: {err}"),
             )
         })
 }
 
-#[cfg(feature = "otlp")]
+#[cfg(not(feature = "otlp-http"))]
+fn build_http_exporter(_config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
+    Err(fail(
+        OtelStatus::InvalidConfig,
+        "OTLP HTTP/protobuf Metrics transport is unavailable: rebuild with `otlp-http`",
+    ))
+}
+
+#[cfg(feature = "otlp-grpc")]
+fn build_grpc_metadata(headers: &[(String, String)]) -> Result<MetadataMap, OtelStatus> {
+    let mut metadata = MetadataMap::new();
+    for (key, value) in headers {
+        if key.to_ascii_lowercase().ends_with("-bin") {
+            return Err(fail_owned(
+                OtelStatus::InvalidArgument,
+                format!("binary gRPC metadata is unsupported for key: {key}"),
+            ));
+        }
+        let metadata_key = MetadataKey::<Ascii>::from_bytes(key.as_bytes()).map_err(|_| {
+            fail_owned(
+                OtelStatus::InvalidArgument,
+                format!("invalid gRPC metadata key: {key}"),
+            )
+        })?;
+        let metadata_value = MetadataValue::<Ascii>::try_from(value.as_str()).map_err(|_| {
+            fail_owned(
+                OtelStatus::InvalidArgument,
+                format!("invalid gRPC metadata value for key: {key}"),
+            )
+        })?;
+        metadata.insert(metadata_key, metadata_value);
+    }
+    Ok(metadata)
+}
+
+#[cfg(feature = "otlp-grpc")]
+fn build_grpc_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
+    let metadata = build_grpc_metadata(&config.headers)?;
+    let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+    runtime_builder
+        .worker_threads(1)
+        .max_blocking_threads(2)
+        .thread_name("otel-c-otlp-grpc")
+        .enable_all();
+    #[cfg(test)]
+    if let Some(stops) = &config.runtime_thread_stops {
+        let stops = std::sync::Arc::clone(stops);
+        runtime_builder.on_thread_stop(move || {
+            stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    let runtime =
+        crate::metric_exporter::GrpcRuntimeGuard::new(runtime_builder.build().map_err(|err| {
+            fail_owned(
+                OtelStatus::InternalError,
+                format!("failed to create OTLP gRPC runtime: {err}"),
+            )
+        })?);
+
+    let exporter = {
+        let _runtime_guard = runtime.runtime().enter();
+        let mut builder = MetricExporter::builder().with_tonic();
+        if let Some(endpoint) = &config.endpoint {
+            builder = builder.with_endpoint(endpoint.clone());
+        }
+        if let Some(timeout) = config.timeout {
+            builder = builder.with_timeout(timeout);
+        }
+        if !metadata.is_empty() {
+            builder = builder.with_metadata(metadata);
+        }
+        if let Some(compression) = configured_compression(config.compression) {
+            builder = builder.with_compression(compression);
+        }
+        if let Some(temporality) = configured_temporality(config.temporality) {
+            builder = builder.with_temporality(temporality);
+        }
+        builder.build()
+    };
+    let exporter = exporter.map_err(|err| {
+        fail_owned(
+            OtelStatus::InvalidConfig,
+            format!("failed to build OTLP gRPC metric exporter: {err}"),
+        )
+    })?;
+
+    Ok(MetricExporterImpl::OtlpGrpc(
+        crate::metric_exporter::GrpcMetricExporter::new(exporter, runtime),
+    ))
+}
+
+#[cfg(not(feature = "otlp-grpc"))]
+fn build_grpc_exporter(_config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
+    Err(fail(
+        OtelStatus::InvalidConfig,
+        "OTLP gRPC Metrics transport is unavailable: rebuild with `otlp-grpc`",
+    ))
+}
+
+fn build_exporter(config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
+    validate_transport_available(config.transport)?;
+    validate_compression_available(config.transport, config.compression)?;
+    match config.transport {
+        Transport::HttpProtobuf => build_http_exporter(config),
+        Transport::Grpc => build_grpc_exporter(config),
+    }
+}
+
+fn validate_transport_available(transport: Transport) -> Result<(), OtelStatus> {
+    match transport {
+        Transport::HttpProtobuf if !cfg!(feature = "otlp-http") => Err(fail(
+            OtelStatus::InvalidConfig,
+            "OTLP HTTP/protobuf Metrics transport is unavailable: rebuild with `otlp-http`",
+        )),
+        Transport::Grpc if !cfg!(feature = "otlp-grpc") => Err(fail(
+            OtelStatus::InvalidConfig,
+            "OTLP gRPC Metrics transport is unavailable: rebuild with `otlp-grpc`",
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_compression_available(
+    transport: Transport,
+    compression: Compression,
+) -> Result<(), OtelStatus> {
+    let missing = match (transport, compression) {
+        (Transport::HttpProtobuf, Compression::Gzip) if !cfg!(feature = "otlp-http-gzip") => {
+            Some((
+                "OTLP HTTP/protobuf gzip compression is unavailable",
+                "otlp-http-gzip",
+            ))
+        }
+        (Transport::HttpProtobuf, Compression::Zstd) if !cfg!(feature = "otlp-http-zstd") => {
+            Some((
+                "OTLP HTTP/protobuf zstd compression is unavailable",
+                "otlp-http-zstd",
+            ))
+        }
+        (Transport::Grpc, Compression::Gzip) if !cfg!(feature = "otlp-grpc-gzip") => Some((
+            "OTLP gRPC gzip compression is unavailable",
+            "otlp-grpc-gzip",
+        )),
+        (Transport::Grpc, Compression::Zstd) if !cfg!(feature = "otlp-grpc-zstd") => Some((
+            "OTLP gRPC zstd compression is unavailable",
+            "otlp-grpc-zstd",
+        )),
+        _ => None,
+    };
+    match missing {
+        Some((message, feature)) => Err(fail_owned(
+            OtelStatus::InvalidConfig,
+            format!("{message}: rebuild with `{feature}`"),
+        )),
+        None => Ok(()),
+    }
+}
+
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
 fn configured_temporality(preference: u32) -> Option<Temporality> {
     match preference {
         0 => None,
@@ -225,12 +466,13 @@ fn configured_temporality(preference: u32) -> Option<Temporality> {
     }
 }
 
-#[cfg(not(feature = "otlp"))]
-fn build_exporter(_config: &Config) -> Result<MetricExporterImpl, OtelStatus> {
-    Err(fail(
-        OtelStatus::InvalidConfig,
-        "OTLP metric exporter is unavailable: rebuild with the `otlp` feature",
-    ))
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
+fn configured_compression(compression: Compression) -> Option<OtlpCompression> {
+    match compression {
+        Compression::None => None,
+        Compression::Gzip => Some(OtlpCompression::Gzip),
+        Compression::Zstd => Some(OtlpCompression::Zstd),
+    }
 }
 
 /// Build an owned OTLP Metrics exporter.
@@ -265,11 +507,13 @@ pub unsafe extern "C" fn otel_otlp_metric_exporter_builder_build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     use opentelemetry::metrics::MeterProvider;
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
-    #[cfg(feature = "otlp")]
+    #[cfg(feature = "otlp-grpc")]
+    use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     use opentelemetry_sdk::metrics::{
         InMemoryMetricExporterBuilder, PeriodicReader, SdkMeterProvider,
     };
@@ -306,6 +550,14 @@ mod tests {
             );
             assert_eq!(
                 otel_otlp_metric_exporter_builder_set_timeout_millis(dead, 10),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(dead, 1),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_compression(dead, 1),
                 OtelStatus::InvalidArgument
             );
             drop(Box::from_raw(dead));
@@ -368,7 +620,7 @@ mod tests {
                 "a rejected endpoint must not corrupt the live builder"
             );
 
-            #[cfg(feature = "otlp")]
+            #[cfg(feature = "otlp-http")]
             {
                 let mut exporter = std::ptr::null_mut();
                 assert_eq!(
@@ -380,6 +632,453 @@ mod tests {
             }
 
             otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn transport_and_compression_setters_validate_and_use_last_value() {
+        unsafe {
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(std::ptr::null_mut(), 1),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_compression(std::ptr::null_mut(), 1),
+                OtelStatus::InvalidArgument
+            );
+
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!((*builder).config.transport, Transport::HttpProtobuf);
+            assert_eq!((*builder).config.compression, Compression::None);
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.transport, Transport::Grpc);
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 0),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.transport, Transport::HttpProtobuf);
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 2),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!((*builder).config.transport, Transport::HttpProtobuf);
+
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_compression(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.compression, Compression::Gzip);
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_compression(builder, 2),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.compression, Compression::Zstd);
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_compression(builder, 0),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).config.compression, Compression::None);
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_compression(builder, 3),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!((*builder).config.compression, Compression::None);
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn unavailable_requested_transport_fails_without_fallback() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            #[allow(unused_mut)]
+            let mut exporter: *mut OtelMetricExporter = std::ptr::null_mut();
+
+            #[cfg(not(feature = "otlp-http"))]
+            {
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                    OtelStatus::InvalidConfig
+                );
+                assert!(exporter.is_null());
+                assert!(crate::api_ffi::test_probe::last_error().contains("otlp-http"));
+            }
+
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            #[cfg(not(feature = "otlp-grpc"))]
+            {
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                    OtelStatus::InvalidConfig
+                );
+                assert!(exporter.is_null());
+                assert!(crate::api_ffi::test_probe::last_error().contains("otlp-grpc"));
+            }
+
+            assert!(exporter.is_null());
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(not(feature = "otlp-http"))]
+    #[test]
+    fn unavailable_http_transport_precedes_compression_diagnostic() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            for compression in [1, 2] {
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_set_compression(builder, compression),
+                    OtelStatus::Ok
+                );
+                let mut exporter = std::ptr::null_mut();
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                    OtelStatus::InvalidConfig
+                );
+                assert!(exporter.is_null());
+                assert_eq!(
+                    crate::api_ffi::test_probe::last_error(),
+                    "OTLP HTTP/protobuf Metrics transport is unavailable: rebuild with `otlp-http`"
+                );
+            }
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(not(feature = "otlp-grpc"))]
+    #[test]
+    fn unavailable_grpc_transport_precedes_compression_diagnostic() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            for compression in [1, 2] {
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_set_compression(builder, compression),
+                    OtelStatus::Ok
+                );
+                let mut exporter = std::ptr::null_mut();
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                    OtelStatus::InvalidConfig
+                );
+                assert!(exporter.is_null());
+                assert_eq!(
+                    crate::api_ffi::test_probe::last_error(),
+                    "OTLP gRPC Metrics transport is unavailable: rebuild with `otlp-grpc`"
+                );
+            }
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[test]
+    fn grpc_build_validates_metadata_and_owns_runtime() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv("http://127.0.0.1:9"),),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_add_header(
+                    builder,
+                    sv("authorization-bin"),
+                    sv("not-binary"),
+                ),
+                OtelStatus::Ok
+            );
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::InvalidArgument
+            );
+            assert!(exporter.is_null());
+            let error = crate::api_ffi::test_probe::last_error();
+            assert!(error.contains("authorization-bin"));
+            assert!(!error.contains("not-binary"));
+
+            (*builder).config.headers.clear();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_add_header(
+                    builder,
+                    sv("x-tenant"),
+                    sv("integration"),
+                ),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::Ok
+            );
+            assert!(!exporter.is_null());
+            crate::metric_exporter::otel_metric_exporter_destroy(exporter);
+
+            (*builder).config.headers.clear();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_add_header(
+                    builder,
+                    sv("x-secret"),
+                    sv("private\nvalue"),
+                ),
+                OtelStatus::Ok
+            );
+            exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::InvalidArgument
+            );
+            assert!(exporter.is_null());
+            let error = crate::api_ffi::test_probe::last_error();
+            assert!(error.contains("x-secret"));
+            assert!(!error.contains("private"));
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[test]
+    fn grpc_rejects_invalid_endpoint() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv("not a URI")),
+                OtelStatus::Ok
+            );
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::InvalidConfig
+            );
+            assert!(exporter.is_null());
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(all(feature = "otlp-grpc", not(feature = "grpc-tls-ring")))]
+    #[test]
+    fn grpc_https_requires_tls_feature() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(
+                    builder,
+                    sv("https://localhost:4317"),
+                ),
+                OtelStatus::Ok
+            );
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::InvalidConfig
+            );
+            assert!(exporter.is_null());
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(any(
+        all(feature = "otlp-http", not(feature = "otlp-http-gzip")),
+        all(feature = "otlp-http", not(feature = "otlp-http-zstd")),
+        all(feature = "otlp-grpc", not(feature = "otlp-grpc-gzip")),
+        all(feature = "otlp-grpc", not(feature = "otlp-grpc-zstd")),
+    ))]
+    fn assert_unavailable_compression(transport: u32, compression: u32, expected_diagnostic: &str) {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, transport),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_compression(builder, compression),
+                OtelStatus::Ok
+            );
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::InvalidConfig
+            );
+            assert!(exporter.is_null());
+            assert_eq!(
+                crate::api_ffi::test_probe::last_error(),
+                expected_diagnostic
+            );
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(all(feature = "otlp-http", not(feature = "otlp-http-gzip")))]
+    #[test]
+    fn http_rejects_unavailable_gzip_compression() {
+        assert_unavailable_compression(
+            0,
+            1,
+            "OTLP HTTP/protobuf gzip compression is unavailable: rebuild with `otlp-http-gzip`",
+        );
+    }
+
+    #[cfg(all(feature = "otlp-http", not(feature = "otlp-http-zstd")))]
+    #[test]
+    fn http_rejects_unavailable_zstd_compression() {
+        assert_unavailable_compression(
+            0,
+            2,
+            "OTLP HTTP/protobuf zstd compression is unavailable: rebuild with `otlp-http-zstd`",
+        );
+    }
+
+    #[cfg(all(feature = "otlp-grpc", not(feature = "otlp-grpc-gzip")))]
+    #[test]
+    fn grpc_rejects_unavailable_gzip_compression() {
+        assert_unavailable_compression(
+            1,
+            1,
+            "OTLP gRPC gzip compression is unavailable: rebuild with `otlp-grpc-gzip`",
+        );
+    }
+
+    #[cfg(all(feature = "otlp-grpc", not(feature = "otlp-grpc-zstd")))]
+    #[test]
+    fn grpc_rejects_unavailable_zstd_compression() {
+        assert_unavailable_compression(
+            1,
+            2,
+            "OTLP gRPC zstd compression is unavailable: rebuild with `otlp-grpc-zstd`",
+        );
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    fn build_test_grpc_exporter() -> *mut OtelMetricExporter {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv("http://127.0.0.1:9"),),
+                OtelStatus::Ok
+            );
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::Ok
+            );
+            otel_otlp_metric_exporter_builder_destroy(builder);
+            exporter
+        }
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[test]
+    fn grpc_exporter_can_be_destroyed_inside_another_tokio_runtime() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv("http://127.0.0.1:9"),),
+                OtelStatus::Ok
+            );
+            let runtime_thread_stops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (*builder).config.runtime_thread_stops =
+                Some(std::sync::Arc::clone(&runtime_thread_stops));
+            let mut exporter = std::ptr::null_mut();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                OtelStatus::Ok
+            );
+            otel_otlp_metric_exporter_builder_destroy(builder);
+            let exporter = crate::handle::take(exporter).expect("take gRPC exporter handle");
+            let host_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build host runtime");
+            host_runtime.block_on(async move {
+                drop(exporter);
+            });
+            assert_eq!(
+                runtime_thread_stops.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "gRPC runtime worker must stop before exporter destruction returns"
+            );
+        }
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[test]
+    fn grpc_build_failure_is_safe_inside_another_tokio_runtime() {
+        unsafe {
+            let builder = otel_otlp_metric_exporter_builder_new();
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_transport(builder, 1),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_otlp_metric_exporter_builder_set_endpoint(builder, sv("not a URI")),
+                OtelStatus::Ok
+            );
+            let host_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build host runtime");
+            host_runtime.block_on(async {
+                let mut exporter = std::ptr::null_mut();
+                assert_eq!(
+                    otel_otlp_metric_exporter_builder_build(builder, &mut exporter),
+                    OtelStatus::InvalidConfig
+                );
+                assert!(exporter.is_null());
+            });
+            otel_otlp_metric_exporter_builder_destroy(builder);
+        }
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[test]
+    fn grpc_export_fails_closed_inside_another_tokio_runtime() {
+        unsafe {
+            let exporter = build_test_grpc_exporter();
+            let host_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build host runtime");
+            let result = host_runtime.block_on(async {
+                (*exporter)
+                    .exporter
+                    .export(&opentelemetry_sdk::metrics::data::ResourceMetrics::default())
+                    .await
+            });
+            assert!(matches!(
+                result,
+                Err(opentelemetry_sdk::error::OTelSdkError::InternalFailure(message))
+                    if message.contains("cannot call block_on from an entered Tokio runtime")
+            ));
+            crate::metric_exporter::otel_metric_exporter_destroy(exporter);
         }
     }
 
@@ -423,7 +1122,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     fn exported_temporalities(preference: u32) -> (Temporality, Temporality) {
         let selected = configured_temporality(preference).unwrap_or_default();
         let exporter = InMemoryMetricExporterBuilder::new()
@@ -457,7 +1156,7 @@ mod tests {
         (counter.unwrap(), up_down.unwrap())
     }
 
-    #[cfg(feature = "otlp")]
+    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
     #[test]
     fn configured_temporality_drives_exported_aggregation() {
         assert_eq!(

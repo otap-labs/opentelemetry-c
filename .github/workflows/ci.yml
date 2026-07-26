@@ -57,3 +57,12 @@ jobs:
         run: cargo test --workspace --all-targets
       - name: Test SDK core (no default features)
         run: cargo test -p opentelemetry-c-sdk --no-default-features
+      - name: Test Metrics transport feature matrix
+        run: |
+          cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-http
+          cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-grpc
+          cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-http,otlp-grpc
+      - name: Test split artifacts with OTLP gRPC Metrics
+        run: |
+          cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
+          cargo test -p opentelemetry-c-sdk --test cross_artifact --all-features
