@@ -1,0 +1,38 @@
+[package]
+name = "opentelemetry-c-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.4.2", features = ["derive"] }
+libfuzzer-sys = "0.4.13"
+opentelemetry-c-api = { path = "../api" }
+opentelemetry-c-sdk = { path = "../sdk", default-features = false }
+
+[[bin]]
+name = "metrics_inputs"
+path = "fuzz_targets/metrics_inputs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handle_kinds"
+path = "fuzz_targets/handle_kinds.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exporter_visitor"
+path = "fuzz_targets/exporter_visitor.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

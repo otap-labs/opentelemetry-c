@@ -4,6 +4,7 @@ members = [
     "api",
     "sdk",
 ]
+exclude = ["fuzz"]
 
 resolver = "2"
 

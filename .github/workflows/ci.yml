@@ -63,6 +63,17 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  fuzz-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Compile fuzz targets
+        run: cargo +nightly fuzz build
+
   test:
     runs-on: ubuntu-latest
     steps:
