@@ -32,9 +32,11 @@ package_value() {
 lock_version() {
     local package="$1"
     awk -v wanted="$package" '
-        /^\[\[package\]\][[:space:]]*$/ {
+        /^\[/ {
             name = ""
             version = ""
+        }
+        /^\[\[package\]\][[:space:]]*$/ {
             next
         }
         /^name[[:space:]]*=/ {

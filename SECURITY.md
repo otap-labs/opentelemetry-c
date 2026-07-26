@@ -6,8 +6,9 @@ latest tagged release receives security fixes.
 Do not initially disclose suspected vulnerabilities in a public issue. Use GitHub private
 vulnerability reporting or a private Security Advisory if the repository enables it.
 No verified private reporting channel is currently documented; maintainers must enable and
-verify one before the first release. Do not send sensitive reports to an invented or
-unverified email address.
+verify one before the first release (tracked in
+[issue #21](https://github.com/otap-labs/opentelemetry-c/issues/21)). Do not send sensitive
+reports to an invented or unverified email address.
 
 A report should include the affected version and platform, impact, reproduction steps or a
 proof of concept, relevant configuration, and any suggested mitigation. Maintainers will

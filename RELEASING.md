@@ -6,7 +6,8 @@ Releases are coordinated, experimental, and source-only. Follow
 1. Confirm the intended `MAJOR.MINOR.PATCH` version and that the product MSRV is validated
    with the committed lockfile.
 2. Set the same version in `api/Cargo.toml`, `sdk/Cargo.toml`, and `abi/Cargo.toml`.
-3. Update the API and SDK changelogs under the same release heading.
+3. Keep an empty `## Unreleased` section at the top of each changelog and move the completed
+   entries beneath matching `## vMAJOR.MINOR.PATCH` release headings.
 4. Update `Cargo.lock` only as required by legitimate manifest version changes.
 5. Confirm every project package still has `publish = false`.
 6. Confirm SDK feature documentation exactly matches `sdk/Cargo.toml`.
@@ -35,4 +36,5 @@ Releases are coordinated, experimental, and source-only. Follow
 The first release remains blocked until the MSRV and private security-reporting channel are
 resolved and enforced. After choosing and validating the MSRV, update all three manifests
 and set the `OPENTELEMETRY_C_VALIDATED_MSRV` repository variable to the exact same version;
-the dedicated CI job then checks the locked workspace with that toolchain.
+the dedicated CI job then checks the product libraries with that toolchain. The product MSRV
+does not cover test, integration-test, or benchmark-only dependencies.

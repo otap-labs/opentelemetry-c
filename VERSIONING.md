@@ -122,8 +122,9 @@ The Rust OpenTelemetry dependencies are implementation details. Updating them ma
 behavior or require public C API changes, which follow the release rules above.
 
 All three project manifests must declare the same validated minimum supported Rust version
-(MSRV), and release CI must check the locked workspace with it. The committed dependency
-set is part of that claim.
+(MSRV), and release CI must check the product libraries and documented feature combinations
+with it. Test, integration-test, and benchmark-only dependencies do not define the product
+MSRV. The committed dependency set used by the product libraries is part of that claim.
 
 The current `rust-version = "1.75.0"` declarations are not yet a verified release promise:
 the committed lockfile contains dependencies that require newer Cargo/Rust language

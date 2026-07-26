@@ -40,12 +40,19 @@ jobs:
         run: scripts/check-release-metadata.sh
       - name: Install validated MSRV
         if: env.VALIDATED_MSRV != ''
-        uses: dtolnay/rust-toolchain@master
+        # Pin the action because this job gates source-release tags.
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: ${{ env.VALIDATED_MSRV }}
-      - name: Check locked workspace at validated MSRV
+      - name: Check product libraries at validated MSRV
         if: env.VALIDATED_MSRV != ''
-        run: cargo check --locked --workspace --all-targets
+        run: |
+          cargo check --locked -p opentelemetry-c-api --lib
+          cargo check --locked -p opentelemetry-c-sdk --lib
+          cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features
+          cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features --features otlp-grpc
+          cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features \
+            --features otlp-http,rustls-tls,otlp-grpc,grpc-tls-ring,otlp-http-gzip,otlp-http-zstd,otlp-grpc-gzip,otlp-grpc-zstd
 
   dependency-audit:
     runs-on: ubuntu-latest

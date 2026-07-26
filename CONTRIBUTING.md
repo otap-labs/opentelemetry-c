@@ -9,7 +9,9 @@ packages share one version and are not independently published.
   `#[no_mangle] extern "C"` symbols.
 - SDK feature changes must update source-build documentation and feature validation.
 - Dependency changes require deliberate review because releases ship the committed
-  `Cargo.lock`.
+  `Cargo.lock`. Dependency advisory checks are intentionally blocking; if an advisory cannot
+  be fixed immediately, document its ID, impact, owner, and removal condition as described in
+  [RELEASING.md](RELEASING.md) rather than silently ignoring it.
 - Do not add the API crate as a normal Rust dependency of the SDK; cross-library
   registration intentionally uses external C symbols.
 - Do not commit generated native binaries. Binary packaging, installers, and supported
