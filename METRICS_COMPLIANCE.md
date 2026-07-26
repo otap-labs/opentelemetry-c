@@ -11,7 +11,9 @@ experimental `0.x` C ABI.
 | Observer lifetime | Implemented | Observer tokens are valid only on the callback thread until return; stale and cross-thread use fail closed. Dispatch is thread-local, so independent readers are not serialized by an API-global lock. Destroying the public instrument disables future callback work. |
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
 | Instrumentation scope | Implemented | Versioned meter options carry name, version, schema URL, and uniquely keyed typed attributes into the upstream owned `InstrumentationScope`. |
-| SDK pipeline | Implemented | Independent `SdkMeterProvider`, one or more periodic readers, resource/scope propagation, force flush, and shutdown. |
+| SDK pipeline | Implemented | Independent `SdkMeterProvider`, multiple periodic/manual readers, resource/scope propagation, force flush, and shutdown. |
+| Custom export | Implemented | C callback-backed push exporter with complete resource/scope/metric/point/exemplar visitation, scalar/array attributes, exact callback-state destruction, and callback-scoped batch tokens. |
+| Manual collection | Implemented | Worker-free manual reader; `otel_sdk_metrics_force_flush` performs one synchronous collection/export cycle on the caller thread. |
 | OTLP Metrics | Implemented | HTTP/protobuf by default plus optional gRPC/tonic, explicit transport selection, endpoint, headers/ASCII metadata, timeout, transport-specific compression, and cumulative/delta/low-memory temporality preference. |
 | Views | Implemented | Exact or single-wildcard name selection, scope name/version/schema/required-attribute selection, unit/kind selection, stream metadata, attribute allow-list, cardinality limit, and all supported aggregations. |
 | Split-artifact linking | Implemented | C integration links separate API/SDK shared libraries and verifies OTLP Metrics bytes through the API-owned global slot. |
@@ -38,5 +40,6 @@ experimental `0.x` C ABI.
 - The supported shared-global deployment model is one shared API library on Linux or macOS,
   loaded before the matching SDK and retained for process lifetime after use. Windows
   shared-library use and static deployment are unsupported.
-- Logs, custom readers/exporters, and asynchronous user-controlled collection are not
-  exposed.
+- Arbitrary third-party reader vtables are not exposed. The pinned upstream experimental
+  reader trait is enabled only to implement the supported worker-free manual reader.
+- Logs and asynchronous user-controlled collection are not exposed.

@@ -31,6 +31,7 @@ use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, take,
     HasHandleHeader,
 };
+use crate::manual_metric_reader::{OtelManualMetricReader, SharedManualMetricReader};
 use crate::metric_view::{MetricViewConfig, OtelMetricView};
 use crate::periodic_metric_reader::{OtelPeriodicMetricReader, PeriodicMetricReaderImpl};
 use crate::span_processor::{OtelSpanProcessor, SpanProcessorImpl};
@@ -46,8 +47,13 @@ pub struct OtelSdkBuilder {
     // `build`, or freed on destroy if `build` was not completed. Homogeneous `SpanProcessorImpl`
     // so any processor kind (batch today, e.g. simple later) is stored uniformly here.
     processors: Vec<SpanProcessorImpl>,
-    metric_readers: Vec<PeriodicMetricReaderImpl>,
+    metric_readers: Vec<MetricReaderImpl>,
     metric_views: Vec<MetricViewConfig>,
+}
+
+enum MetricReaderImpl {
+    Periodic(PeriodicMetricReaderImpl),
+    Manual(SharedManualMetricReader),
 }
 
 impl HasHandleHeader for OtelSdkBuilder {
@@ -63,7 +69,10 @@ impl HasHandleHeader for OtelSdkBuilder {
 impl Drop for OtelSdkBuilder {
     fn drop(&mut self) {
         for reader in self.metric_readers.drain(..) {
-            reader.shutdown();
+            match reader {
+                MetricReaderImpl::Periodic(reader) => reader.shutdown(),
+                MetricReaderImpl::Manual(reader) => reader.shutdown_unregistered(),
+            }
         }
     }
 }
@@ -193,7 +202,38 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_reader(
             Some(reader) => reader,
             None => return OtelStatus::InvalidArgument,
         };
-        builder.metric_readers.push(reader.reader);
+        builder
+            .metric_readers
+            .push(MetricReaderImpl::Periodic(reader.reader));
+        OtelStatus::Ok
+    })
+}
+
+/// Transfer a manual Metrics reader into an SDK builder. On success the SDK builder owns
+/// `reader`; application-controlled collection is driven through
+/// [`otel_sdk_metrics_force_flush`].
+///
+/// # Safety
+///
+/// `builder` and `reader` must be live handles and must not be used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_add_manual_metric_reader(
+    builder: *mut OtelSdkBuilder,
+    reader: *mut OtelManualMetricReader,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let builder = match unsafe { checked_mut(builder) } {
+            Some(builder) => builder,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let reader = match unsafe { take(reader) } {
+            Some(reader) => reader,
+            None => return OtelStatus::InvalidArgument,
+        };
+        builder
+            .metric_readers
+            .push(MetricReaderImpl::Manual(reader.reader));
         OtelStatus::Ok
     })
 }
@@ -351,12 +391,14 @@ pub unsafe extern "C" fn otel_sdk_build(
             SdkMeterProvider::builder().with_resource(build_resource(builder));
         for reader in metric_readers {
             match reader {
-                #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
-                PeriodicMetricReaderImpl::Otlp(reader) => {
+                MetricReaderImpl::Periodic(PeriodicMetricReaderImpl::Reader(reader)) => {
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
                 }
                 #[cfg(test)]
-                PeriodicMetricReaderImpl::Test { reader, .. } => {
+                MetricReaderImpl::Periodic(PeriodicMetricReaderImpl::Test { reader, .. }) => {
+                    meter_provider_builder = meter_provider_builder.with_reader(reader);
+                }
+                MetricReaderImpl::Manual(reader) => {
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
                 }
             }

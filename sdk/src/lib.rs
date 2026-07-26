@@ -36,8 +36,11 @@ use reqwest as _;
 
 mod api_ffi;
 mod batch_processor;
+mod custom_metric_exporter;
 mod error;
 mod handle;
+mod manual_metric_reader;
+mod metric_batch;
 mod metric_exporter;
 mod metric_view;
 mod metrics_vtable;
@@ -57,6 +60,17 @@ pub use batch_processor::{
     otel_batch_span_processor_builder_set_max_export_batch_size,
     otel_batch_span_processor_builder_set_max_queue_size,
     otel_batch_span_processor_builder_set_scheduled_delay_millis, OtelBatchSpanProcessorBuilder,
+};
+pub use custom_metric_exporter::{
+    otel_custom_metric_exporter_new, OtelCustomMetricExporterCallbacks,
+};
+pub use manual_metric_reader::{
+    otel_manual_metric_reader_destroy, otel_manual_metric_reader_new, OtelManualMetricReader,
+};
+pub use metric_batch::{
+    otel_metric_batch_visit, OtelMetricArrayView, OtelMetricAttribute, OtelMetricAttributeValue,
+    OtelMetricBatch, OtelMetricExemplar, OtelMetricMetadata, OtelMetricNumber, OtelMetricPoint,
+    OtelMetricVisitor,
 };
 pub use metric_exporter::{otel_metric_exporter_destroy, OtelMetricExporter};
 pub use metric_view::{
@@ -93,13 +107,13 @@ pub use periodic_metric_reader::{
     OtelPeriodicMetricReader, OtelPeriodicMetricReaderBuilder,
 };
 pub use sdk::{
-    otel_sdk_build, otel_sdk_builder_add_metric_reader, otel_sdk_builder_add_metric_view,
-    otel_sdk_builder_add_resource_attribute, otel_sdk_builder_add_span_processor,
-    otel_sdk_builder_destroy, otel_sdk_builder_new, otel_sdk_builder_set_service_name,
-    otel_sdk_destroy, otel_sdk_force_flush, otel_sdk_get_meter_provider,
-    otel_sdk_get_tracer_provider, otel_sdk_metrics_force_flush, otel_sdk_metrics_shutdown,
-    otel_sdk_set_as_global, otel_sdk_set_metrics_as_global, otel_sdk_shutdown, OtelSdk,
-    OtelSdkBuilder,
+    otel_sdk_build, otel_sdk_builder_add_manual_metric_reader, otel_sdk_builder_add_metric_reader,
+    otel_sdk_builder_add_metric_view, otel_sdk_builder_add_resource_attribute,
+    otel_sdk_builder_add_span_processor, otel_sdk_builder_destroy, otel_sdk_builder_new,
+    otel_sdk_builder_set_service_name, otel_sdk_destroy, otel_sdk_force_flush,
+    otel_sdk_get_meter_provider, otel_sdk_get_tracer_provider, otel_sdk_metrics_force_flush,
+    otel_sdk_metrics_shutdown, otel_sdk_set_as_global, otel_sdk_set_metrics_as_global,
+    otel_sdk_shutdown, OtelSdk, OtelSdkBuilder,
 };
 pub use span_processor::{otel_span_processor_destroy, OtelSpanProcessor};
 pub use trace_exporter::{otel_trace_exporter_destroy, OtelTraceExporter};

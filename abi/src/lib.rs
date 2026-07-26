@@ -98,6 +98,7 @@ pub const OTEL_HANDLE_KIND_PERIODIC_METRIC_READER_BUILDER: u64 = 0x0222;
 pub const OTEL_HANDLE_KIND_PERIODIC_METRIC_READER: u64 = 0x0223;
 pub const OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER: u64 = 0x0224;
 pub const OTEL_HANDLE_KIND_METRIC_VIEW: u64 = 0x0225;
+pub const OTEL_HANDLE_KIND_MANUAL_METRIC_READER: u64 = 0x0226;
 
 /// Fixed-width status code returned by fallible C API functions. Mirrors `otel_status_t`.
 ///
@@ -799,6 +800,7 @@ mod tests {
             OTEL_HANDLE_KIND_PERIODIC_METRIC_READER,
             OTEL_HANDLE_KIND_METRIC_VIEW_BUILDER,
             OTEL_HANDLE_KIND_METRIC_VIEW,
+            OTEL_HANDLE_KIND_MANUAL_METRIC_READER,
         ];
         for (index, kind) in kinds.iter().enumerate() {
             assert!(

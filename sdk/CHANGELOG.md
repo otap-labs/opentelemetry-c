@@ -4,6 +4,11 @@
 
 ### Added
 
+- C callback-backed Metrics exporters and worker-free manual readers. Export callbacks
+  traverse callback-scoped resource, scope, metric, point, histogram, exponential histogram,
+  exemplar, and scalar/array attribute views; stale/cross-thread batch use fails closed.
+  Manual collection is driven synchronously through `otel_sdk_metrics_force_flush`, with
+  callback failure propagation and exactly-once shutdown/state destruction.
 - SDK opaque handles now use the coordinated raw handle prefix and globally unique kinds,
   matching API-side validation before complete typed access.
 - Complete instrumentation scopes now propagate attributes to OTLP, and Metrics views can

@@ -4,8 +4,9 @@
 
 The **C SDK** of the Rust-backed OpenTelemetry C binding: OTLP **HTTP/protobuf** trace
 export, HTTP/protobuf and optional gRPC Metrics export, a batch span processor, periodic
-Metrics readers, and declarative Metrics views behind C functions. Installing a signal
-provider registers it into the **API library's** corresponding global slot, so
+and manual Metrics readers, callback-backed custom Metrics exporters, and declarative Metrics
+views behind C functions. Installing a signal provider registers it into the **API
+library's** corresponding global slot, so
 instrumentation that links only [`opentelemetry-c-api`](../api) exports through it.
 
 HTTP uses the blocking `reqwest` client. The optional Metrics gRPC transport owns one
@@ -97,21 +98,33 @@ opaque extension points: internally each wraps an enum (`TraceExporterImpl` impl
 processor kind is a new variant plus a builder — no change to the C ABI, the generic handles,
 or the SDK builder's storage. No custom-callback exporter is provided yet.
 
-Metrics uses a parallel pipeline:
+Metrics uses a parallel pipeline. OTLP and callback-backed exporters share the same opaque
+exporter handle:
 
 ```
-OTLP Metrics exporter builder ──build──▶ otel_metric_exporter_t
-                                                │ set_exporter
-                                                ▼
-periodic reader builder ─────────build──▶ otel_periodic_metric_reader_t
-                                                │ add_metric_reader
+OTLP builder or C callbacks ────build──▶ otel_metric_exporter_t
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+          periodic reader builder                         manual reader
+                         │                                         │
+                         └──────────── add reader ─────────────────┘
 declarative view builder ────────build──▶ otel_metric_view_t
                                                 │ add_metric_view
                            SDK builder ──build──▶ otel_sdk_t
 ```
 
 Multiple readers and views may be added before build. Metrics installation, force flush, and
-shutdown are independent from trace lifecycle.
+shutdown are independent from trace lifecycle. A manual reader owns no worker thread:
+`otel_sdk_metrics_force_flush` collects and exports once on the calling thread. Aggregation
+selection remains declarative through Metrics views.
+
+Custom exporter callbacks are configured through `metric_exporter.h`. The export callback
+receives a callback-thread-local batch token and may synchronously traverse complete
+resource/scope/metric/point/exemplar data with `otel_metric_batch_visit`. All visitor buffers
+are borrowed only for their callback; stale and cross-thread batch use fails closed.
+Different readers or SDKs may invoke shared callback state concurrently, so that state must
+be thread-safe. The SDK invokes its destroy callback exactly once after callbacks stop.
 
 Meter options map complete C scope name/version/schema/attributes into the pinned upstream
 `InstrumentationScope`. Views can select exact scope name, version, schema URL, and required
@@ -184,9 +197,13 @@ Do not enable both HTTP TLS backends for a release build. See
   [`span_processor.h`](include/opentelemetry_c/span_processor.h) — the generic opaque handles.
 - [`otlp_metric_exporter.h`](include/opentelemetry_c/otlp_metric_exporter.h) — OTLP Metrics
   transport, endpoint, headers/metadata, compression, timeout, and temporality preference.
+- [`metric_exporter.h`](include/opentelemetry_c/metric_exporter.h) — generic exporter handle,
+  custom C callbacks, and callback-scoped aggregated Metrics visitor types.
 - [`periodic_metric_reader.h`](include/opentelemetry_c/periodic_metric_reader.h) — periodic
   export interval and exporter ownership. Reader shutdown timeout behavior is controlled by
   the pinned upstream SDK.
+- [`manual_metric_reader.h`](include/opentelemetry_c/manual_metric_reader.h) — worker-free
+  application-controlled collection using a transferred Metrics exporter.
 - [`metric_view.h`](include/opentelemetry_c/metric_view.h) — instrument selection, stream
   metadata, scope-aware selection, attribute filtering, cardinality, and aggregation.
 
@@ -208,8 +225,8 @@ Do not enable both HTTP TLS backends for a release build. See
 
 `cargo test -p opentelemetry-c-sdk --all-features` covers trace and Metrics vtable behavior,
 global registration, callback lifetime, batch bounds, and force-flush cleanup. The
-`cross_artifact` integration test compiles a C program, links it against **both** built
-cdylibs, and confirms API-only spans and Metrics export through the SDK. With `otlp-grpc`,
+Cross-artifact integration tests compile C programs, link them against **both** built
+cdylibs, and confirm API-only OTLP and custom-callback Metrics export through the SDK. With `otlp-grpc`,
 it also runs a bounded local tonic MetricsService and proves that an ordinary C process with
 no Tokio runtime exports, flushes, shuts down, and destroys the pipeline.
 

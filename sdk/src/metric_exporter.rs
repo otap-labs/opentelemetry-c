@@ -1,20 +1,19 @@
 //! Opaque Metrics exporter handle.
 
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use std::time::Duration;
 
 use opentelemetry_c_abi::{OtelHandleHeader, OTEL_HANDLE_KIND_METRIC_EXPORTER};
 #[cfg(feature = "otlp-grpc")]
 use opentelemetry_sdk::error::OTelSdkError;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::error::OTelSdkResult;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::Temporality;
 
+use crate::custom_metric_exporter::{
+    custom_exporter_export, custom_exporter_force_flush, custom_exporter_shutdown,
+    CustomMetricExporter,
+};
 use crate::handle::{destroy, guard_unit, HasHandleHeader};
 
 pub(crate) enum MetricExporterImpl {
@@ -22,6 +21,7 @@ pub(crate) enum MetricExporterImpl {
     OtlpHttp(opentelemetry_otlp::MetricExporter),
     #[cfg(feature = "otlp-grpc")]
     OtlpGrpc(GrpcMetricExporter),
+    Custom(CustomMetricExporter),
     #[cfg(test)]
     #[allow(dead_code)]
     Test(TestMetricExporter),
@@ -120,7 +120,6 @@ fn dispose_grpc_runtime(runtime: tokio::runtime::Runtime) {
     }
 }
 
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 impl PushMetricExporter for MetricExporterImpl {
     async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
         match self {
@@ -142,6 +141,7 @@ impl PushMetricExporter for MetricExporterImpl {
                     .runtime()
                     .block_on(exporter.exporter().export(metrics))
             }
+            Self::Custom(exporter) => custom_exporter_export(exporter, metrics),
             #[cfg(test)]
             Self::Test(exporter) => exporter.export(metrics).await,
         }
@@ -153,6 +153,7 @@ impl PushMetricExporter for MetricExporterImpl {
             Self::OtlpHttp(exporter) => exporter.force_flush(),
             #[cfg(feature = "otlp-grpc")]
             Self::OtlpGrpc(exporter) => exporter.exporter().force_flush(),
+            Self::Custom(exporter) => custom_exporter_force_flush(exporter),
             #[cfg(test)]
             Self::Test(exporter) => exporter.force_flush(),
         }
@@ -164,6 +165,7 @@ impl PushMetricExporter for MetricExporterImpl {
             Self::OtlpHttp(exporter) => exporter.shutdown_with_timeout(timeout),
             #[cfg(feature = "otlp-grpc")]
             Self::OtlpGrpc(exporter) => exporter.exporter().shutdown_with_timeout(timeout),
+            Self::Custom(exporter) => custom_exporter_shutdown(exporter, timeout),
             #[cfg(test)]
             Self::Test(exporter) => exporter.shutdown_with_timeout(timeout),
         }
@@ -175,6 +177,7 @@ impl PushMetricExporter for MetricExporterImpl {
             Self::OtlpHttp(exporter) => exporter.temporality(),
             #[cfg(feature = "otlp-grpc")]
             Self::OtlpGrpc(exporter) => exporter.exporter().temporality(),
+            Self::Custom(exporter) => exporter.temporality(),
             #[cfg(test)]
             Self::Test(exporter) => exporter.temporality(),
         }

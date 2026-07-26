@@ -13,14 +13,11 @@ use crate::handle::{
 };
 use crate::metric_exporter::{MetricExporterImpl, OtelMetricExporter};
 
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
 use opentelemetry_sdk::metrics::PeriodicReaderBuilder;
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 
 pub(crate) enum PeriodicMetricReaderImpl {
-    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
-    Otlp(PeriodicReader<MetricExporterImpl>),
+    Reader(PeriodicReader<MetricExporterImpl>),
     #[cfg(test)]
     Test {
         reader: PeriodicReader<MetricExporterImpl>,
@@ -32,8 +29,7 @@ pub(crate) enum PeriodicMetricReaderImpl {
 impl PeriodicMetricReaderImpl {
     pub(crate) fn shutdown(self) {
         match self {
-            #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
-            Self::Otlp(reader) => {
+            Self::Reader(reader) => {
                 let provider = SdkMeterProvider::builder().with_reader(reader).build();
                 let _ = provider.shutdown();
             }
@@ -156,7 +152,6 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_set_exporter(
     })
 }
 
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
 fn build_reader(
     exporter: MetricExporterImpl,
     interval: Option<Duration>,
@@ -180,7 +175,7 @@ fn build_reader(
                 Some(interval) => builder.with_interval(interval),
                 None => builder,
             };
-            PeriodicMetricReaderImpl::Otlp(builder.build())
+            PeriodicMetricReaderImpl::Reader(builder.build())
         }
     }
 }
@@ -214,25 +209,14 @@ pub unsafe extern "C" fn otel_periodic_metric_reader_builder_build(
                 )
             }
         };
-        #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
-        {
-            let reader = build_reader(exporter, builder.interval);
-            unsafe {
-                *out = into_raw(OtelPeriodicMetricReader {
-                    header: OtelHandleHeader::new(OtelPeriodicMetricReader::KIND),
-                    reader,
-                })
-            };
-            OtelStatus::Ok
-        }
-        #[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc")))]
-        {
-            let _ = exporter;
-            fail(
-                OtelStatus::InvalidConfig,
-                "periodic metric reader is unavailable without an OTLP transport feature",
-            )
-        }
+        let reader = build_reader(exporter, builder.interval);
+        unsafe {
+            *out = into_raw(OtelPeriodicMetricReader {
+                header: OtelHandleHeader::new(OtelPeriodicMetricReader::KIND),
+                reader,
+            })
+        };
+        OtelStatus::Ok
     })
 }
 
@@ -415,8 +399,7 @@ mod tests {
                     configured_interval,
                     ..
                 } => assert_eq!(*configured_interval, Some(Duration::from_millis(250))),
-                #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
-                PeriodicMetricReaderImpl::Otlp(_) => panic!("expected test reader"),
+                PeriodicMetricReaderImpl::Reader(_) => panic!("expected test reader"),
             }
             otel_periodic_metric_reader_builder_destroy(builder);
             assert_eq!(first_drops.load(Ordering::SeqCst), 0);
@@ -457,29 +440,6 @@ mod tests {
             );
             assert!(reader.is_null());
             otel_periodic_metric_reader_builder_destroy(empty_builder);
-        }
-    }
-
-    #[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc")))]
-    #[test]
-    fn unavailable_reader_build_releases_transferred_exporter_once() {
-        unsafe {
-            let drops = Arc::new(AtomicUsize::new(0));
-            let builder = otel_periodic_metric_reader_builder_new();
-            let exporter = test_exporter(&drops);
-            assert_eq!(
-                otel_periodic_metric_reader_builder_set_exporter(builder, exporter),
-                OtelStatus::Ok
-            );
-            let mut reader = std::ptr::null_mut();
-            assert_eq!(
-                otel_periodic_metric_reader_builder_build(builder, &mut reader),
-                OtelStatus::InvalidConfig
-            );
-            assert!(reader.is_null());
-            assert_eq!(drops.load(Ordering::SeqCst), 1);
-            otel_periodic_metric_reader_builder_destroy(builder);
-            assert_eq!(drops.load(Ordering::SeqCst), 1);
         }
     }
 }
