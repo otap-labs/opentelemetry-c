@@ -128,6 +128,14 @@ a general UBSan mode. Cross-artifact tests honor `CARGO_BUILD_TARGET`, `CARGO_TA
 simple whitespace-separated `CFLAGS` so instrumented target-triple builds are found and the C
 executable links the corresponding sanitizer runtime.
 
+Set `METRICS_SANITIZER_STRESS_ITERATIONS` to repeat the provider race, in-flight exporter
+shutdown, multiple async reader, and concurrent install/shutdown tests inside address, thread,
+or leak mode:
+
+```sh
+METRICS_SANITIZER_STRESS_ITERATIONS=10 scripts/sanitize-metrics.sh address
+```
+
 ## Lifecycle stress
 
 Deterministic lifecycle tests use barriers, channels, and condition variables to force the

@@ -25,6 +25,31 @@ export CARGO_BUILD_TARGET="$target"
 export CARGO_TARGET_DIR="target/sanitizer-$mode"
 export CC="${CC:-clang}"
 export CI=1
+stress_iterations="${METRICS_SANITIZER_STRESS_ITERATIONS:-0}"
+if ! [[ "$stress_iterations" =~ ^[0-9]+$ ]]; then
+  echo "METRICS_SANITIZER_STRESS_ITERATIONS must be a non-negative integer" >&2
+  exit 1
+fi
+
+run_instrumented_stress() {
+  local iteration
+  for ((iteration = 1; iteration <= stress_iterations; iteration++)); do
+    echo "=== instrumented Metrics lifecycle iteration $iteration/$stress_iterations ==="
+    cargo +nightly test -Zbuild-std --target "$target" \
+      -p opentelemetry-c-api --test metrics_provider_race \
+      global_meter_provider_lifetime_is_race_free -- --exact
+    cargo +nightly test -Zbuild-std --target "$target" \
+      -p opentelemetry-c-sdk --lib --no-default-features --features metrics-async-runtime \
+      custom_metric_exporter::tests::shutdown_waits_for_in_flight_export_and_blocks_later_callbacks \
+      -- --exact
+    cargo +nightly test -Zbuild-std --target "$target" \
+      -p opentelemetry-c-sdk --lib --no-default-features --features metrics-async-runtime \
+      periodic_metric_reader::tests::multiple_async_readers_flush_independently -- --exact
+    cargo +nightly test -Zbuild-std --target "$target" \
+      -p opentelemetry-c-sdk --lib --no-default-features --features metrics-async-runtime \
+      sdk::tests::concurrent_metrics_install_and_shutdown_leave_no_registration -- --exact
+  done
+}
 
 run_rust_sanitizer() {
   local sanitizer="$1"
@@ -44,6 +69,7 @@ run_rust_sanitizer() {
   cargo +nightly test -Zbuild-std --target "$target" \
     -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact \
     --no-default-features --features metrics-async-runtime
+  run_instrumented_stress
 }
 
 case "$mode" in
