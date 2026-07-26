@@ -6,6 +6,8 @@
 
 - SDK opaque handles now use the coordinated raw handle prefix and globally unique kinds,
   matching API-side validation before complete typed access.
+- Complete instrumentation scopes now propagate attributes to OTLP, and Metrics views can
+  select exact scope version, schema URL, and required typed scope attributes.
 - Documented the coordinated, experimental, source-only product release policy. Consumers
   build matching API and SDK libraries from one tag; no native binaries or crates.io
   packages are distributed.

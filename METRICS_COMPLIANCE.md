@@ -10,9 +10,10 @@ experimental `0.x` C ABI.
 | Observable instruments | Implemented | Counters, up-down counters, and gauges for all Rust SDK-supported numeric types; callback user data has exactly-once destruction independent of upstream closure release. |
 | Observer lifetime | Implemented | Observer tokens are valid only during their callback and reject stale use after return. Destroying the public instrument disables future callback work. |
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
+| Instrumentation scope | Implemented | Versioned meter options carry name, version, schema URL, and uniquely keyed typed attributes into the upstream owned `InstrumentationScope`. |
 | SDK pipeline | Implemented | Independent `SdkMeterProvider`, one or more periodic readers, resource/scope propagation, force flush, and shutdown. |
 | OTLP Metrics | Implemented | HTTP/protobuf by default plus optional gRPC/tonic, explicit transport selection, endpoint, headers/ASCII metadata, timeout, transport-specific compression, and cumulative/delta/low-memory temporality preference. |
-| Views | Implemented | Exact or single-wildcard name selection, meter/unit/kind selection, stream metadata, attribute allow-list, cardinality limit, default/drop/sum/last-value/explicit histogram/base-2 exponential histogram aggregation. |
+| Views | Implemented | Exact or single-wildcard name selection, scope name/version/schema/required-attribute selection, unit/kind selection, stream metadata, attribute allow-list, cardinality limit, and all supported aggregations. |
 | Split-artifact linking | Implemented | C integration links separate API/SDK shared libraries and verifies OTLP Metrics bytes through the API-owned global slot. |
 | C and C++ headers | Implemented | All Metrics headers compile standalone as C11; the combined pipeline headers compile as C++17. |
 | Hot path | Implemented | SDK-backed synchronous handles own concrete Rust instruments; recording does not resolve providers, lock global state, or access readers/exporters/views. |

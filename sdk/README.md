@@ -113,6 +113,11 @@ declarative view builder ────────build──▶ otel_metric_view
 Multiple readers and views may be added before build. Metrics installation, force flush, and
 shutdown are independent from trace lifecycle.
 
+Meter options map complete C scope name/version/schema/attributes into the pinned upstream
+`InstrumentationScope`. Views can select exact scope name, version, schema URL, and required
+typed scope attributes; all configured attributes must match, while extra scope attributes
+are allowed. Scope processing occurs only during meter/instrument creation, never recording.
+
 ### Cargo features (optional OTLP)
 
 The **SDK core** is separate from any exporter implementation. HTTP/protobuf remains the
@@ -183,7 +188,7 @@ Do not enable both HTTP TLS backends for a release build. See
   export interval and exporter ownership. Reader shutdown timeout behavior is controlled by
   the pinned upstream SDK.
 - [`metric_view.h`](include/opentelemetry_c/metric_view.h) — instrument selection, stream
-  metadata, attribute filtering, cardinality, and aggregation.
+  metadata, scope-aware selection, attribute filtering, cardinality, and aggregation.
 
 ## Behavior & guarantees
 

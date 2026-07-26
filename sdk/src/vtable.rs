@@ -15,6 +15,7 @@
 //! ([`span_mut`]); the only lock/`Arc`-clone lives in provider retain, on tracer acquisition.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::SystemTime;
@@ -186,6 +187,33 @@ pub(crate) unsafe fn collect_key_values(
         out.push(unsafe { to_key_value(kv) }?);
     }
     Ok(out)
+}
+
+/// Collect attributes and reject duplicate keys, for identity-bearing scope attributes.
+///
+/// # Safety
+/// Same contract as [`collect_key_values`].
+pub(crate) unsafe fn collect_unique_key_values(
+    attributes: *const OtelKeyValue,
+    count: usize,
+) -> Result<Vec<KeyValue>, OtelStatus> {
+    let values = unsafe { collect_key_values(attributes, count) }?;
+    let mut keys = HashSet::new();
+    keys.try_reserve(values.len()).map_err(|_| {
+        fail(
+            OtelStatus::InternalError,
+            "failed to allocate scope attribute validation state",
+        )
+    })?;
+    for value in &values {
+        if !keys.insert(value.key.clone()) {
+            return Err(fail(
+                OtelStatus::InvalidArgument,
+                "duplicate scope attribute key",
+            ));
+        }
+    }
+    Ok(values)
 }
 
 // ---- Provider vtable -------------------------------------------------------

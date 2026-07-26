@@ -551,6 +551,19 @@ pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelImplVt
 /// provider context, and API-owned global slot from traces.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct OtelMetricScopeConfig {
+    pub name: OtelStringView,
+    pub version: OtelStringView,
+    pub schema_url: OtelStringView,
+    pub attributes: *const OtelKeyValue,
+    pub attribute_count: usize,
+}
+
+pub type OtelProviderGetMeterWithScope =
+    extern "C" fn(provider_ctx: *mut c_void, scope: *const OtelMetricScopeConfig) -> *mut c_void;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct OtelMetricsVtable {
     /// Metrics ABI kind/version identifier.
     pub abi_version: u32,
@@ -606,6 +619,9 @@ pub struct OtelMetricsVtable {
         attribute_count: usize,
     ) -> OtelStatus,
     pub instrument_free: extern "C" fn(instrument_ctx: *mut c_void),
+    /// Append-only complete-scope extension. Access only when `struct_size` is at least
+    /// [`OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE`].
+    pub provider_get_meter_with_scope: OtelProviderGetMeterWithScope,
 }
 
 /// Current Metrics implementation ABI kind/version identifier.
@@ -614,8 +630,17 @@ pub struct OtelMetricsVtable {
 /// version within that namespace.
 pub const OTEL_METRICS_IMPL_ABI_VERSION: u32 = 0x4D00_0001;
 
-/// Minimum Metrics vtable size required by this API version.
-pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelMetricsVtable>();
+/// Historical Metrics vtable prefix size before append-only scope attributes were added.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = 112;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = 56;
+
+/// Metrics vtable prefix size through [`OtelMetricScopeConfig`] support.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE: usize = 120;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE: usize = 60;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -649,17 +674,31 @@ pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
 /// # Safety
 ///
 /// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
-/// If the header is compatible, it must also be readable as a complete
-/// [`OtelMetricsVtable`] and remain live wherever the caller subsequently stores or uses it.
-/// No bytes beyond the header are read by this function.
+/// If the header is compatible, it must also be readable through
+/// [`OTEL_METRICS_VTABLE_REQUIRED_SIZE`] and remain live wherever the caller stores or uses
+/// it. Append-only fields may be accessed only after their own size check. No bytes beyond
+/// the header are read by this function.
 pub unsafe fn metrics_vtable_compatible(vtable: *const OtelMetricsVtable) -> bool {
     let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
     header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
         && header.struct_size >= OTEL_METRICS_VTABLE_REQUIRED_SIZE
 }
 
+/// Whether a compatible Metrics vtable includes the complete-scope extension.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+pub unsafe fn metrics_vtable_supports_scope_config(vtable: *const OtelMetricsVtable) -> bool {
+    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE
+}
+
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
+const _: () =
+    assert!(std::mem::size_of::<OtelMetricsVtable>() == OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE);
 
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]
@@ -670,6 +709,8 @@ const _: () = {
     assert!(size_of::<OtelAttributeValue>() == 16);
     assert!(size_of::<OtelKeyValue>() == 40);
     assert!(align_of::<OtelKeyValue>() == 8);
+    assert!(size_of::<OtelMetricScopeConfig>() == 64);
+    assert!(align_of::<OtelMetricScopeConfig>() == 8);
 };
 
 /// Assert (mostly for documentation) that a raw `void*` round-trips; used by the API/SDK.

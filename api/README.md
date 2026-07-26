@@ -134,6 +134,10 @@ unsupported.
   `OTEL_STATUS_TIMEOUT`; export/callback pipeline failures use `OTEL_STATUS_EXPORT_FAILED`;
   wrapper/infrastructure failures use `OTEL_STATUS_INTERNAL_ERROR`.
 - Strings are borrowed `otel_string_view_t` values, copied before return.
+- `otel_meter_provider_get_meter_with_options()` accepts a versioned complete
+  instrumentation scope: name, version, schema URL, and uniquely keyed typed attributes.
+  The API validates the borrowed data consistently even for API-only no-op meters; an
+  SDK-backed meter copies it into the upstream `InstrumentationScope`.
 - All entry points are panic-safe (a Rust panic is caught, never unwound into C).
 - SDK/provider/tracer handles are safe to share across threads; a single span handle is
   not (one span per thread). `*_destroy` must not race with other calls on the same handle.

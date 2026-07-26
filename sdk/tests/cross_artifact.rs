@@ -176,6 +176,14 @@ typedef struct {
     const double* boundaries;
     size_t boundary_count;
 } otel_instrument_options_t;
+typedef struct {
+    uint64_t struct_size;
+    otel_string_view_t name;
+    otel_string_view_t version;
+    otel_string_view_t schema_url;
+    const otel_key_value_t* attributes;
+    size_t attribute_count;
+} otel_meter_options_t;
 typedef struct otel_sdk_builder_t otel_sdk_builder_t;
 typedef struct otel_sdk_t otel_sdk_t;
 typedef struct otel_tracer_provider_t otel_tracer_provider_t;
@@ -199,6 +207,8 @@ extern void otel_tracer_destroy(otel_tracer_t*);
 extern void otel_tracer_provider_destroy(otel_tracer_provider_t*);
 extern otel_meter_provider_t* otel_global_meter_provider(void);
 extern otel_meter_t* otel_meter_provider_get_meter(const otel_meter_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
+extern otel_meter_t* otel_meter_provider_get_meter_with_options(
+    const otel_meter_provider_t*, const otel_meter_options_t*);
 extern int otel_meter_create_u64_counter(const otel_meter_t*, otel_string_view_t, const void*, otel_counter_u64_t**);
 extern int otel_meter_create_f64_gauge(const otel_meter_t*, otel_string_view_t, const void*, otel_gauge_f64_t**);
 extern int otel_meter_create_f64_histogram(const otel_meter_t*, otel_string_view_t, const void*, otel_histogram_f64_t**);
@@ -315,11 +325,18 @@ static int metrics_work(void){
     attr.key=cs("route");
     attr.value_type=0;
     attr.value.string_value=cs("checkout");
+    otel_key_value_t scope_attr;
+    scope_attr.key=cs("scope.component");
+    scope_attr.value_type=0;
+    scope_attr.value.string_value=cs("checkout");
+    otel_meter_options_t meter_options={
+        sizeof(otel_meter_options_t),cs("metric-instr"),cs("1.2.3"),
+        cs("https://schema.example/metrics/1.0"),&scope_attr,1
+    };
 
     p=otel_global_meter_provider();
     if (!p){ result=1; goto cleanup; }
-    m=otel_meter_provider_get_meter(
-        p,cs("metric-instr"),cs("1.2.3"),cs("https://schema.example/metrics/1.0"));
+    m=otel_meter_provider_get_meter_with_options(p,&meter_options);
     if (!m){ result=2; goto cleanup; }
     if (otel_meter_create_u64_counter(m,cs("requests"),&counter_options,&c)!=0||!c){
         result=3; goto cleanup;
@@ -746,7 +763,12 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                 if let Some(scope) = &scope_metrics.scope {
                     if scope.name == "metric-instr" {
                         scope_verified |= scope.version == "1.2.3"
-                            && scope_metrics.schema_url == "https://schema.example/metrics/1.0";
+                            && scope_metrics.schema_url == "https://schema.example/metrics/1.0"
+                            && has_string_attribute(
+                                &scope.attributes,
+                                "scope.component",
+                                "checkout",
+                            );
                     }
                 }
                 for metric in &scope_metrics.metrics {
@@ -816,7 +838,7 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
     assert!(resource_verified, "resource attributes were not exported");
     assert!(
         scope_verified,
-        "instrumentation scope name, version, or schema URL was not exported"
+        "instrumentation scope name, version, schema URL, or attributes were not exported"
     );
     assert!(
         counter_verified,

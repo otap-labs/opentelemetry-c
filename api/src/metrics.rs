@@ -1,13 +1,14 @@
 //! Public OpenTelemetry Metrics API.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use opentelemetry_c_abi::{
-    OtelHandleHeader, OtelKeyValue, OtelMetricInstrumentConfig, OtelMetricInstrumentKind,
-    OtelMetricNumberKind, OtelMetricsVtable, OtelStringView, OTEL_HANDLE_KIND_COUNTER_F64,
+    metrics_vtable_supports_scope_config, OtelAttributeType, OtelHandleHeader, OtelKeyValue,
+    OtelMetricInstrumentConfig, OtelMetricInstrumentKind, OtelMetricNumberKind,
+    OtelMetricScopeConfig, OtelMetricsVtable, OtelStringView, OTEL_HANDLE_KIND_COUNTER_F64,
     OTEL_HANDLE_KIND_COUNTER_U64, OTEL_HANDLE_KIND_GAUGE_F64, OTEL_HANDLE_KIND_GAUGE_I64,
     OTEL_HANDLE_KIND_GAUGE_U64, OTEL_HANDLE_KIND_HISTOGRAM_F64, OTEL_HANDLE_KIND_HISTOGRAM_U64,
     OTEL_HANDLE_KIND_METER, OTEL_HANDLE_KIND_METER_PROVIDER,
@@ -25,6 +26,7 @@ use crate::handle::{
 use crate::metrics_global::{retain_global_metrics, GlobalMetricsRetain};
 
 const MAX_HISTOGRAM_BOUNDARIES: usize = 65_536;
+const MAX_SCOPE_ATTRIBUTES: usize = 1_048_576;
 
 pub(crate) enum MeterProviderInner {
     Global,
@@ -99,6 +101,29 @@ pub struct OtelInstrumentOptions {
     pub boundary_count: usize,
 }
 
+/// Extensible instrumentation-scope options for meter acquisition.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelMeterOptions {
+    pub struct_size: u64,
+    pub name: OtelStringView,
+    pub version: OtelStringView,
+    pub schema_url: OtelStringView,
+    pub attributes: *const OtelKeyValue,
+    pub attribute_count: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OtelMeterOptionsV1 {
+    struct_size: u64,
+    name: OtelStringView,
+    version: OtelStringView,
+    schema_url: OtelStringView,
+    attributes: *const OtelKeyValue,
+    attribute_count: usize,
+}
+
 #[repr(C)]
 struct OtelInstrumentOptionsV1 {
     struct_size: u64,
@@ -109,11 +134,14 @@ struct OtelInstrumentOptionsV1 {
 }
 
 const OTEL_INSTRUMENT_OPTIONS_V1_SIZE: u64 = std::mem::size_of::<OtelInstrumentOptionsV1>() as u64;
+const OTEL_METER_OPTIONS_V1_SIZE: u64 = std::mem::size_of::<OtelMeterOptionsV1>() as u64;
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(std::mem::size_of::<OtelInstrumentOptions>() == 56);
     assert!(std::mem::align_of::<OtelInstrumentOptions>() == 8);
+    assert!(std::mem::size_of::<OtelMeterOptions>() == 72);
+    assert!(std::mem::align_of::<OtelMeterOptions>() == 8);
 };
 
 fn empty_view() -> OtelStringView {
@@ -240,6 +268,69 @@ unsafe fn validate_instrument_config(
     })
 }
 
+unsafe fn validate_scope_attributes(
+    attributes: *const OtelKeyValue,
+    attribute_count: usize,
+) -> Result<(), OtelStatus> {
+    if attribute_count == 0 {
+        return Ok(());
+    }
+    if attributes.is_null() {
+        return Err(fail(
+            OtelStatus::InvalidArgument,
+            "scope attribute array is NULL with non-zero count",
+        ));
+    }
+    if attribute_count > MAX_SCOPE_ATTRIBUTES {
+        return Err(fail(
+            OtelStatus::InvalidArgument,
+            "scope attribute count exceeds the maximum supported value",
+        ));
+    }
+    let valid_size = attribute_count
+        .checked_mul(std::mem::size_of::<OtelKeyValue>())
+        .is_some_and(|bytes| bytes <= isize::MAX as usize);
+    if !valid_size {
+        return Err(fail(
+            OtelStatus::InvalidArgument,
+            "scope attribute array exceeds the maximum supported size",
+        ));
+    }
+    let attributes = unsafe { std::slice::from_raw_parts(attributes, attribute_count) };
+    let mut keys = HashSet::new();
+    keys.try_reserve(attribute_count).map_err(|_| {
+        fail(
+            OtelStatus::InternalError,
+            "failed to allocate scope attribute validation state",
+        )
+    })?;
+    for attribute in attributes {
+        let key = unsafe { attribute.key.as_str() }.map_err(fail_abi)?;
+        if key.is_empty() {
+            return Err(fail(
+                OtelStatus::InvalidArgument,
+                "scope attribute key must not be empty",
+            ));
+        }
+        if !keys.insert(key) {
+            return Err(fail(
+                OtelStatus::InvalidArgument,
+                "duplicate scope attribute key",
+            ));
+        }
+        let value_type = OtelAttributeType::from_u32(attribute.value_type).ok_or_else(|| {
+            fail(
+                OtelStatus::InvalidArgument,
+                "unknown scope attribute value type",
+            )
+        })?;
+        if value_type == OtelAttributeType::String {
+            unsafe { attribute.value.string_value.as_str() }.map_err(fail_abi)?;
+        }
+    }
+    Ok(())
+}
+
 /// Obtain an owned meter from a provider.
 ///
 /// # Safety
@@ -253,12 +344,66 @@ pub unsafe extern "C" fn otel_meter_provider_get_meter(
     version: OtelStringView,
     schema_url: OtelStringView,
 ) -> *mut OtelMeter {
+    let options = OtelMeterOptions {
+        struct_size: std::mem::size_of::<OtelMeterOptions>() as u64,
+        name,
+        version,
+        schema_url,
+        attributes: std::ptr::null(),
+        attribute_count: 0,
+    };
+    unsafe { otel_meter_provider_get_meter_with_options(provider, &options) }
+}
+
+/// Obtain an owned meter from complete instrumentation-scope options.
+///
+/// # Safety
+///
+/// `provider` must be live. `options` must be readable for its declared prefix, every
+/// non-empty string must address readable bytes, and a non-empty attribute array must
+/// contain `attribute_count` readable values for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn otel_meter_provider_get_meter_with_options(
+    provider: *const OtelMeterProvider,
+    options: *const OtelMeterOptions,
+) -> *mut OtelMeter {
     guard_ptr(|| {
         clear_last_error();
         let provider = match unsafe { checked_ref(provider) } {
             Some(provider) => provider,
             None => return std::ptr::null_mut(),
         };
+        if options.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "meter options must not be NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        let struct_size = unsafe { options.cast::<u64>().read() };
+        if struct_size < OTEL_METER_OPTIONS_V1_SIZE {
+            fail(
+                OtelStatus::InvalidArgument,
+                "meter options struct_size is smaller than the supported prefix",
+            );
+            return std::ptr::null_mut();
+        }
+        let options = unsafe { &*options.cast::<OtelMeterOptionsV1>() };
+        if let Err(err) = unsafe {
+            options
+                .name
+                .as_str()
+                .and_then(|_| options.version.as_str())
+                .and_then(|_| options.schema_url.as_str())
+        } {
+            fail_abi(err);
+            return std::ptr::null_mut();
+        }
+        if unsafe { validate_scope_attributes(options.attributes, options.attribute_count) }
+            .is_err()
+        {
+            return std::ptr::null_mut();
+        }
         let (vtable, ctx, owned) = match &provider.inner {
             MeterProviderInner::Global => match retain_global_metrics() {
                 GlobalMetricsRetain::NoProvider => {
@@ -273,7 +418,31 @@ pub unsafe extern "C" fn otel_meter_provider_get_meter(
             },
             MeterProviderInner::Backed { vtable, ctx } => (*vtable, *ctx, false),
         };
-        let meter_ctx = unsafe { ((*vtable).provider_get_meter)(ctx, name, version, schema_url) };
+        let meter_ctx = if unsafe { metrics_vtable_supports_scope_config(vtable) } {
+            let scope = OtelMetricScopeConfig {
+                name: options.name,
+                version: options.version,
+                schema_url: options.schema_url,
+                attributes: options.attributes,
+                attribute_count: options.attribute_count,
+            };
+            unsafe { ((*vtable).provider_get_meter_with_scope)(ctx, &scope) }
+        } else if options.attribute_count == 0 {
+            unsafe {
+                ((*vtable).provider_get_meter)(
+                    ctx,
+                    options.name,
+                    options.version,
+                    options.schema_url,
+                )
+            }
+        } else {
+            fail(
+                OtelStatus::InvalidConfig,
+                "registered Metrics SDK does not support scope attributes",
+            );
+            std::ptr::null_mut()
+        };
         if owned {
             unsafe { ((*vtable).provider_free)(ctx) };
         }
@@ -1153,6 +1322,13 @@ mod tests {
         std::ptr::NonNull::<c_void>::dangling().as_ptr()
     }
 
+    extern "C" fn mock_provider_get_meter_with_scope(
+        _provider_ctx: *mut c_void,
+        _scope: *const OtelMetricScopeConfig,
+    ) -> *mut c_void {
+        std::ptr::NonNull::<c_void>::dangling().as_ptr()
+    }
+
     extern "C" fn mock_provider_retain(provider_ctx: *mut c_void) -> *mut c_void {
         provider_ctx
     }
@@ -1230,6 +1406,7 @@ mod tests {
         observer_observe_i64: mock_record_i64,
         observer_observe_f64: mock_record_f64,
         instrument_free: mock_instrument_free,
+        provider_get_meter_with_scope: mock_provider_get_meter_with_scope,
     };
 
     struct InFlightUserData {

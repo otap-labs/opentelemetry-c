@@ -7,6 +7,8 @@
 - Common raw opaque-handle prefixes now validate project handle kind before complete typed
   access, allowing live wrong-type handles to fail closed while preserving caller lifetime
   obligations for foreign, freed, or concurrently destroyed pointers.
+- Versioned meter options now expose complete instrumentation scopes, including copied typed
+  scope attributes with consistent API-only validation and duplicate-key rejection.
 - Documented the coordinated, experimental, source-only product release policy. The API,
   SDK, and ABI packages share one tag and are not published independently.
 
