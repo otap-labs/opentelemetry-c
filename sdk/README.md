@@ -87,9 +87,10 @@ independent of the other signals.
 
 Two upstream limitations are surfaced as absent capabilities rather than emulated or faked:
 `otel_sdk_logs_force_flush()` takes no timeout (the pinned provider flush accepts none), and
-there is no batch export-timeout setter (the pinned Logs batch config has none; use
-`OTEL_BLRP_EXPORT_TIMEOUT`). Neither returns `OTEL_STATUS_OK` for configuration it cannot
-apply. See [LOGS_COMPLIANCE.md](../LOGS_COMPLIANCE.md).
+there is no batch export-timeout setter (the pinned synchronous Logs batch config has none).
+Use `otel_otlp_log_exporter_builder_set_timeout_millis()` to bound the OTLP transport.
+Neither API returns `OTEL_STATUS_OK` for configuration it cannot apply. See
+[LOGS_COMPLIANCE.md](../LOGS_COMPLIANCE.md).
 
 Using `fork()` without an immediate `exec()` after SDK background workers start is
 unsupported.

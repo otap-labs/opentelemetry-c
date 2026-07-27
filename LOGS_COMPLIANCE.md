@@ -68,17 +68,21 @@ general-purpose end-user logging API.
   path. Both behaviors are asserted by tests.
 
 - **`otel_sdk_logs_force_flush()` takes no timeout**, unlike the Trace and Metrics
-  equivalents. The pinned `SdkLoggerProvider::force_flush()` accepts none and blocks until
-  every processor finishes. Carrying the parameter for cross-signal symmetry was rejected: it
-  could only ever be ignored, and a flush reporting success while data is still in flight is
-  the exact failure a caller uses force-flush to prevent. Emulating it with a helper thread
-  would be worse still — control would return while processors were mid-export.
+  equivalents. The pinned `SdkLoggerProvider::force_flush()` accepts none. Its synchronous
+  batch processor nevertheless applies an internal, non-configurable five-second wait per
+  flush request; expiry is surfaced by the provider as a non-OK export-pipeline result while
+  the worker may still be exporting. Carrying a caller timeout for cross-signal symmetry was
+  rejected because this wrapper could not honor it. If upstream adds configurable support, it
+  can be exposed through a new function such as `otel_sdk_logs_force_flush_with_timeout()`
+  without changing this function's C signature.
 
 - **There is no batch export-timeout setter.** The pinned Logs `BatchConfigBuilder` exposes
   no `with_max_export_timeout` (unlike the traces one). Rather than accept a value and return
   `OTEL_STATUS_OK` for configuration that is never applied, the entry point is omitted; it
-  can be added compatibly once upstream supports it. The effective timeout is the upstream
-  default, overridable via the `OTEL_BLRP_EXPORT_TIMEOUT` environment variable.
+  can be added compatibly once upstream supports it. The synchronous batch processor applies
+  no separate per-export deadline and does not read `OTEL_BLRP_EXPORT_TIMEOUT`; configure the
+  OTLP exporter's transport timeout with
+  `otel_otlp_log_exporter_builder_set_timeout_millis()` instead.
 
   Both of the above are the same judgement: while this surface is experimental it is cheaper
   to omit a knob than to freeze a no-op one that callers may come to depend on.

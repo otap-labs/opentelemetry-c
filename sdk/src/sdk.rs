@@ -60,7 +60,9 @@ pub struct OtelSdkBuilder {
     metric_readers: Vec<MetricReaderImpl>,
     metric_views: Vec<MetricViewConfig>,
     // Log processors transferred in via `add_log_processor`; moved into the logger provider
-    // on `build`, or dropped (and shut down) with the builder if `build` never runs.
+    // on `build`, or dropped with the builder if `build` never runs. Dropping an untransferred
+    // batch processor makes its worker exit without guaranteeing a queue drain or exporter
+    // shutdown.
     log_processors: Vec<LogProcessorImpl>,
 }
 
@@ -987,13 +989,15 @@ pub unsafe extern "C" fn otel_sdk_set_logs_as_global(sdk: *mut OtelSdk) -> OtelS
     })
 }
 
-/// Flush every configured log processor, blocking until each one finishes.
+/// Flush every configured log processor.
 ///
 /// This deliberately takes **no timeout**, unlike the Trace and Metrics equivalents. The
 /// pinned `SdkLoggerProvider::force_flush()` accepts none, so a timeout parameter here could
-/// only ever be ignored -- and a flush that returns before the data is out, while reporting
-/// success, is precisely the failure a caller uses force-flush to avoid. The parameter can be
-/// added compatibly if upstream gains real support.
+/// only ever be ignored. Its synchronous batch processor applies an internal,
+/// non-configurable five-second wait; expiry is surfaced by the provider as a non-OK
+/// export-pipeline result while the worker may still be exporting. If upstream gains
+/// configurable support, expose it through a new function rather than changing this C
+/// signature.
 ///
 /// # Safety
 ///

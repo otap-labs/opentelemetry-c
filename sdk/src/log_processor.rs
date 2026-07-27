@@ -109,7 +109,10 @@ impl HasHandleHeader for OtelLogProcessor {
     }
 }
 
-/// Destroy a log-processor handle (no-op on NULL). Shuts the processor down on drop.
+/// Destroy a log-processor handle (no-op on NULL).
+///
+/// Dropping an untransferred batch processor disconnects its worker, but is not a draining
+/// shutdown: queued records may be discarded and exporter shutdown is not guaranteed.
 ///
 /// Do **not** call this on a processor already transferred into an SDK builder.
 ///
@@ -358,10 +361,10 @@ pub unsafe extern "C" fn otel_batch_log_processor_builder_build(
         if let Some(value) = builder.config.scheduled_delay_millis {
             batch_config = batch_config.with_scheduled_delay(Duration::from_millis(value));
         }
-        // There is deliberately no per-export timeout setter: the pinned 0.32.1 logs
-        // `BatchConfigBuilder` exposes none (unlike the traces one), and accepting a value
-        // that cannot be applied would be a false promise. The effective timeout is the
-        // upstream default, overridable via `OTEL_BLRP_EXPORT_TIMEOUT`.
+        // There is deliberately no per-export timeout setter: the pinned 0.32.1 synchronous
+        // Logs `BatchConfigBuilder` exposes none (unlike the traces one), and accepting a
+        // value that cannot be applied would be a false promise. This processor does not read
+        // `OTEL_BLRP_EXPORT_TIMEOUT`; callers can bound the OTLP transport on its exporter.
         // The pinned builder spawns its worker OS thread here; the enclosing `guard_status`
         // converts a spawn panic into `OTEL_STATUS_INTERNAL_ERROR` rather than unwinding
         // across the C boundary.

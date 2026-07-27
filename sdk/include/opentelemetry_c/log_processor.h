@@ -35,7 +35,10 @@ typedef struct otel_batch_log_processor_builder_t otel_batch_log_processor_build
 /*
  * Destroy an untransferred log-processor handle (no-op on NULL). A successful transfer into
  * the SDK builder consumes the handle and invalidates the original pointer. Must not race
- * with any other use of the same handle.
+ * with any other use of the same handle. Destroying an untransferred batch processor makes
+ * its worker exit but does not perform a draining shutdown: queued records may be discarded
+ * and exporter shutdown is not guaranteed. Transfer production processors into an SDK and
+ * use otel_sdk_logs_shutdown() for a draining stop.
  */
 void otel_log_processor_destroy(otel_log_processor_t* processor);
 
@@ -87,8 +90,9 @@ otel_status_t otel_batch_log_processor_builder_set_scheduled_delay_millis(
  * processor has one. The pinned upstream Rust Logs batch configuration exposes no such knob,
  * so this API would have to accept a value it could never apply. Rather than return OK for
  * configuration that does nothing, the entry point is omitted; it can be added compatibly
- * once upstream supports it. The effective timeout is the upstream default, overridable via
- * the OTEL_BLRP_EXPORT_TIMEOUT environment variable.
+ * once upstream supports it. The synchronous batch processor applies no separate per-export
+ * deadline and does not read OTEL_BLRP_EXPORT_TIMEOUT; configure the OTLP transport timeout
+ * with otel_otlp_log_exporter_builder_set_timeout_millis().
  */
 
 /*

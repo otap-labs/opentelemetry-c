@@ -213,8 +213,10 @@ typedef struct otel_log_trace_context_t {
  *   - a child range must lie entirely within [0, value_node_count);
  *   - a node in the pool may only reference children at a STRICTLY GREATER index than its
  *     own, which makes cycles impossible without a visited set;
+ *   - every node must be referenced EXACTLY ONCE, either by one container or as one
+ *     top-level attribute value; unreferenced nodes and shared sub-trees are rejected;
  *   - the total number of converted value nodes for one record is bounded by
- *     OTEL_LOG_MAX_VALUE_NODES, so a shared sub-tree cannot cause unbounded expansion;
+ *     OTEL_LOG_MAX_VALUE_NODES;
  *   - traversal is iterative and depth-bounded by OTEL_LOG_MAX_VALUE_DEPTH.
  *
  * Duplicate keys:

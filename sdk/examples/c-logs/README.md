@@ -43,9 +43,10 @@ this example destroy the object they were about to transfer.
 - **No unsigned 64-bit values.** The pinned `AnyValue` has no `u64` variant; use `int64` or a
   string.
 - **`otel_sdk_logs_force_flush()` takes no timeout parameter**, unlike the other signals; the
-  pinned provider flush accepts none and blocks until every processor finishes.
+  pinned provider flush accepts none. Its batch processor has an internal, non-configurable
+  five-second wait and may return a non-OK result while export continues.
 - **There is no batch export-timeout setter.** The pinned Logs batch configuration exposes
-  none, so rather than accept a value it would ignore, the entry point is omitted; use the
-  `OTEL_BLRP_EXPORT_TIMEOUT` environment variable.
+  none, so rather than accept a value it would ignore, the entry point is omitted. Use
+  `otel_otlp_log_exporter_builder_set_timeout_millis()` to bound the OTLP transport.
 
 See [LOGS_COMPLIANCE.md](../../../LOGS_COMPLIANCE.md) for the full ledger.

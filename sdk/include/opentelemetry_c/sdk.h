@@ -292,11 +292,13 @@ otel_status_t otel_sdk_metrics_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis
 /*
  * EXPERIMENTAL. Flush every configured log processor.
  *
- * Blocks until every processor finishes. Unlike the Trace and Metrics equivalents this takes
- * NO timeout, because the pinned upstream LoggerProvider force-flush accepts none: the
- * parameter could only ever be ignored, and a flush that returns success while data is still
- * in flight defeats the purpose of calling it. A timeout can be added compatibly once
- * upstream supports one. Returns OTEL_STATUS_ALREADY_SHUTDOWN after Logs shutdown.
+ * Unlike the Trace and Metrics equivalents this takes NO caller timeout, because the pinned
+ * upstream LoggerProvider force-flush accepts none. Its synchronous batch processor applies
+ * an internal, non-configurable five-second wait; if that wait expires this function returns
+ * a non-OK export-pipeline status while the worker may still be exporting. Configurable
+ * support can be added later through a new function such as
+ * otel_sdk_logs_force_flush_with_timeout(), leaving this C signature unchanged. Returns
+ * OTEL_STATUS_ALREADY_SHUTDOWN after Logs shutdown.
  */
 otel_status_t otel_sdk_logs_force_flush(otel_sdk_t* sdk);
 

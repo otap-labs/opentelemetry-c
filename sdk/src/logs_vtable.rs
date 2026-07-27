@@ -619,7 +619,10 @@ fn system_time_from_unix_nanos(nanos: u64, what: &str) -> Result<SystemTime, Ote
 }
 
 fn emit_record(logger: &SdkLogger, view: &OtelLogRecordView) -> OtelStatus {
-    if view.reserved_flags != 0 || view.reserved.iter().any(|word| *word != 0) {
+    if view.reserved_flags != 0
+        || view.body.reserved != 0
+        || view.reserved.iter().any(|word| *word != 0)
+    {
         return fail(
             OtelStatus::InvalidArgument,
             "log record reserved fields must be zero",
@@ -1400,6 +1403,10 @@ mod tests {
 
         let mut view = record();
         view.body = v_int(1);
+        view.body.reserved = 1;
+        assert_eq!(harness.emit(&view), OtelStatus::InvalidArgument);
+
+        let mut view = record();
         view.body.reserved = 1;
         assert_eq!(harness.emit(&view), OtelStatus::InvalidArgument);
         assert!(harness.emitted().is_empty());
