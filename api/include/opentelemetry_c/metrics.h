@@ -30,6 +30,10 @@ typedef struct otel_gauge_i64_t otel_gauge_i64_t;
 typedef struct otel_gauge_f64_t otel_gauge_f64_t;
 typedef struct otel_histogram_u64_t otel_histogram_u64_t;
 typedef struct otel_histogram_f64_t otel_histogram_f64_t;
+typedef struct otel_bound_counter_u64_t otel_bound_counter_u64_t;
+typedef struct otel_bound_counter_f64_t otel_bound_counter_f64_t;
+typedef struct otel_bound_histogram_u64_t otel_bound_histogram_u64_t;
+typedef struct otel_bound_histogram_f64_t otel_bound_histogram_f64_t;
 typedef struct otel_observable_counter_u64_t otel_observable_counter_u64_t;
 typedef struct otel_observable_counter_f64_t otel_observable_counter_f64_t;
 typedef struct otel_observable_up_down_counter_i64_t otel_observable_up_down_counter_i64_t;
@@ -140,6 +144,54 @@ void otel_gauge_i64_destroy(otel_gauge_i64_t* instrument);
 void otel_gauge_f64_destroy(otel_gauge_f64_t* instrument);
 void otel_histogram_u64_destroy(otel_histogram_u64_t* instrument);
 void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
+
+/*
+ * Experimental bound instruments pre-convert and bind an attribute set once, so repeated
+ * recordings do not cross the C ABI with attributes and do not allocate for attribute
+ * conversion. The bound handle owns the copied attributes and remains valid independently
+ * of the source instrument handle. Without an installed SDK, binding succeeds and produces
+ * a no-op bound handle without reading the attributes.
+ * Binding against an SDK vtable that predates this extension returns
+ * OTEL_STATUS_INVALID_CONFIG. Bound handles may be recorded concurrently from multiple
+ * threads. Destruction must not race with recording on the same handle.
+ *
+ * If the SDK stream's cardinality limit is already exhausted when binding, the handle is
+ * permanently attached to the overflow series. Drop and re-bind after capacity becomes
+ * available to resolve the original attribute set again.
+ *
+ * The pinned opentelemetry-rust 0.32 API supports bound counters and histograms only;
+ * gauges and up/down counters therefore have no bound C API.
+ */
+otel_status_t otel_counter_u64_bind(const otel_counter_u64_t* instrument,
+                                    const otel_key_value_t* attributes,
+                                    size_t attribute_count,
+                                    otel_bound_counter_u64_t** out);
+otel_status_t otel_counter_f64_bind(const otel_counter_f64_t* instrument,
+                                    const otel_key_value_t* attributes,
+                                    size_t attribute_count,
+                                    otel_bound_counter_f64_t** out);
+otel_status_t otel_histogram_u64_bind(const otel_histogram_u64_t* instrument,
+                                      const otel_key_value_t* attributes,
+                                      size_t attribute_count,
+                                      otel_bound_histogram_u64_t** out);
+otel_status_t otel_histogram_f64_bind(const otel_histogram_f64_t* instrument,
+                                      const otel_key_value_t* attributes,
+                                      size_t attribute_count,
+                                      otel_bound_histogram_f64_t** out);
+
+otel_status_t otel_bound_counter_u64_add(const otel_bound_counter_u64_t* instrument,
+                                         uint64_t value);
+otel_status_t otel_bound_counter_f64_add(const otel_bound_counter_f64_t* instrument,
+                                         double value);
+otel_status_t otel_bound_histogram_u64_record(
+    const otel_bound_histogram_u64_t* instrument, uint64_t value);
+otel_status_t otel_bound_histogram_f64_record(
+    const otel_bound_histogram_f64_t* instrument, double value);
+
+void otel_bound_counter_u64_destroy(otel_bound_counter_u64_t* instrument);
+void otel_bound_counter_f64_destroy(otel_bound_counter_f64_t* instrument);
+void otel_bound_histogram_u64_destroy(otel_bound_histogram_u64_t* instrument);
+void otel_bound_histogram_f64_destroy(otel_bound_histogram_f64_t* instrument);
 
 /*
  * Observable callbacks run during reader collection and may be invoked concurrently by

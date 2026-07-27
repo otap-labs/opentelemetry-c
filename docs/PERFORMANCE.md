@@ -24,6 +24,13 @@ SDK-backed Metrics handles own the concrete Rust instrument, so synchronous reco
 performs no provider lookup, global lock, registry lookup, exporter access, or callback
 dispatch.
 
+Experimental bound counter and histogram handles move C attribute validation, copying, and
+SDK binding to the one-time bind call. Their steady-state C recording path performs opaque
+handle validation, clears the thread-local error slot, makes one API-to-SDK vtable call, and
+invokes the upstream bound `add` or `record`; it passes no attribute pointer, converts no
+attribute, and introduces no C-layer allocation, lock, registry lookup, or reference-count
+operation. This is the thinnest attributed Metrics path supported by OpenTelemetry Rust 0.32.
+
 Accepted and required hot-path costs include:
 
 - opaque-handle validation;
@@ -86,7 +93,8 @@ Criterion records time per operation under stable groups:
 release profile, and Cargo feature flags.
 
 `metrics_allocations` reports steady-state allocation count and allocated bytes per operation
-for the same Metrics matrix. It warms each case before enabling a process-local counting
+for the same Metrics matrix, including pre-bound counter and histogram recordings. It warms
+each case before enabling a process-local counting
 allocator and uses a custom exporter plus manual reader for the C SDK path, so no worker,
 collection, export, or network activity can contaminate the measurements. The counters cover
 allocations made by all threads while a sample is active; this benchmark intentionally creates

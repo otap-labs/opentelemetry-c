@@ -108,6 +108,26 @@ extern "C" fn record_f64(_: *mut c_void, _: f64, _: *const OtelKeyValue, _: usiz
     OtelStatus::Ok
 }
 
+extern "C" fn bind(
+    _: *mut c_void,
+    _: *const OtelKeyValue,
+    _: usize,
+    status: *mut OtelStatus,
+) -> *mut c_void {
+    if !status.is_null() {
+        unsafe { *status = OtelStatus::InvalidConfig };
+    }
+    std::ptr::null_mut()
+}
+
+extern "C" fn bound_record_u64(_: *mut c_void, _: u64) -> OtelStatus {
+    OtelStatus::Ok
+}
+
+extern "C" fn bound_record_f64(_: *mut c_void, _: f64) -> OtelStatus {
+    OtelStatus::Ok
+}
+
 static VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     abi_version: OTEL_METRICS_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelMetricsVtable>(),
@@ -125,6 +145,10 @@ static VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     instrument_free: object_free,
     provider_get_meter_with_scope: get_meter_with_scope,
     meter_create_instrument_with_status: create_with_status,
+    instrument_bind: bind,
+    bound_instrument_record_u64: bound_record_u64,
+    bound_instrument_record_f64: bound_record_f64,
+    bound_instrument_free: object_free,
 };
 
 fn sv(value: &'static str) -> OtelStringView {

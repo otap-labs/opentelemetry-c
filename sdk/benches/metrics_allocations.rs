@@ -13,12 +13,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry::KeyValue;
 use opentelemetry_c_api::{
-    otel_counter_u64_add, otel_counter_u64_destroy, otel_gauge_f64_destroy, otel_gauge_f64_record,
-    otel_global_meter_provider, otel_histogram_f64_destroy, otel_histogram_f64_record,
-    otel_meter_create_f64_gauge, otel_meter_create_f64_histogram, otel_meter_create_u64_counter,
-    otel_meter_destroy, otel_meter_provider_destroy, otel_meter_provider_get_meter,
-    OtelAttributeType, OtelAttributeValue, OtelCounterU64, OtelGaugeF64, OtelHistogramF64,
-    OtelKeyValue, OtelStatus, OtelStringView,
+    otel_bound_counter_u64_add, otel_bound_counter_u64_destroy, otel_bound_histogram_f64_destroy,
+    otel_bound_histogram_f64_record, otel_counter_u64_add, otel_counter_u64_bind,
+    otel_counter_u64_destroy, otel_gauge_f64_destroy, otel_gauge_f64_record,
+    otel_global_meter_provider, otel_histogram_f64_bind, otel_histogram_f64_destroy,
+    otel_histogram_f64_record, otel_meter_create_f64_gauge, otel_meter_create_f64_histogram,
+    otel_meter_create_u64_counter, otel_meter_destroy, otel_meter_provider_destroy,
+    otel_meter_provider_get_meter, OtelAttributeType, OtelAttributeValue, OtelBoundCounterU64,
+    OtelBoundHistogramF64, OtelCounterU64, OtelGaugeF64, OtelHistogramF64, OtelKeyValue,
+    OtelStatus, OtelStringView,
 };
 use opentelemetry_c_sdk::{
     otel_custom_metric_exporter_new, otel_manual_metric_reader_new, otel_sdk_build,
@@ -304,6 +307,40 @@ impl CInstruments {
                         });
                     },
                 );
+                let mut bound_counter: *mut OtelBoundCounterU64 = ptr::null_mut();
+                assert_ok(unsafe {
+                    otel_counter_u64_bind(
+                        self.counter,
+                        attributes,
+                        attribute_count,
+                        &mut bound_counter,
+                    )
+                });
+                let mut bound_histogram: *mut OtelBoundHistogramF64 = ptr::null_mut();
+                assert_ok(unsafe {
+                    otel_histogram_f64_bind(
+                        self.histogram,
+                        attributes,
+                        attribute_count,
+                        &mut bound_histogram,
+                    )
+                });
+                measure(
+                    &format!("{prefix}/bound_counter_u64/{}/{count}", shape.name()),
+                    || {
+                        black_box(unsafe { otel_bound_counter_u64_add(bound_counter, 1) });
+                    },
+                );
+                measure(
+                    &format!("{prefix}/bound_histogram_f64/{}/{count}", shape.name()),
+                    || {
+                        black_box(unsafe { otel_bound_histogram_f64_record(bound_histogram, 1.5) });
+                    },
+                );
+                unsafe {
+                    otel_bound_counter_u64_destroy(bound_counter);
+                    otel_bound_histogram_f64_destroy(bound_histogram);
+                }
             }
         }
     }
@@ -375,6 +412,16 @@ fn measure_direct_rust() {
             measure(
                 &format!("rust_sdk/histogram_f64/{}/{count}", shape.name()),
                 || histogram.record(black_box(1.5), black_box(&attributes)),
+            );
+            let bound_counter = counter.bind(&attributes);
+            measure(
+                &format!("rust_sdk/bound_counter_u64/{}/{count}", shape.name()),
+                || bound_counter.add(black_box(1)),
+            );
+            let bound_histogram = histogram.bind(&attributes);
+            measure(
+                &format!("rust_sdk/bound_histogram_f64/{}/{count}", shape.name()),
+                || bound_histogram.record(black_box(1.5)),
             );
         }
     }

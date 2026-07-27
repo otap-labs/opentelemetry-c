@@ -84,6 +84,23 @@ fn complete_noop_instrument_family_is_safe() {
             otel_counter_f64_destroy,
             1.0
         );
+        let mut counter = std::ptr::null_mut();
+        assert_eq!(
+            otel_meter_create_u64_counter(meter, sv("bound_counter"), &opts, &mut counter),
+            OtelStatus::Ok
+        );
+        let mut bound_counter = std::ptr::null_mut();
+        // Like no-op recording, no-op binding does not inspect attributes.
+        assert_eq!(
+            otel_counter_u64_bind(counter, std::ptr::null(), usize::MAX, &mut bound_counter),
+            OtelStatus::Ok
+        );
+        assert!(!bound_counter.is_null());
+        assert_eq!(otel_bound_counter_u64_add(bound_counter, 3), OtelStatus::Ok);
+        otel_counter_u64_destroy(counter);
+        // The bound handle is independent of its source instrument handle.
+        assert_eq!(otel_bound_counter_u64_add(bound_counter, 4), OtelStatus::Ok);
+        otel_bound_counter_u64_destroy(bound_counter);
         sync!(
             OtelUpDownCounterI64,
             otel_meter_create_i64_up_down_counter,
@@ -147,6 +164,21 @@ fn complete_noop_instrument_family_is_safe() {
             ),
             OtelStatus::Ok
         );
+        let mut bound_histogram = std::ptr::null_mut();
+        assert_eq!(
+            otel_histogram_f64_bind(
+                histogram_f64,
+                std::ptr::null(),
+                usize::MAX,
+                &mut bound_histogram,
+            ),
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            otel_bound_histogram_f64_record(bound_histogram, 2.5),
+            OtelStatus::Ok
+        );
+        otel_bound_histogram_f64_destroy(bound_histogram);
         otel_histogram_f64_destroy(histogram_f64);
 
         macro_rules! observable {

@@ -7,6 +7,7 @@ experimental `0.x` C ABI.
 | --- | --- | --- |
 | API-only operation | Implemented | Independent API-owned global `MeterProvider`; no SDK dependency and safe no-op instruments before installation. |
 | Synchronous instruments | Implemented | `u64`/`f64` counters, `i64`/`f64` up-down counters, `u64`/`i64`/`f64` gauges, and `u64`/`f64` histograms. |
+| Bound instruments | Implemented (experimental) | Pre-bound scalar attributes for `u64`/`f64` counters and histograms, matching the subset exposed by the pinned Rust 0.32 experimental API. Recording performs no per-call attribute conversion. |
 | Observable instruments | Implemented | Counters, up-down counters, and gauges for all Rust SDK-supported numeric types; successful creation owns callback user data with exactly-once destruction, while failure preserves caller ownership. |
 | Observer lifetime | Implemented | Observer tokens are valid only on the callback thread until return; stale and cross-thread use fail closed. Dispatch is thread-local, so independent readers are not serialized by an API-global lock. Destroying the public instrument disables future callback work. |
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
@@ -27,6 +28,15 @@ experimental `0.x` C ABI.
 ## Known experimental constraints
 
 - Metrics are experimental and may change incompatibly between `0.x` releases.
+- Bound instruments follow the upstream `experimental_metrics_bound_instruments` API.
+  OpenTelemetry Rust 0.32 exposes bound counters and histograms, but not bound gauges or
+  up-down counters. Binding copies and pre-resolves attributes during setup; callers should
+  reuse the bound handle only when that attribute set is stable. A handle bound while the
+  stream cardinality limit is exhausted remains attached to the overflow series for its
+  lifetime; drop and re-bind after capacity becomes available to resolve the original
+  attribute set. As with unbound upstream recording, a poisoned internal tracker lock causes
+  subsequent measurements to be discarded rather than panicking across the telemetry hot
+  path.
 - The default Rust 0.32 blocking periodic reader controls collection on its worker thread.
   Metrics force flush has no upstream timeout input and can block indefinitely if an exporter
   or collection callback does not return. The trace helper-thread timeout is not reused

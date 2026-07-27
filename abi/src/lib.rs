@@ -76,6 +76,10 @@ pub const OTEL_HANDLE_KIND_GAUGE_I64: u64 = 0x0125;
 pub const OTEL_HANDLE_KIND_GAUGE_F64: u64 = 0x0126;
 pub const OTEL_HANDLE_KIND_HISTOGRAM_U64: u64 = 0x0127;
 pub const OTEL_HANDLE_KIND_HISTOGRAM_F64: u64 = 0x0128;
+pub const OTEL_HANDLE_KIND_BOUND_COUNTER_U64: u64 = 0x0129;
+pub const OTEL_HANDLE_KIND_BOUND_COUNTER_F64: u64 = 0x012A;
+pub const OTEL_HANDLE_KIND_BOUND_HISTOGRAM_U64: u64 = 0x012B;
+pub const OTEL_HANDLE_KIND_BOUND_HISTOGRAM_F64: u64 = 0x012C;
 pub const OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64: u64 = 0x0130;
 pub const OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64: u64 = 0x0131;
 pub const OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64: u64 = 0x0132;
@@ -569,6 +573,13 @@ pub type OtelMeterCreateInstrumentWithStatus = extern "C" fn(
     out_status: *mut OtelStatus,
 ) -> *mut c_void;
 
+pub type OtelMetricInstrumentBind = extern "C" fn(
+    instrument_ctx: *mut c_void,
+    attributes: *const OtelKeyValue,
+    attribute_count: usize,
+    out_status: *mut OtelStatus,
+) -> *mut c_void;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OtelMetricsVtable {
@@ -632,6 +643,14 @@ pub struct OtelMetricsVtable {
     /// Append-only creation-status extension. Unlike the legacy NULL-only entry, this
     /// preserves the implementation's exact failure classification.
     pub meter_create_instrument_with_status: OtelMeterCreateInstrumentWithStatus,
+    /// Append-only experimental bound-instrument extension. Access only when `struct_size`
+    /// is at least [`OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE`].
+    pub instrument_bind: OtelMetricInstrumentBind,
+    pub bound_instrument_record_u64:
+        extern "C" fn(bound_instrument_ctx: *mut c_void, value: u64) -> OtelStatus,
+    pub bound_instrument_record_f64:
+        extern "C" fn(bound_instrument_ctx: *mut c_void, value: f64) -> OtelStatus,
+    pub bound_instrument_free: extern "C" fn(bound_instrument_ctx: *mut c_void),
 }
 
 /// Current Metrics implementation ABI kind/version identifier.
@@ -657,6 +676,12 @@ pub const OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE: usize = 60;
 pub const OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE: usize = 128;
 #[cfg(target_pointer_width = "32")]
 pub const OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE: usize = 64;
+
+/// Metrics vtable prefix size through experimental bound-instrument support.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE: usize = 160;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE: usize = 80;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -722,10 +747,33 @@ pub unsafe fn metrics_vtable_supports_creation_status(vtable: *const OtelMetrics
         && header.struct_size >= OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE
 }
 
+/// Whether a compatible Metrics vtable includes experimental bound-instrument support.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+pub unsafe fn metrics_vtable_supports_bound_instruments(vtable: *const OtelMetricsVtable) -> bool {
+    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE
+}
+
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
+const _: () = assert!(
+    OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE
+        == OTEL_METRICS_VTABLE_REQUIRED_SIZE + std::mem::size_of::<OtelProviderGetMeterWithScope>()
+);
+const _: () = assert!(
+    OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE
+        == OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE + std::mem::size_of::<*const c_void>()
+);
+const _: () = assert!(
+    OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE
+        == OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE + 4 * std::mem::size_of::<*const c_void>()
+);
 const _: () =
-    assert!(std::mem::size_of::<OtelMetricsVtable>() == OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE);
+    assert!(std::mem::size_of::<OtelMetricsVtable>() == OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE);
 
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]
@@ -807,6 +855,10 @@ mod tests {
             OTEL_HANDLE_KIND_GAUGE_F64,
             OTEL_HANDLE_KIND_HISTOGRAM_U64,
             OTEL_HANDLE_KIND_HISTOGRAM_F64,
+            OTEL_HANDLE_KIND_BOUND_COUNTER_U64,
+            OTEL_HANDLE_KIND_BOUND_COUNTER_F64,
+            OTEL_HANDLE_KIND_BOUND_HISTOGRAM_U64,
+            OTEL_HANDLE_KIND_BOUND_HISTOGRAM_F64,
             OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64,
             OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64,
             OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64,

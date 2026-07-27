@@ -33,14 +33,17 @@ use opentelemetry_sdk::metrics::{ManualReader, SdkMeterProvider};
 
 // Public C API entrypoints (dev-dep): the real process-global provider slot and span/tracer ops.
 use opentelemetry_c_api::{
-    otel_counter_u64_add, otel_counter_u64_destroy, otel_gauge_f64_destroy, otel_gauge_f64_record,
-    otel_global_meter_provider, otel_global_tracer_provider, otel_histogram_f64_destroy,
-    otel_histogram_f64_record, otel_meter_create_f64_gauge, otel_meter_create_f64_histogram,
-    otel_meter_create_u64_counter, otel_meter_destroy, otel_meter_provider_destroy,
-    otel_meter_provider_get_meter, otel_span_add_event, otel_span_destroy, otel_span_end,
-    otel_span_set_bool_attribute, otel_span_set_double_attribute, otel_span_set_int64_attribute,
-    otel_span_set_string_attribute, otel_tracer_destroy, otel_tracer_provider_destroy,
-    otel_tracer_provider_get_tracer, otel_tracer_start_span, OtelAttributeType, OtelAttributeValue,
+    otel_bound_counter_u64_add, otel_bound_counter_u64_destroy, otel_bound_histogram_f64_destroy,
+    otel_bound_histogram_f64_record, otel_counter_u64_add, otel_counter_u64_bind,
+    otel_counter_u64_destroy, otel_gauge_f64_destroy, otel_gauge_f64_record,
+    otel_global_meter_provider, otel_global_tracer_provider, otel_histogram_f64_bind,
+    otel_histogram_f64_destroy, otel_histogram_f64_record, otel_meter_create_f64_gauge,
+    otel_meter_create_f64_histogram, otel_meter_create_u64_counter, otel_meter_destroy,
+    otel_meter_provider_destroy, otel_meter_provider_get_meter, otel_span_add_event,
+    otel_span_destroy, otel_span_end, otel_span_set_bool_attribute, otel_span_set_double_attribute,
+    otel_span_set_int64_attribute, otel_span_set_string_attribute, otel_tracer_destroy,
+    otel_tracer_provider_destroy, otel_tracer_provider_get_tracer, otel_tracer_start_span,
+    OtelAttributeType, OtelAttributeValue, OtelBoundCounterU64, OtelBoundHistogramF64,
     OtelCounterU64, OtelGaugeF64, OtelHistogramF64, OtelKeyValue, OtelMeter, OtelSpan, OtelStatus,
     OtelStringView, OtelTracer,
 };
@@ -482,6 +485,41 @@ fn bench_sdk_backed(c: &mut Criterion) {
                     });
                 },
             );
+            let mut bound_counter: *mut OtelBoundCounterU64 = ptr::null_mut();
+            assert_ok(unsafe {
+                otel_counter_u64_bind(counter, attribute_ptr, attribute_count, &mut bound_counter)
+            });
+            let mut bound_histogram: *mut OtelBoundHistogramF64 = ptr::null_mut();
+            assert_ok(unsafe {
+                otel_histogram_f64_bind(
+                    histogram,
+                    attribute_ptr,
+                    attribute_count,
+                    &mut bound_histogram,
+                )
+            });
+            attributes.bench_with_input(
+                BenchmarkId::new(format!("bound_counter_u64/{}", shape.name()), count),
+                &set,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(unsafe { otel_bound_counter_u64_add(bound_counter, 1) });
+                    });
+                },
+            );
+            attributes.bench_with_input(
+                BenchmarkId::new(format!("bound_histogram_f64/{}", shape.name()), count),
+                &set,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(unsafe { otel_bound_histogram_f64_record(bound_histogram, 1.5) });
+                    });
+                },
+            );
+            unsafe {
+                otel_bound_counter_u64_destroy(bound_counter);
+                otel_bound_histogram_f64_destroy(bound_histogram);
+            }
         }
     }
     attributes.finish();
@@ -520,6 +558,22 @@ fn bench_sdk_backed(c: &mut Criterion) {
                 &rust_attributes,
                 |b, attributes| {
                     b.iter(|| rust_histogram.record(black_box(1.5), black_box(attributes)));
+                },
+            );
+            let bound_counter = rust_counter.bind(&rust_attributes);
+            direct.bench_with_input(
+                BenchmarkId::new(format!("bound_counter_u64/{}", shape.name()), count),
+                &bound_counter,
+                |b, instrument| {
+                    b.iter(|| instrument.add(black_box(1)));
+                },
+            );
+            let bound_histogram = rust_histogram.bind(&rust_attributes);
+            direct.bench_with_input(
+                BenchmarkId::new(format!("bound_histogram_f64/{}", shape.name()), count),
+                &bound_histogram,
+                |b, instrument| {
+                    b.iter(|| instrument.record(black_box(1.5)));
                 },
             );
         }
