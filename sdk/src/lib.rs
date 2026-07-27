@@ -36,9 +36,11 @@ use reqwest as _;
 
 mod api_ffi;
 mod batch_processor;
+mod custom_log_exporter;
 mod custom_metric_exporter;
 mod error;
 mod handle;
+mod log_export_view;
 mod log_exporter;
 mod log_processor;
 mod logs_vtable;
@@ -65,8 +67,19 @@ pub use batch_processor::{
     otel_batch_span_processor_builder_set_max_queue_size,
     otel_batch_span_processor_builder_set_scheduled_delay_millis, OtelBatchSpanProcessorBuilder,
 };
+pub use custom_log_exporter::{
+    otel_custom_log_exporter_new, OtelCustomLogExport, OtelCustomLogExporterCallbacks,
+    OtelCustomLogShutdown, OtelCustomLogStateDestroy,
+};
 pub use custom_metric_exporter::{
     otel_custom_metric_exporter_new, OtelCustomMetricExporterCallbacks,
+};
+pub use log_export_view::{
+    OtelLogExportBatchView, OtelLogExportRecordView, OtelLogExportScopeView,
+    OTEL_LOG_EXPORT_FIELD_BODY, OTEL_LOG_EXPORT_FIELD_EVENT_NAME, OTEL_LOG_EXPORT_FIELD_KNOWN_MASK,
+    OTEL_LOG_EXPORT_FIELD_OBSERVED_TIMESTAMP, OTEL_LOG_EXPORT_FIELD_SEVERITY_TEXT,
+    OTEL_LOG_EXPORT_FIELD_TARGET, OTEL_LOG_EXPORT_FIELD_TIMESTAMP,
+    OTEL_LOG_EXPORT_FIELD_TRACE_CONTEXT, OTEL_LOG_EXPORT_MAX_RECORDS,
 };
 pub use log_exporter::{otel_log_exporter_destroy, OtelLogExporter};
 pub use log_processor::{
