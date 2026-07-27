@@ -131,7 +131,7 @@ void otel_sdk_builder_destroy(otel_sdk_builder_t* builder);
 otel_status_t otel_sdk_builder_set_service_name(otel_sdk_builder_t* builder,
                                                 otel_string_view_t name);
 
-/* Add an arbitrary resource attribute. */
+/* Add an arbitrary resource attribute. At most 1024 resource attributes may be added. */
 otel_status_t otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t* builder,
                                                       otel_key_value_t attribute);
 
@@ -145,15 +145,17 @@ otel_status_t otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t* builde
  * Ownership: on OTEL_STATUS_OK, ownership of `processor` transfers to the SDK builder, the
  * original pointer becomes invalid, and the caller must not access or destroy it. On failure
  * (invalid builder or processor), the caller still owns `processor`. Add more than one
- * processor to fan spans out to multiple pipelines. A builder with no span processor still
- * builds a valid SDK whose spans are simply not exported.
+ * processor to fan spans out to multiple pipelines. A builder accepts at most 64 span
+ * processors. A builder with no span processor still builds a valid SDK whose spans are
+ * simply not exported.
  */
 otel_status_t otel_sdk_builder_add_span_processor(otel_sdk_builder_t* builder,
                                                   otel_span_processor_t* processor);
 
 /* Add a periodic Metrics reader. On OTEL_STATUS_OK the reader is consumed and its original
  * pointer becomes invalid; on failure the caller still owns it. More than one reader may be
- * added; each maintains independent aggregation/temporality state. */
+ * added; each maintains independent aggregation/temporality state. Periodic and manual
+ * readers share a combined limit of 64 readers per SDK builder. */
 otel_status_t otel_sdk_builder_add_metric_reader(otel_sdk_builder_t* builder,
                                                  otel_periodic_metric_reader_t* reader);
 /* Add (transfer) a manual reader. A manual reader has no worker thread; after build,
@@ -162,7 +164,7 @@ otel_status_t otel_sdk_builder_add_metric_reader(otel_sdk_builder_t* builder,
 otel_status_t otel_sdk_builder_add_manual_metric_reader(
     otel_sdk_builder_t* builder, otel_manual_metric_reader_t* reader);
 /* Add (transfer) a Metrics view. On OTEL_STATUS_OK the view is consumed and its original pointer
- * becomes invalid; on failure the caller still owns it. */
+ * becomes invalid; on failure the caller still owns it. At most 1024 views may be added. */
 otel_status_t otel_sdk_builder_add_metric_view(otel_sdk_builder_t* builder,
                                                otel_metric_view_t* view);
 
@@ -233,12 +235,11 @@ otel_status_t otel_sdk_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
  */
 otel_status_t otel_sdk_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
 
-/* Metrics force-flush currently blocks until all readers complete. Rust 0.32 does not
- * honor a caller-supplied provider timeout, so timeout_millis is reserved/advisory. */
 /*
  * Force every Metrics reader to collect and export. For a manual reader this is the sole
  * application-controlled collection trigger and runs synchronously on the calling thread.
- * The pinned Rust 0.32 reader API does not accept this timeout; timeout_millis is advisory.
+ * The pinned Rust 0.32 reader API does not accept timeout_millis, so this call can block
+ * indefinitely if an exporter or collection callback does not return.
  */
 otel_status_t otel_sdk_metrics_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
 

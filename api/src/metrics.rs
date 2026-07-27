@@ -789,7 +789,7 @@ unsafe impl Sync for CallbackState {}
 
 struct UserData {
     ptr: *mut c_void,
-    destroy: OtelUserDataDestroy,
+    destroy: Mutex<OtelUserDataDestroy>,
 }
 
 unsafe impl Send for UserData {}
@@ -797,7 +797,12 @@ unsafe impl Sync for UserData {}
 
 impl Drop for UserData {
     fn drop(&mut self) {
-        if let Some(destroy) = self.destroy {
+        if let Some(destroy) = self
+            .destroy
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
             destroy(self.ptr);
         }
     }
@@ -826,6 +831,22 @@ impl CallbackState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         drop(user_data);
+    }
+
+    fn disable_and_relinquish_user_data(&self) {
+        self.enabled.store(false, Ordering::Release);
+        let user_data = self
+            .user_data
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(user_data) = user_data {
+            user_data
+                .destroy
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+        }
     }
 }
 
@@ -1186,7 +1207,7 @@ macro_rules! define_observable_instrument {
                     callback: UserCallback::$callback_variant(callback),
                     user_data: Mutex::new(Some(Arc::new(UserData {
                         ptr: user_data,
-                        destroy: user_data_destroy,
+                        destroy: Mutex::new(user_data_destroy),
                     }))),
                 });
                 let (vtable, ctx) = match create_observable(
@@ -1198,7 +1219,10 @@ macro_rules! define_observable_instrument {
                     $trampoline,
                 ) {
                     Ok(value) => value,
-                    Err(status) => return status,
+                    Err(status) => {
+                        state.disable_and_relinquish_user_data();
+                        return status;
+                    }
                 };
                 unsafe {
                     *out = into_raw($handle {
@@ -1314,6 +1338,7 @@ define_observable_instrument!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex, OnceLock};
     use std::time::Duration;
@@ -1324,6 +1349,10 @@ mod tests {
         callback: extern "C" fn(*mut c_void, *mut c_void),
         state: *mut c_void,
         state_free: extern "C" fn(*mut c_void),
+    }
+
+    thread_local! {
+        static FAIL_OBSERVABLE_CREATION: Cell<bool> = const { Cell::new(false) };
     }
 
     fn free_reached() -> &'static (Mutex<bool>, Condvar) {
@@ -1364,6 +1393,10 @@ mod tests {
         let Some(state_free) = config.callback_state_free else {
             return std::ptr::null_mut();
         };
+        if FAIL_OBSERVABLE_CREATION.with(|fail| fail.replace(false)) {
+            state_free(config.callback_state);
+            return std::ptr::null_mut();
+        }
         Box::into_raw(Box::new(MockInstrument {
             callback,
             state: config.callback_state,
@@ -1620,6 +1653,53 @@ mod tests {
     extern "C" fn in_flight_user_data_destroy(user_data: *mut c_void) {
         let state = unsafe { Box::from_raw(user_data.cast::<InFlightUserData>()) };
         state.destroyed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    extern "C" fn count_user_data_destroy(user_data: *mut c_void) {
+        let destroyed = unsafe { Box::from_raw(user_data.cast::<Arc<AtomicUsize>>()) };
+        destroyed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    extern "C" fn no_op_observable_callback(
+        _observer: *mut OtelObserverU64,
+        _user_data: *mut c_void,
+    ) {
+    }
+
+    #[test]
+    fn observable_creation_failure_preserves_caller_user_data_ownership() {
+        let meter = OtelMeter {
+            header: OtelHandleHeader::new(OtelMeter::KIND),
+            vtable: &MOCK_METRICS_VTABLE,
+            ctx: std::ptr::NonNull::<c_void>::dangling().as_ptr(),
+        };
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let user_data = Box::into_raw(Box::new(Arc::clone(&destroyed))).cast();
+        let mut observable = std::ptr::NonNull::<OtelObservableGaugeU64>::dangling().as_ptr();
+
+        FAIL_OBSERVABLE_CREATION.with(|fail| fail.set(true));
+        assert_eq!(
+            unsafe {
+                otel_meter_create_u64_observable_gauge(
+                    &meter,
+                    OtelStringView {
+                        ptr: b"observable".as_ptr().cast(),
+                        len: 10,
+                    },
+                    std::ptr::null(),
+                    Some(no_op_observable_callback),
+                    user_data,
+                    Some(count_user_data_destroy),
+                    &mut observable,
+                )
+            },
+            OtelStatus::InvalidConfig
+        );
+        assert!(observable.is_null());
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+
+        count_user_data_destroy(user_data);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
     }
 
     #[test]

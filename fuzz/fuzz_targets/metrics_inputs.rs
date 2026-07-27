@@ -8,10 +8,11 @@ use libfuzzer_sys::fuzz_target;
 use opentelemetry_c_api::{
     otel_counter_u64_add, otel_counter_u64_destroy, otel_global_meter_provider,
     otel_histogram_f64_destroy, otel_histogram_f64_record, otel_meter_create_f64_histogram,
-    otel_meter_create_u64_counter, otel_meter_destroy, otel_meter_provider_destroy,
-    otel_meter_provider_get_meter_with_options, OtelAttributeValue, OtelCounterU64,
-    OtelHistogramF64, OtelInstrumentOptions, OtelKeyValue, OtelMeterOptions, OtelStatus,
-    OtelStringView,
+    otel_meter_create_u64_counter, otel_meter_create_u64_observable_counter, otel_meter_destroy,
+    otel_meter_provider_destroy, otel_meter_provider_get_meter_with_options,
+    otel_observable_counter_u64_destroy, OtelAttributeValue, OtelCounterU64, OtelHistogramF64,
+    OtelInstrumentOptions, OtelKeyValue, OtelMeterOptions, OtelObservableCounterU64,
+    OtelObserverU64, OtelStatus, OtelStringView,
 };
 
 const MAX_STRING: usize = 64;
@@ -61,6 +62,8 @@ fn prefix_size(raw: u64, complete: usize) -> u64 {
         _ => raw,
     }
 }
+
+extern "C" fn observe_nothing(_observer: *mut OtelObserverU64, _user_data: *mut std::ffi::c_void) {}
 
 fuzz_target!(|input: Input| {
     let name = view(&input.name, input.string_mode);
@@ -158,6 +161,20 @@ fuzz_target!(|input: Input| {
             };
         }
         unsafe { otel_histogram_f64_destroy(histogram) };
+
+        let mut observable: *mut OtelObservableCounterU64 = ptr::null_mut();
+        let _ = unsafe {
+            otel_meter_create_u64_observable_counter(
+                meter,
+                name,
+                &instrument_options,
+                Some(observe_nothing),
+                ptr::null_mut(),
+                None,
+                &mut observable,
+            )
+        };
+        unsafe { otel_observable_counter_u64_destroy(observable) };
         unsafe { otel_meter_destroy(meter) };
     }
     unsafe { otel_meter_provider_destroy(provider) };

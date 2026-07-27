@@ -1547,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_state_is_released_once_when_sdk_creation_panics() {
+    fn sdk_creation_panic_releases_callback_state_but_preserves_user_data_ownership() {
         let _global_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1605,6 +1605,8 @@ mod tests {
             OtelStatus::InvalidConfig
         );
         assert!(observable.is_null());
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+        panic_user_data_destroy(user_data);
         assert_eq!(destroyed.load(Ordering::SeqCst), 1);
 
         unsafe {
