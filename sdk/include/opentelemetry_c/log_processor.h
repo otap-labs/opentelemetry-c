@@ -83,16 +83,13 @@ otel_status_t otel_batch_log_processor_builder_set_scheduled_delay_millis(
     otel_batch_log_processor_builder_t* builder, uint64_t scheduled_delay_millis);
 
 /*
- * Per-export timeout, in milliseconds (0 == SDK default).
- *
- * LIMITATION: the pinned upstream Rust Logs batch configuration exposes no export-timeout
- * setting (unlike the traces one), so this value is validated and stored but NOT applied.
- * The effective timeout is the upstream default, overridable via the OTEL_BLRP_EXPORT_TIMEOUT
- * environment variable. This entry point exists so the C API shape stays stable once upstream
- * adds the setter.
+ * NOTE: there is deliberately no per-export timeout setter here, although the Trace batch
+ * processor has one. The pinned upstream Rust Logs batch configuration exposes no such knob,
+ * so this API would have to accept a value it could never apply. Rather than return OK for
+ * configuration that does nothing, the entry point is omitted; it can be added compatibly
+ * once upstream supports it. The effective timeout is the upstream default, overridable via
+ * the OTEL_BLRP_EXPORT_TIMEOUT environment variable.
  */
-otel_status_t otel_batch_log_processor_builder_set_max_export_timeout_millis(
-    otel_batch_log_processor_builder_t* builder, uint64_t max_export_timeout_millis);
 
 /*
  * Build a batch log processor. Requires an exporter. On OTEL_STATUS_OK *out receives a new

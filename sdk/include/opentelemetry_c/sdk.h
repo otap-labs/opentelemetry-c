@@ -1,10 +1,11 @@
 /*
  * opentelemetry_c/sdk.h
  *
- * SDK configuration and lifecycle: build a tracer provider with an OTLP HTTP/protobuf
- * exporter and a batch span processor, install it globally, flush, and shut down.
+ * SDK configuration and lifecycle: build tracer, meter, and (experimental) logger providers
+ * with OTLP exporters and batch processors, install them globally, flush, and shut down.
+ * Each signal has its own independent global slot and lifecycle.
  *
- * The SDK owns all of its own threading (a dedicated batch-processor OS thread and the
+ * The SDK owns all of its own threading (dedicated batch-processor OS threads and the
  * blocking HTTP client). No user-managed async runtime is required. Metrics reader
  * collection may invoke observable and custom-exporter C callbacks on SDK-managed
  * collection threads or, for a manual reader, on the force-flush caller's thread.
@@ -291,13 +292,13 @@ otel_status_t otel_sdk_metrics_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis
 /*
  * EXPERIMENTAL. Flush every configured log processor.
  *
- * LIMITATION: the pinned upstream LoggerProvider force-flush accepts no timeout and blocks
- * until each processor finishes, so `timeout_millis` is accepted for signature symmetry with
- * the other signals but is IGNORED. It is documented rather than emulated: returning early
- * from a helper thread would hand control back while the processors were still exporting.
- * Returns OTEL_STATUS_ALREADY_SHUTDOWN after Logs shutdown.
+ * Blocks until every processor finishes. Unlike the Trace and Metrics equivalents this takes
+ * NO timeout, because the pinned upstream LoggerProvider force-flush accepts none: the
+ * parameter could only ever be ignored, and a flush that returns success while data is still
+ * in flight defeats the purpose of calling it. A timeout can be added compatibly once
+ * upstream supports one. Returns OTEL_STATUS_ALREADY_SHUTDOWN after Logs shutdown.
  */
-otel_status_t otel_sdk_logs_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
+otel_status_t otel_sdk_logs_force_flush(otel_sdk_t* sdk);
 
 /*
  * EXPERIMENTAL. Shut down the LoggerProvider. Independent of trace and Metrics shutdown, and

@@ -207,7 +207,6 @@ int main(void) {
     otel_batch_log_processor_builder_set_max_queue_size(lpb, 2048);
     otel_batch_log_processor_builder_set_max_export_batch_size(lpb, 512);
     otel_batch_log_processor_builder_set_scheduled_delay_millis(lpb, 1000);
-    otel_batch_log_processor_builder_set_max_export_timeout_millis(lpb, 30000);
     otel_log_processor_t* log_processor = NULL;
     otel_batch_log_processor_builder_build(lpb, &log_processor);
     otel_batch_log_processor_builder_destroy(lpb);
@@ -221,7 +220,7 @@ int main(void) {
     otel_logger_provider_t* logger_provider = otel_sdk_get_logger_provider(sdk);
     otel_logger_provider_destroy(logger_provider);
     otel_sdk_set_logs_as_global(sdk);
-    otel_sdk_logs_force_flush(sdk, 0);
+    otel_sdk_logs_force_flush(sdk);
     otel_sdk_logs_shutdown(sdk, 5000);
     (void)sdk;
     return 0;

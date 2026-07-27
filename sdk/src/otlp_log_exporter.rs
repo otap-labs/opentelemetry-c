@@ -685,6 +685,43 @@ mod tests {
         assert!(build_grpc_metadata(&[("bad key".into(), "v".into())]).is_err());
         assert!(build_grpc_metadata(&[("ok".into(), "\n".into())]).is_err());
         assert!(build_grpc_metadata(&[("ok".into(), "value".into())]).is_ok());
+        // Mixed case must be rejected for `-bin` too, which is why the suffix check
+        // lowercases before comparing rather than matching the raw bytes.
+        assert!(build_grpc_metadata(&[("X-Trace-BIN".into(), "v".into())]).is_err());
+    }
+
+    /// gRPC metadata keys are case-insensitive on the wire and canonically lowercase.
+    ///
+    /// A C caller writing `X-Tenant` must not have that header silently dropped, nor have it
+    /// fail late during exporter construction. Tonic normalizes on `from_bytes`, so no
+    /// lowercasing is needed here -- but that is an upstream behaviour this bridge depends
+    /// on, so it is pinned by a test rather than assumed.
+    #[cfg(feature = "otlp-grpc")]
+    #[test]
+    fn grpc_metadata_keys_are_normalized_to_lowercase() {
+        let metadata = build_grpc_metadata(&[
+            ("X-Tenant".into(), "acme".into()),
+            ("Authorization".into(), "Bearer token".into()),
+        ])
+        .expect("mixed-case keys must be accepted, not deferred to build time");
+
+        assert_eq!(
+            metadata.get("x-tenant").map(|v| v.to_str().unwrap()),
+            Some("acme"),
+            "X-Tenant must be retrievable as x-tenant"
+        );
+        assert_eq!(
+            metadata.get("authorization").map(|v| v.to_str().unwrap()),
+            Some("Bearer token"),
+            "only the key is normalized; the value must survive byte-for-byte"
+        );
+        for key in metadata.keys() {
+            let tonic::metadata::KeyRef::Ascii(name) = key else {
+                panic!("binary metadata keys are rejected before reaching the map");
+            };
+            let name = name.as_str();
+            assert_eq!(name, name.to_ascii_lowercase(), "{name} is not lowercase");
+        }
     }
 
     #[cfg(feature = "otlp-grpc")]

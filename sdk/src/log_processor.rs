@@ -163,7 +163,6 @@ struct BatchLogProcessorConfig {
     max_queue_size: Option<usize>,
     max_export_batch_size: Option<usize>,
     scheduled_delay_millis: Option<u64>,
-    max_export_timeout_millis: Option<u64>,
 }
 
 /// Opaque batch log-processor builder. Not thread-safe; confine to one thread.
@@ -307,29 +306,6 @@ pub unsafe extern "C" fn otel_batch_log_processor_builder_set_scheduled_delay_mi
     }
 }
 
-/// Set the per-export timeout in milliseconds (`0` == SDK default).
-///
-/// NOTE: the pinned `opentelemetry_sdk` 0.32.1 logs batch configuration exposes no
-/// export-timeout knob, so this value is accepted and validated but not applied; the
-/// effective timeout is the SDK default (overridable via `OTEL_BLRP_EXPORT_TIMEOUT`). The
-/// entry point exists so the C API shape stays stable once upstream adds the setter.
-///
-/// # Safety
-/// `builder` must satisfy the handle contract.
-#[no_mangle]
-pub unsafe extern "C" fn otel_batch_log_processor_builder_set_max_export_timeout_millis(
-    builder: *mut OtelBatchLogProcessorBuilder,
-    max_export_timeout_millis: u64,
-) -> OtelStatus {
-    unsafe {
-        with_config(builder, |config| {
-            config.max_export_timeout_millis =
-                (max_export_timeout_millis != 0).then_some(max_export_timeout_millis);
-            OtelStatus::Ok
-        })
-    }
-}
-
 /// Build the batch processor, consuming the exporter held by the builder.
 ///
 /// The builder remains caller-owned but loses its exporter, so a second build without setting
@@ -382,11 +358,10 @@ pub unsafe extern "C" fn otel_batch_log_processor_builder_build(
         if let Some(value) = builder.config.scheduled_delay_millis {
             batch_config = batch_config.with_scheduled_delay(Duration::from_millis(value));
         }
-        // The pinned 0.32.1 logs `BatchConfigBuilder` exposes no `with_max_export_timeout`
-        // (unlike the traces one), so the configured value cannot be honoured here. It is
-        // still validated and stored above to keep the C API shape stable, and the effective
-        // timeout comes from the SDK default (overridable via `OTEL_BLRP_EXPORT_TIMEOUT`).
-        let _ = builder.config.max_export_timeout_millis;
+        // There is deliberately no per-export timeout setter: the pinned 0.32.1 logs
+        // `BatchConfigBuilder` exposes none (unlike the traces one), and accepting a value
+        // that cannot be applied would be a false promise. The effective timeout is the
+        // upstream default, overridable via `OTEL_BLRP_EXPORT_TIMEOUT`.
         // The pinned builder spawns its worker OS thread here; the enclosing `guard_status`
         // converts a spawn panic into `OTEL_STATUS_INTERNAL_ERROR` rather than unwinding
         // across the C boundary.
@@ -539,10 +514,6 @@ mod tests {
                 OtelStatus::Ok
             );
             assert_eq!(
-                otel_batch_log_processor_builder_set_max_export_timeout_millis(builder, 100),
-                OtelStatus::Ok
-            );
-            assert_eq!(
                 otel_batch_log_processor_builder_build(builder, &mut processor),
                 OtelStatus::Ok
             );
@@ -593,10 +564,6 @@ mod tests {
             );
             assert_eq!(
                 otel_batch_log_processor_builder_set_scheduled_delay_millis(null, 1),
-                OtelStatus::InvalidArgument
-            );
-            assert_eq!(
-                otel_batch_log_processor_builder_set_max_export_timeout_millis(null, 1),
                 OtelStatus::InvalidArgument
             );
             // Destroy is a no-op on NULL for both handle kinds.

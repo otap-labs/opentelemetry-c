@@ -42,9 +42,10 @@ this example destroy the object they were about to transfer.
   which would silently corrupt scope reporting for callers that already supply a scope.
 - **No unsigned 64-bit values.** The pinned `AnyValue` has no `u64` variant; use `int64` or a
   string.
-- **`otel_sdk_logs_force_flush()` ignores its timeout.** The pinned provider flush takes no
-  timeout parameter and blocks until every processor finishes.
-- **The batch export timeout is not applied.** The pinned Logs batch configuration exposes no
-  export-timeout setter; use the `OTEL_BLRP_EXPORT_TIMEOUT` environment variable.
+- **`otel_sdk_logs_force_flush()` takes no timeout parameter**, unlike the other signals; the
+  pinned provider flush accepts none and blocks until every processor finishes.
+- **There is no batch export-timeout setter.** The pinned Logs batch configuration exposes
+  none, so rather than accept a value it would ignore, the entry point is omitted; use the
+  `OTEL_BLRP_EXPORT_TIMEOUT` environment variable.
 
 See [LOGS_COMPLIANCE.md](../../../LOGS_COMPLIANCE.md) for the full ledger.

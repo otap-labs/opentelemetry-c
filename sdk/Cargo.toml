@@ -91,7 +91,7 @@ required-features = ["otlp-http"]
 default = ["native-tls"]
 # Compatibility alias preserving the existing OTLP HTTP/protobuf behavior.
 otlp = ["otlp-http"]
-# Blocking HTTP/protobuf transport for traces and Metrics.
+# Blocking HTTP/protobuf transport for Traces, Metrics, and Logs.
 otlp-http = [
     "dep:opentelemetry-otlp",
     "dep:reqwest",
@@ -101,7 +101,8 @@ otlp-http = [
     "opentelemetry-otlp/http-proto",
     "opentelemetry-otlp/reqwest-blocking-client",
 ]
-# gRPC/tonic transport for Metrics. The C SDK owns the Tokio runtime used by this transport.
+# gRPC/tonic transport for Metrics and Logs. The C SDK owns the Tokio runtime used by this
+# transport.
 otlp-grpc = [
     "dep:opentelemetry-otlp",
     "dep:tokio",

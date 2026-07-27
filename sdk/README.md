@@ -85,11 +85,11 @@ object remains caller-owned and must still be destroyed. Lifecycle is
 `otel_sdk_set_logs_as_global` / `otel_sdk_logs_force_flush` / `otel_sdk_logs_shutdown`, all
 independent of the other signals.
 
-Two upstream limitations are surfaced rather than emulated:
-`otel_sdk_logs_force_flush()` ignores its `timeout_millis` (the pinned provider flush takes no
-timeout), and `otel_batch_log_processor_builder_set_max_export_timeout_millis()` is validated
-but not applied (the pinned Logs batch config has no such setter; use
-`OTEL_BLRP_EXPORT_TIMEOUT`). See [LOGS_COMPLIANCE.md](../LOGS_COMPLIANCE.md).
+Two upstream limitations are surfaced as absent capabilities rather than emulated or faked:
+`otel_sdk_logs_force_flush()` takes no timeout (the pinned provider flush accepts none), and
+there is no batch export-timeout setter (the pinned Logs batch config has none; use
+`OTEL_BLRP_EXPORT_TIMEOUT`). Neither returns `OTEL_STATUS_OK` for configuration it cannot
+apply. See [LOGS_COMPLIANCE.md](../LOGS_COMPLIANCE.md).
 
 Using `fork()` without an immediate `exec()` after SDK background workers start is
 unsupported.

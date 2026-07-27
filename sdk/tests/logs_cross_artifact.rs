@@ -251,7 +251,7 @@ int main(void) {
 
     otel_logger_destroy(logger);
     otel_logger_provider_destroy(provider);
-    CHECK(otel_sdk_logs_force_flush(sdk, 0));
+    CHECK(otel_sdk_logs_force_flush(sdk));
     CHECK(otel_sdk_logs_shutdown(sdk, 5000));
     otel_sdk_destroy(sdk);
     return 0;

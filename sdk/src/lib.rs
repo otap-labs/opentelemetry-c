@@ -73,7 +73,6 @@ pub use log_processor::{
     otel_batch_log_processor_builder_build, otel_batch_log_processor_builder_destroy,
     otel_batch_log_processor_builder_new, otel_batch_log_processor_builder_set_exporter,
     otel_batch_log_processor_builder_set_max_export_batch_size,
-    otel_batch_log_processor_builder_set_max_export_timeout_millis,
     otel_batch_log_processor_builder_set_max_queue_size,
     otel_batch_log_processor_builder_set_scheduled_delay_millis, otel_log_processor_destroy,
     otel_simple_log_processor_create, OtelBatchLogProcessorBuilder, OtelLogProcessor,

@@ -987,21 +987,19 @@ pub unsafe extern "C" fn otel_sdk_set_logs_as_global(sdk: *mut OtelSdk) -> OtelS
     })
 }
 
-/// Flush every configured log processor.
+/// Flush every configured log processor, blocking until each one finishes.
 ///
-/// `timeout_millis` is accepted for signature symmetry with the other signals but is
-/// **ignored**: the pinned `SdkLoggerProvider::force_flush()` takes no timeout and blocks
-/// until each processor finishes. This is documented rather than emulated, because faking a
-/// timeout here would return control while the processors were still running.
+/// This deliberately takes **no timeout**, unlike the Trace and Metrics equivalents. The
+/// pinned `SdkLoggerProvider::force_flush()` accepts none, so a timeout parameter here could
+/// only ever be ignored -- and a flush that returns before the data is out, while reporting
+/// success, is precisely the failure a caller uses force-flush to avoid. The parameter can be
+/// added compatibly if upstream gains real support.
 ///
 /// # Safety
 ///
 /// `sdk` must be a live SDK handle and must not be destroyed concurrently.
 #[no_mangle]
-pub unsafe extern "C" fn otel_sdk_logs_force_flush(
-    sdk: *mut OtelSdk,
-    _timeout_millis: u64,
-) -> OtelStatus {
+pub unsafe extern "C" fn otel_sdk_logs_force_flush(sdk: *mut OtelSdk) -> OtelStatus {
     guard_status(|| {
         clear_last_error();
         let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
@@ -1764,7 +1762,7 @@ mod tests {
             assert_eq!(emitted[0].record.severity_number(), Some(Severity::Error));
             drop(provider);
 
-            assert_eq!(otel_sdk_logs_force_flush(sdk, 500), OtelStatus::Ok);
+            assert_eq!(otel_sdk_logs_force_flush(sdk), OtelStatus::Ok);
             assert_eq!(otel_sdk_logs_shutdown(sdk, 500), OtelStatus::Ok);
             otel_sdk_destroy(sdk);
         }
@@ -1779,7 +1777,7 @@ mod tests {
                 OtelStatus::InvalidArgument
             );
             assert_eq!(
-                otel_sdk_logs_force_flush(std::ptr::null_mut(), 0),
+                otel_sdk_logs_force_flush(std::ptr::null_mut()),
                 OtelStatus::InvalidArgument
             );
             assert_eq!(
@@ -1805,10 +1803,7 @@ mod tests {
                 otel_sdk_set_logs_as_global(sdk),
                 OtelStatus::AlreadyShutdown
             );
-            assert_eq!(
-                otel_sdk_logs_force_flush(sdk, 500),
-                OtelStatus::AlreadyShutdown
-            );
+            assert_eq!(otel_sdk_logs_force_flush(sdk), OtelStatus::AlreadyShutdown);
             otel_sdk_destroy(sdk);
         }
     }
@@ -2122,7 +2117,7 @@ mod tests {
 
                 barrier.wait();
                 // Flush against a saturated queue while emitters are still running.
-                let flush = otel_sdk_logs_force_flush(sdk, 1_000);
+                let flush = otel_sdk_logs_force_flush(sdk);
                 assert!(
                     matches!(flush, OtelStatus::Ok | OtelStatus::AlreadyShutdown),
                     "cycle {cycle}: unexpected flush status {flush:?}"

@@ -178,7 +178,7 @@ int main(void) {
 
     /* ---- Shutdown (application half again). ---- */
     /* timeout_millis is accepted but ignored: the pinned provider flush takes no timeout. */
-    TRY(otel_sdk_logs_force_flush(sdk, 0));
+    TRY(otel_sdk_logs_force_flush(sdk));
     TRY(otel_sdk_logs_shutdown(sdk, 5000));
     otel_sdk_destroy(sdk);
 

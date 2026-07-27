@@ -67,17 +67,21 @@ general-purpose end-user logging API.
   without deduplication, and enforcing uniqueness would cost a per-emit hash set on the hot
   path. Both behaviors are asserted by tests.
 
-- **`otel_sdk_logs_force_flush()` ignores `timeout_millis`.** The pinned
-  `SdkLoggerProvider::force_flush()` takes no timeout and blocks until every processor
-  finishes. The parameter exists for signature symmetry with the other signals. A timeout is
-  not emulated with a helper thread, because that would return control to the caller while
-  processors were still exporting — the opposite of what a flush is for.
+- **`otel_sdk_logs_force_flush()` takes no timeout**, unlike the Trace and Metrics
+  equivalents. The pinned `SdkLoggerProvider::force_flush()` accepts none and blocks until
+  every processor finishes. Carrying the parameter for cross-signal symmetry was rejected: it
+  could only ever be ignored, and a flush reporting success while data is still in flight is
+  the exact failure a caller uses force-flush to prevent. Emulating it with a helper thread
+  would be worse still — control would return while processors were mid-export.
 
-- **The batch export timeout is accepted but not applied.** The pinned Logs
-  `BatchConfigBuilder` exposes no `with_max_export_timeout` (unlike the traces one). The
-  setter is kept so the C API shape stays stable once upstream adds it; until then the
-  effective timeout is the upstream default, overridable via the `OTEL_BLRP_EXPORT_TIMEOUT`
-  environment variable.
+- **There is no batch export-timeout setter.** The pinned Logs `BatchConfigBuilder` exposes
+  no `with_max_export_timeout` (unlike the traces one). Rather than accept a value and return
+  `OTEL_STATUS_OK` for configuration that is never applied, the entry point is omitted; it
+  can be added compatibly once upstream supports it. The effective timeout is the upstream
+  default, overridable via the `OTEL_BLRP_EXPORT_TIMEOUT` environment variable.
+
+  Both of the above are the same judgement: while this surface is experimental it is cheaper
+  to omit a knob than to freeze a no-op one that callers may come to depend on.
 
 - **Emission returns no delivery guarantee.** `OTEL_STATUS_OK` from `otel_logger_emit()`
   means the record was validated, converted, and handed to the Rust logger. The upstream

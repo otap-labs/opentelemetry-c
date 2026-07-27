@@ -8,11 +8,12 @@
   lifecycle (`otel_sdk_set_logs_as_global`, `otel_sdk_logs_force_flush`,
   `otel_sdk_logs_shutdown`), simple and batch log processors, and OTLP Logs export over
   HTTP/protobuf and optional gRPC. Log record conversion validates the caller's flat value
-  node pool completely before converting any of it, bounds every allocation with
-  `try_reserve`, and sets trace context explicitly so the ambient Rust context can never leak
-  into a C caller's record. `otel_sdk_logs_force_flush` ignores its timeout and the batch
-  export timeout is not applied, because the pinned upstream APIs expose neither; see
-  `LOGS_COMPLIANCE.md`.
+  node pool completely before converting any of it, uses `try_reserve` for the
+  caller-sized bulk allocations (the collections whose capacity a caller controls), and sets
+  trace context explicitly so the ambient Rust context can never leak into a C caller's
+  record. Individual string copies use ordinary infallible allocation, as elsewhere in the
+  crate. `otel_sdk_logs_force_flush` takes no timeout and there is no batch export-timeout
+  setter, because the pinned upstream APIs support neither; see `LOGS_COMPLIANCE.md`.
 
 ### Fixed
 
