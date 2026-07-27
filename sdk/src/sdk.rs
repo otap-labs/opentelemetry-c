@@ -16,6 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
@@ -31,6 +32,7 @@ use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, take,
     HasHandleHeader,
 };
+use crate::log_processor::{LogProcessorImpl, OtelLogProcessor};
 use crate::manual_metric_reader::{OtelManualMetricReader, SharedManualMetricReader};
 use crate::metric_view::{MetricViewConfig, OtelMetricView};
 #[cfg(feature = "metrics-async-runtime")]
@@ -42,6 +44,7 @@ use crate::vtable;
 const MAX_SPAN_PROCESSORS: usize = 64;
 const MAX_METRIC_READERS: usize = 64;
 const MAX_METRIC_VIEWS: usize = 1024;
+const MAX_LOG_PROCESSORS: usize = 64;
 const MAX_RESOURCE_ATTRIBUTES: usize = 1024;
 
 /// Opaque builder handle (`otel_sdk_builder_t`). Not thread-safe; confine to one thread.
@@ -56,6 +59,9 @@ pub struct OtelSdkBuilder {
     processors: Vec<SpanProcessorImpl>,
     metric_readers: Vec<MetricReaderImpl>,
     metric_views: Vec<MetricViewConfig>,
+    // Log processors transferred in via `add_log_processor`; moved into the logger provider
+    // on `build`, or dropped (and shut down) with the builder if `build` never runs.
+    log_processors: Vec<LogProcessorImpl>,
 }
 
 enum MetricReaderImpl {
@@ -90,8 +96,10 @@ pub struct OtelSdk {
     header: OtelHandleHeader,
     provider: SdkTracerProvider,
     meter_provider: SdkMeterProvider,
+    logger_provider: SdkLoggerProvider,
     shutdown: AtomicBool,
     metrics_lifecycle: Mutex<MetricsLifecycle>,
+    logs_lifecycle: Mutex<LogsLifecycle>,
     flush_in_flight: Arc<AtomicBool>,
     #[cfg(feature = "metrics-async-runtime")]
     metric_runtime_guards: Vec<AsyncRuntimeGuard>,
@@ -99,6 +107,14 @@ pub struct OtelSdk {
 
 #[derive(Default)]
 struct MetricsLifecycle {
+    shutdown_started: bool,
+    global_registration: Option<u64>,
+}
+
+/// Mirrors [`MetricsLifecycle`]: Logs owns its own global slot and its own one-shot
+/// shutdown, so neither signal can shut down or unregister the other.
+#[derive(Default)]
+struct LogsLifecycle {
     shutdown_started: bool,
     global_registration: Option<u64>,
 }
@@ -127,6 +143,12 @@ impl OtelSdk {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn logs_lifecycle(&self) -> std::sync::MutexGuard<'_, LogsLifecycle> {
+        self.logs_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[cfg(feature = "metrics-async-runtime")]
     fn is_current_metric_runtime(&self) -> bool {
         self.metric_runtime_guards
@@ -146,7 +168,20 @@ impl Drop for OtelSdk {
         if let Some(registration_id) = registration_id {
             let _ = api_ffi::unregister_global_meter_provider(registration_id);
         }
+        let logs_registration_id = self
+            .logs_lifecycle
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_registration
+            .take();
+        if let Some(registration_id) = logs_registration_id {
+            let _ = api_ffi::unregister_global_logger_provider(registration_id);
+        }
         let _ = self.meter_provider.shutdown();
+        // The API's global slot held its own provider reference; it was just released above,
+        // so this drop can be the last one. Shut down explicitly rather than relying on the
+        // implicit shutdown-on-last-drop, so the outcome is deterministic.
+        let _ = self.logger_provider.shutdown();
     }
 }
 
@@ -168,6 +203,7 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
             processors: Vec::new(),
             metric_readers: Vec::new(),
             metric_views: Vec::new(),
+            log_processors: Vec::new(),
         })
     })
 }
@@ -412,6 +448,50 @@ pub unsafe extern "C" fn otel_sdk_builder_add_span_processor(
     })
 }
 
+/// Add (transfer) a log processor built by a log-processor constructor or builder.
+///
+/// On `OTEL_STATUS_OK`, ownership of `processor` moves into the SDK builder and the original
+/// pointer becomes invalid. On failure (invalid builder or processor, or the per-builder
+/// limit being reached) the caller still owns `processor`.
+///
+/// # Safety
+///
+/// `builder` must satisfy the handle contract; `processor` must be NULL or a live
+/// `otel_log_processor_t` not used concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_add_log_processor(
+    builder: *mut OtelSdkBuilder,
+    processor: *mut OtelLogProcessor,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        // Validate and reserve BEFORE taking ownership, so any rejection leaves the processor
+        // caller-owned and destroyable.
+        let builder = match unsafe { checked_mut::<OtelSdkBuilder>(builder) } {
+            Some(builder) => builder,
+            None => return OtelStatus::InvalidArgument,
+        };
+        if builder.log_processors.len() >= MAX_LOG_PROCESSORS {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "SDK builder log processor limit exceeded",
+            );
+        }
+        if builder.log_processors.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a log processor",
+            );
+        }
+        let owned = match unsafe { take::<OtelLogProcessor>(processor) } {
+            Some(owned) => owned,
+            None => return OtelStatus::InvalidArgument,
+        };
+        builder.log_processors.push(owned.processor);
+        OtelStatus::Ok
+    })
+}
+
 // ---- Build -----------------------------------------------------------------
 
 /// Convert a C attribute into an owned `KeyValue` (used for resource attributes).
@@ -460,6 +540,7 @@ pub unsafe extern "C" fn otel_sdk_build(
         let processors = std::mem::take(&mut builder.processors);
         let metric_readers = std::mem::take(&mut builder.metric_readers);
         let metric_views = std::mem::take(&mut builder.metric_views);
+        let log_processors = std::mem::take(&mut builder.log_processors);
         let resource = build_resource(builder);
         let mut provider_builder = SdkTracerProvider::builder().with_resource(resource);
         for processor in processors {
@@ -495,12 +576,20 @@ pub unsafe extern "C" fn otel_sdk_build(
                 meter_provider_builder.with_view(move |instrument| view.apply(instrument));
         }
         let meter_provider = meter_provider_builder.build();
+        let mut logger_provider_builder =
+            SdkLoggerProvider::builder().with_resource(build_resource(builder));
+        for processor in log_processors {
+            logger_provider_builder = processor.install(logger_provider_builder);
+        }
+        let logger_provider = logger_provider_builder.build();
         let sdk = into_raw(OtelSdk {
             header: OtelHandleHeader::new(OtelSdk::KIND),
             provider,
             meter_provider,
+            logger_provider,
             shutdown: AtomicBool::new(false),
             metrics_lifecycle: Mutex::new(MetricsLifecycle::default()),
+            logs_lifecycle: Mutex::new(LogsLifecycle::default()),
             flush_in_flight: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "metrics-async-runtime")]
             metric_runtime_guards,
@@ -815,6 +904,158 @@ pub unsafe extern "C" fn otel_sdk_metrics_shutdown(
             .unwrap_or(OtelStatus::Ok);
         let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
         let shutdown_status = match sdk.meter_provider.shutdown_with_timeout(timeout) {
+            Ok(()) => OtelStatus::Ok,
+            Err(err) => status_from_export_pipeline_error(&err),
+        };
+        if unregister_status != OtelStatus::Ok {
+            unregister_status
+        } else {
+            shutdown_status
+        }
+    })
+}
+
+// ---- Logs provider access and lifecycle ------------------------------------
+
+/// Obtain an API-owned `otel_logger_provider_t*` backed by this SDK.
+///
+/// The returned handle is allocated by the API library and must be released with
+/// `otel_logger_provider_destroy()`. Returns NULL if `sdk` is invalid.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_get_logger_provider(sdk: *const OtelSdk) -> *mut c_void {
+    guard_ptr(|| {
+        clear_last_error();
+        match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => {
+                let ctx = crate::logs_vtable::provider_ctx(sdk.logger_provider.clone());
+                let handle = api_ffi::logger_provider_new(crate::logs_vtable::vtable_ptr(), ctx);
+                if handle.is_null() {
+                    // The API rejected it; release the context we allocated.
+                    (crate::logs_vtable::SDK_LOGS_VTABLE.provider_free)(ctx);
+                }
+                handle
+            }
+            None => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// Install this SDK's LoggerProvider in the API-owned global Logs slot.
+///
+/// The Logs slot is independent of the Trace and Metrics slots: installing here neither
+/// replaces nor is replaced by the other signals.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_set_logs_as_global(sdk: *mut OtelSdk) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let mut lifecycle = sdk.logs_lifecycle();
+        if lifecycle.shutdown_started {
+            return fail(
+                OtelStatus::AlreadyShutdown,
+                "cannot install a shut-down LoggerProvider as global",
+            );
+        }
+        let ctx = crate::logs_vtable::provider_ctx(sdk.logger_provider.clone());
+        let (status, registration_id) =
+            api_ffi::register_global_logger_provider(crate::logs_vtable::vtable_ptr(), ctx);
+        if status != OtelStatus::Ok {
+            (crate::logs_vtable::SDK_LOGS_VTABLE.provider_free)(ctx);
+            return status;
+        }
+        if registration_id == 0 {
+            return fail(
+                OtelStatus::InternalError,
+                "Logs global registration returned an invalid zero token",
+            );
+        }
+        // Replace, rather than accumulate, this SDK's own registration: only the newest
+        // token can still own the slot, so an older one would always be a stale no-op.
+        lifecycle.global_registration = Some(registration_id);
+        status
+    })
+}
+
+/// Flush every configured log processor.
+///
+/// `timeout_millis` is accepted for signature symmetry with the other signals but is
+/// **ignored**: the pinned `SdkLoggerProvider::force_flush()` takes no timeout and blocks
+/// until each processor finishes. This is documented rather than emulated, because faking a
+/// timeout here would return control while the processors were still running.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_logs_force_flush(
+    sdk: *mut OtelSdk,
+    _timeout_millis: u64,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        if sdk.logs_lifecycle().shutdown_started {
+            return fail(
+                OtelStatus::AlreadyShutdown,
+                "cannot force flush a shut-down LoggerProvider",
+            );
+        }
+        map_flush_result(sdk.logger_provider.force_flush())
+    })
+}
+
+/// Shut down the LoggerProvider at most once, first clearing the API-owned global slot.
+///
+/// The pinned provider shutdown is itself one-shot (a repeat returns `AlreadyShutdown`), and
+/// this wrapper additionally guarantees the global slot is released exactly once even if two
+/// threads race here.
+///
+/// # Safety
+///
+/// `sdk` must be a live SDK handle and must not be destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_logs_shutdown(
+    sdk: *mut OtelSdk,
+    timeout_millis: u64,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let sdk = match unsafe { checked_ref::<OtelSdk>(sdk) } {
+            Some(sdk) => sdk,
+            None => return OtelStatus::InvalidArgument,
+        };
+        let registration_id = {
+            let mut lifecycle = sdk.logs_lifecycle();
+            if lifecycle.shutdown_started {
+                return fail(
+                    OtelStatus::AlreadyShutdown,
+                    "LoggerProvider has already been shut down",
+                );
+            }
+            lifecycle.shutdown_started = true;
+            lifecycle.global_registration.take()
+        };
+        // Unregister first so no new C caller can acquire a logger from a provider that is
+        // about to stop accepting records.
+        let unregister_status = registration_id
+            .map(api_ffi::unregister_global_logger_provider)
+            .unwrap_or(OtelStatus::Ok);
+        let timeout = optional_millis(timeout_millis).unwrap_or_else(|| Duration::from_secs(5));
+        let shutdown_status = match sdk.logger_provider.shutdown_with_timeout(timeout) {
             Ok(()) => OtelStatus::Ok,
             Err(err) => status_from_export_pipeline_error(&err),
         };
@@ -1384,6 +1625,294 @@ mod tests {
             assert!(crate::api_ffi::test_probe::metrics_registered());
             otel_sdk_destroy(sdk);
             assert!(!crate::api_ffi::test_probe::metrics_registered());
+        }
+    }
+
+    // ---- Logs lifecycle ----------------------------------------------------
+
+    /// Build an SDK whose logger provider exports into an in-memory exporter, returning both
+    /// so tests can assert on what actually reached the pipeline.
+    unsafe fn sdk_with_in_memory_logs(
+    ) -> (*mut OtelSdk, opentelemetry_sdk::logs::InMemoryLogExporter) {
+        unsafe {
+            use crate::log_exporter::{LogExporterImpl, OtelLogExporter};
+            use crate::log_processor::{otel_simple_log_processor_create, OtelLogProcessor};
+
+            let exporter = opentelemetry_sdk::logs::InMemoryLogExporter::default();
+            let exporter_handle = crate::handle::into_raw(OtelLogExporter::new(
+                LogExporterImpl::InMemory(exporter.clone()),
+            ));
+            let mut processor: *mut OtelLogProcessor = std::ptr::null_mut();
+            assert_eq!(
+                otel_simple_log_processor_create(exporter_handle, &mut processor),
+                OtelStatus::Ok
+            );
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_log_processor(builder, processor),
+                OtelStatus::Ok
+            );
+            let mut sdk: *mut OtelSdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            otel_sdk_builder_destroy(builder);
+            (sdk, exporter)
+        }
+    }
+
+    #[test]
+    fn add_log_processor_transfers_ownership_only_on_success() {
+        use crate::log_exporter::{LogExporterImpl, OtelLogExporter};
+        use crate::log_processor::{
+            otel_log_processor_destroy, otel_simple_log_processor_create, OtelLogProcessor,
+        };
+
+        unsafe {
+            let make_processor = || {
+                let exporter =
+                    crate::handle::into_raw(OtelLogExporter::new(LogExporterImpl::InMemory(
+                        opentelemetry_sdk::logs::InMemoryLogExporter::default(),
+                    )));
+                let mut processor: *mut OtelLogProcessor = std::ptr::null_mut();
+                assert_eq!(
+                    otel_simple_log_processor_create(exporter, &mut processor),
+                    OtelStatus::Ok
+                );
+                processor
+            };
+
+            // A rejected call must leave the processor caller-owned so it can still be freed.
+            let processor = make_processor();
+            assert_eq!(
+                otel_sdk_builder_add_log_processor(std::ptr::null_mut(), processor),
+                OtelStatus::InvalidArgument
+            );
+            otel_log_processor_destroy(processor);
+
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_log_processor(builder, std::ptr::null_mut()),
+                OtelStatus::InvalidArgument
+            );
+
+            // Success transfers ownership; destroying the builder releases it exactly once.
+            let processor = make_processor();
+            assert_eq!(
+                otel_sdk_builder_add_log_processor(builder, processor),
+                OtelStatus::Ok
+            );
+            assert_eq!((*builder).log_processors.len(), 1);
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn add_log_processor_enforces_its_limit_without_consuming_the_processor() {
+        use crate::log_exporter::{LogExporterImpl, OtelLogExporter};
+        use crate::log_processor::{
+            otel_log_processor_destroy, otel_simple_log_processor_create, OtelLogProcessor,
+        };
+
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            // Fill the vector directly: constructing 64 real processors would be wasteful and
+            // the limit check runs before ownership is taken either way.
+            for _ in 0..MAX_LOG_PROCESSORS {
+                (*builder)
+                    .log_processors
+                    .push(LogProcessorImpl::Simple(Box::new(
+                        opentelemetry_sdk::logs::SimpleLogProcessor::new(
+                            LogExporterImpl::InMemory(
+                                opentelemetry_sdk::logs::InMemoryLogExporter::default(),
+                            ),
+                        ),
+                    )));
+            }
+            let exporter = crate::handle::into_raw(OtelLogExporter::new(
+                LogExporterImpl::InMemory(opentelemetry_sdk::logs::InMemoryLogExporter::default()),
+            ));
+            let mut processor: *mut OtelLogProcessor = std::ptr::null_mut();
+            assert_eq!(
+                otel_simple_log_processor_create(exporter, &mut processor),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_sdk_builder_add_log_processor(builder, processor),
+                OtelStatus::InvalidConfig
+            );
+            // Still caller-owned after the rejection.
+            otel_log_processor_destroy(processor);
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn logs_pipeline_receives_records_emitted_through_the_sdk_logger_provider() {
+        use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _, Severity};
+        use opentelemetry::InstrumentationScope;
+
+        unsafe {
+            let (sdk, exporter) = sdk_with_in_memory_logs();
+            let provider = (*sdk).logger_provider.clone();
+            let logger = provider.logger_with_scope(InstrumentationScope::builder("scope").build());
+            let mut record = logger.create_log_record();
+            record.set_severity_number(Severity::Error);
+            logger.emit(record);
+
+            // Read BEFORE shutdown: the in-memory exporter clears its buffer on shutdown.
+            let emitted = exporter.get_emitted_logs().expect("readable");
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].record.severity_number(), Some(Severity::Error));
+            drop(provider);
+
+            assert_eq!(otel_sdk_logs_force_flush(sdk, 500), OtelStatus::Ok);
+            assert_eq!(otel_sdk_logs_shutdown(sdk, 500), OtelStatus::Ok);
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn logs_entry_points_reject_invalid_sdk_handles() {
+        unsafe {
+            assert!(otel_sdk_get_logger_provider(std::ptr::null()).is_null());
+            assert_eq!(
+                otel_sdk_set_logs_as_global(std::ptr::null_mut()),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_sdk_logs_force_flush(std::ptr::null_mut(), 0),
+                OtelStatus::InvalidArgument
+            );
+            assert_eq!(
+                otel_sdk_logs_shutdown(std::ptr::null_mut(), 0),
+                OtelStatus::InvalidArgument
+            );
+        }
+    }
+
+    #[test]
+    fn logs_shutdown_is_one_shot_and_blocks_later_installation_and_flush() {
+        let _guard = crate::api_ffi::test_probe::LOGS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let (sdk, _exporter) = sdk_with_in_memory_logs();
+            assert_eq!(otel_sdk_logs_shutdown(sdk, 500), OtelStatus::Ok);
+            assert_eq!(
+                otel_sdk_logs_shutdown(sdk, 500),
+                OtelStatus::AlreadyShutdown
+            );
+            assert_eq!(
+                otel_sdk_set_logs_as_global(sdk),
+                OtelStatus::AlreadyShutdown
+            );
+            assert_eq!(
+                otel_sdk_logs_force_flush(sdk, 500),
+                OtelStatus::AlreadyShutdown
+            );
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn logs_global_installation_registers_the_logs_vtable_and_shutdown_clears_it() {
+        let _guard = crate::api_ffi::test_probe::LOGS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let (sdk, _exporter) = sdk_with_in_memory_logs();
+            assert_eq!(otel_sdk_set_logs_as_global(sdk), OtelStatus::Ok);
+            assert!(crate::api_ffi::test_probe::logs_registered());
+            let first = crate::api_ffi::test_probe::logs_registration_id()
+                .expect("a non-zero registration token must be published");
+
+            // Re-installing replaces this SDK's own token rather than accumulating tokens.
+            assert_eq!(otel_sdk_set_logs_as_global(sdk), OtelStatus::Ok);
+            let second = crate::api_ffi::test_probe::logs_registration_id().expect("token");
+            assert_ne!(first, second);
+
+            assert_eq!(otel_sdk_logs_shutdown(sdk, 500), OtelStatus::Ok);
+            assert!(!crate::api_ffi::test_probe::logs_registered());
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn dropping_the_sdk_without_explicit_shutdown_clears_the_logs_global_slot() {
+        let _guard = crate::api_ffi::test_probe::LOGS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let (sdk, _exporter) = sdk_with_in_memory_logs();
+            assert_eq!(otel_sdk_set_logs_as_global(sdk), OtelStatus::Ok);
+            assert!(crate::api_ffi::test_probe::logs_registered());
+            // No explicit `otel_sdk_logs_shutdown`: Drop must still unregister.
+            otel_sdk_destroy(sdk);
+            assert!(!crate::api_ffi::test_probe::logs_registered());
+        }
+    }
+
+    #[test]
+    fn logs_and_metrics_global_slots_are_independent() {
+        let _logs_guard = crate::api_ffi::test_probe::LOGS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _metrics_guard = crate::api_ffi::test_probe::METRICS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let (sdk, _exporter) = sdk_with_in_memory_logs();
+            assert_eq!(otel_sdk_set_as_global_metrics_probe(sdk), OtelStatus::Ok);
+            assert_eq!(otel_sdk_set_logs_as_global(sdk), OtelStatus::Ok);
+
+            // Shutting down Logs must not disturb the Metrics registration, and vice versa.
+            assert_eq!(otel_sdk_logs_shutdown(sdk, 500), OtelStatus::Ok);
+            assert!(!crate::api_ffi::test_probe::logs_registered());
+            assert!(crate::api_ffi::test_probe::metrics_registered());
+
+            assert_eq!(otel_sdk_metrics_shutdown(sdk, 500), OtelStatus::Ok);
+            assert!(!crate::api_ffi::test_probe::metrics_registered());
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    unsafe fn otel_sdk_set_as_global_metrics_probe(sdk: *mut OtelSdk) -> OtelStatus {
+        unsafe { otel_sdk_set_metrics_as_global(sdk) }
+    }
+
+    #[test]
+    fn concurrent_logs_install_and_shutdown_leave_no_registration() {
+        let _guard = crate::api_ffi::test_probe::LOGS_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            let (sdk, _exporter) = sdk_with_in_memory_logs();
+            let address = sdk as usize;
+            let barrier = Arc::new(Barrier::new(2));
+            let installer = {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    otel_sdk_set_logs_as_global(address as *mut OtelSdk)
+                })
+            };
+            barrier.wait();
+            let shutdown = otel_sdk_logs_shutdown(sdk, 500);
+            let install = installer.join().expect("installer thread must not panic");
+
+            // Whatever the interleaving, shutdown wins: the slot must end up empty and the
+            // install must either have been refused or already been undone.
+            assert!(matches!(shutdown, OtelStatus::Ok));
+            assert!(matches!(
+                install,
+                OtelStatus::Ok | OtelStatus::AlreadyShutdown
+            ));
+            if install == OtelStatus::Ok {
+                // The install landed first; a second shutdown is a no-op, so clean up the slot.
+                let _ = crate::api_ffi::test_probe::logs_registration_id()
+                    .map(api_ffi::unregister_global_logger_provider);
+            }
+            assert!(!crate::api_ffi::test_probe::logs_registered());
+            otel_sdk_destroy(sdk);
         }
     }
 

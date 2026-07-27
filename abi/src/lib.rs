@@ -846,6 +846,42 @@ pub struct OtelLogBytesView {
     pub len: usize,
 }
 
+impl OtelLogBytesView {
+    /// An empty byte view.
+    pub fn empty() -> Self {
+        Self {
+            ptr: std::ptr::null(),
+            len: 0,
+        }
+    }
+
+    /// Borrow the raw bytes, rejecting a NULL pointer with non-zero length and any length
+    /// beyond `isize::MAX` before a slice is formed.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be valid for reads of `len` bytes, or NULL when `len == 0`.
+    pub unsafe fn as_slice(&self) -> Result<&[u8], AbiError> {
+        if self.len == 0 {
+            return Ok(&[]);
+        }
+        if self.ptr.is_null() {
+            return Err(AbiError::new(
+                OtelStatus::InvalidArgument,
+                "bytes view has NULL ptr with non-zero len",
+            ));
+        }
+        if self.len > isize::MAX as usize {
+            return Err(AbiError::new(
+                OtelStatus::InvalidArgument,
+                "bytes view len exceeds the maximum supported size",
+            ));
+        }
+        // SAFETY: non-NULL, caller guarantees `len` valid bytes, `len <= isize::MAX`.
+        Ok(unsafe { std::slice::from_raw_parts(self.ptr, self.len) })
+    }
+}
+
 /// A half-open `[first, first + count)` range into the record's borrowed node pool.
 ///
 /// Indices are 32-bit because the per-record node budget

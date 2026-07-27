@@ -22,10 +22,11 @@ opentelemetry-c-abi = { path = "../abi" }
 # Deliberately do not add `opentelemetry-c-api` here. The SDK calls the API through
 # external C symbols; a Rust path dependency could embed another API instance and duplicate
 # the process-global provider slots.
-opentelemetry = { workspace = true, features = ["trace", "metrics"] }
+opentelemetry = { workspace = true, features = ["trace", "metrics", "logs"] }
 opentelemetry_sdk = { workspace = true, features = [
     "trace",
     "metrics",
+    "logs",
     "spec_unstable_metrics_views",
     "experimental_metrics_custom_reader",
     "experimental_metrics_bound_instruments",
@@ -51,12 +52,12 @@ tokio = { version = "1", optional = true, default-features = false, features = [
 tonic = { version = "=0.14.1", optional = true, default-features = false }
 
 [dev-dependencies]
-opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "testing", "spec_unstable_metrics_views"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", "testing", "spec_unstable_metrics_views"] }
 # The SDK-backed hot-path benchmark drives the real C API entrypoints (global provider
 # slot, span/tracer ops). Linking the API rlib here also resolves this crate's `api_ffi`
 # extern `otel_api_*` imports for the bench binary. Benchmark/test only — never a runtime dep.
 opentelemetry-c-api = { path = "../api" }
-opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic", "metrics"] }
+opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic", "metrics", "logs"] }
 prost = "=0.14.4"
 criterion = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["full"] }
@@ -85,6 +86,7 @@ otlp-http = [
     "dep:reqwest",
     "opentelemetry-otlp/trace",
     "opentelemetry-otlp/metrics",
+    "opentelemetry-otlp/logs",
     "opentelemetry-otlp/http-proto",
     "opentelemetry-otlp/reqwest-blocking-client",
 ]
@@ -94,6 +96,7 @@ otlp-grpc = [
     "dep:tokio",
     "dep:tonic",
     "opentelemetry-otlp/metrics",
+    "opentelemetry-otlp/logs",
     "opentelemetry-otlp/grpc-tonic",
 ]
 # TLS backends are transport-specific.

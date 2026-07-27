@@ -145,6 +145,9 @@ int main(void) {
 #include <opentelemetry_c/otlp_metric_exporter.h>
 #include <opentelemetry_c/periodic_metric_reader.h>
 #include <opentelemetry_c/metric_view.h>
+#include <opentelemetry_c/log_exporter.h>
+#include <opentelemetry_c/log_processor.h>
+#include <opentelemetry_c/otlp_log_exporter.h>
 int main(void) {
     otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
     otel_otlp_trace_exporter_builder_set_endpoint(eb, otel_cstr("http://localhost:4318/v1/traces"));
@@ -188,9 +191,38 @@ int main(void) {
     otel_metric_view_builder_destroy(vb);
     otel_sdk_builder_add_metric_view(sb, view);
 
+    /* Logs pipeline: OTLP exporter -> batch processor -> SDK builder. */
+    otel_otlp_log_exporter_builder_t* leb = otel_otlp_log_exporter_builder_new();
+    otel_otlp_log_exporter_builder_set_endpoint(leb, otel_cstr("http://localhost:4318/v1/logs"));
+    otel_otlp_log_exporter_builder_set_transport(leb, OTEL_OTLP_LOG_TRANSPORT_HTTP_PROTOBUF);
+    otel_otlp_log_exporter_builder_set_compression(leb, OTEL_OTLP_COMPRESSION_NONE);
+    otel_otlp_log_exporter_builder_add_header(leb, otel_cstr("api-key"), otel_cstr("secret"));
+    otel_otlp_log_exporter_builder_set_timeout_millis(leb, 5000);
+    otel_log_exporter_t* log_exporter = NULL;
+    otel_otlp_log_exporter_builder_build(leb, &log_exporter);
+    otel_otlp_log_exporter_builder_destroy(leb);
+
+    otel_batch_log_processor_builder_t* lpb = otel_batch_log_processor_builder_new();
+    otel_batch_log_processor_builder_set_exporter(lpb, log_exporter);
+    otel_batch_log_processor_builder_set_max_queue_size(lpb, 2048);
+    otel_batch_log_processor_builder_set_max_export_batch_size(lpb, 512);
+    otel_batch_log_processor_builder_set_scheduled_delay_millis(lpb, 1000);
+    otel_batch_log_processor_builder_set_max_export_timeout_millis(lpb, 30000);
+    otel_log_processor_t* log_processor = NULL;
+    otel_batch_log_processor_builder_build(lpb, &log_processor);
+    otel_batch_log_processor_builder_destroy(lpb);
+    otel_sdk_builder_add_log_processor(sb, log_processor);
+
     otel_sdk_t* sdk = NULL;
     otel_sdk_build(sb, &sdk);
     otel_sdk_builder_destroy(sb);
+
+    /* Logs lifecycle entry points. */
+    otel_logger_provider_t* logger_provider = otel_sdk_get_logger_provider(sdk);
+    otel_logger_provider_destroy(logger_provider);
+    otel_sdk_set_logs_as_global(sdk);
+    otel_sdk_logs_force_flush(sdk, 0);
+    otel_sdk_logs_shutdown(sdk, 5000);
     (void)sdk;
     return 0;
 }
