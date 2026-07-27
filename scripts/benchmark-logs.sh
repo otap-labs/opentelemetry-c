@@ -40,3 +40,5 @@ run_benchmark logs_hotpath \
   cargo bench -p opentelemetry-c-sdk --bench logs_hotpath -- --noplot
 run_benchmark logs_allocations \
   cargo bench -p opentelemetry-c-sdk --bench logs_allocations
+run_benchmark logs_export_conversion \
+  cargo bench -p opentelemetry-c-sdk --bench logs_export_conversion -- --noplot

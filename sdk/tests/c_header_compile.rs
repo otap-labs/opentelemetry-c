@@ -380,8 +380,7 @@ int main(void) {
         ],
     );
 
-    let custom_log_exporter_example =
-        manifest().join("examples/c-custom-log-exporter/main.c");
+    let custom_log_exporter_example = manifest().join("examples/c-custom-log-exporter/main.c");
     assert!(
         custom_log_exporter_example.exists(),
         "example missing: {}",

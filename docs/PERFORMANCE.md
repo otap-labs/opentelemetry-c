@@ -166,6 +166,7 @@ exporter/network benchmark should remain opt-in and outside the default regressi
 ```sh
 cargo bench -p opentelemetry-c-sdk --bench logs_hotpath
 cargo bench -p opentelemetry-c-sdk --bench logs_allocations
+cargo bench -p opentelemetry-c-sdk --bench logs_export_conversion
 LOGS_BENCH_REPEATS=3 scripts/benchmark-logs.sh
 ```
 
@@ -196,6 +197,25 @@ measured emit performs the complete validate-convert-handoff and is then dropped
 That is deliberate: an unbounded queue would fold amortized queue reallocation into the
 per-record figures, and allowing an export to run would let background-thread allocations be
 charged to whichever emit happened to be in flight, since the counting allocator is global.
+
+`logs_export_conversion` measures the opposite direction: what the callback-based custom
+exporter costs to hand a finished batch back to C. It needs no transport feature and no
+collector, because the exporter *is* the C callback.
+
+Three paths are reported per record shape. `queue_drop` emits into a batch processor whose
+bounded queue is already full, so the record is converted for the queue and then dropped and no
+export view is built; that is the emit-side floor for the same payload. `export_ignore` runs a
+simple processor plus a callback that returns immediately, and `export_traverse` runs the same
+pipeline with a callback that walks every attribute and every node of the flattened pool, which
+is what a realistic bridge actually pays. The `export_ignore` minus `queue_drop` gap is an
+*upper bound* on export-view construction rather than an exact figure, because it also contains
+the simple processor's own bookkeeping; it is reported that way deliberately instead of being
+presented as a precise conversion cost.
+
+A separate `logs_export_batch` group emits N records and then flushes them, so one iteration is
+one converted batch of N. Batch sizes 1, 64, and 512 are measured to show that per-batch cost
+scales with record count rather than with anything quadratic in the flattening, which is the
+property the breadth-first, contiguous-range pool design is meant to guarantee.
 
 The result that matters most is that every `noop` case reports **exactly zero allocations and
 zero bytes per operation**. A C application that links the API but installs no SDK pays no heap
