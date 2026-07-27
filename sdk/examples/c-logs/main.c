@@ -177,7 +177,8 @@ int main(void) {
     otel_logger_provider_destroy(provider);
 
     /* ---- Shutdown (application half again). ---- */
-    /* timeout_millis is accepted but ignored: the pinned provider flush takes no timeout. */
+    /* Force flush takes no caller-supplied timeout; the pinned batch processor applies its
+     * own non-configurable five-second wait. */
     TRY(otel_sdk_logs_force_flush(sdk));
     TRY(otel_sdk_logs_shutdown(sdk, 5000));
     otel_sdk_destroy(sdk);
