@@ -31,7 +31,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     ExportMetricsServiceResponse,
 };
 use opentelemetry_proto::tonic::common::v1::{any_value, KeyValue};
-use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point};
+use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point, AggregationTemporality};
 use prost::Message;
 #[cfg(feature = "otlp-grpc")]
 use tokio::net::TcpListener as TokioTcpListener;
@@ -200,10 +200,14 @@ typedef struct otel_span_t otel_span_t;
 typedef struct otel_meter_provider_t otel_meter_provider_t;
 typedef struct otel_meter_t otel_meter_t;
 typedef struct otel_counter_u64_t otel_counter_u64_t;
+typedef struct otel_up_down_counter_i64_t otel_up_down_counter_i64_t;
 typedef struct otel_gauge_f64_t otel_gauge_f64_t;
 typedef struct otel_histogram_f64_t otel_histogram_f64_t;
+typedef struct otel_observable_counter_u64_t otel_observable_counter_u64_t;
 typedef struct otel_observable_gauge_u64_t otel_observable_gauge_u64_t;
 typedef struct otel_observer_u64_t otel_observer_u64_t;
+typedef struct otel_metric_view_builder_t otel_metric_view_builder_t;
+typedef struct otel_metric_view_t otel_metric_view_t;
 typedef struct { uint32_t kind; const otel_span_t* parent; } otel_span_start_options_t;
 extern otel_tracer_provider_t* otel_global_tracer_provider(void);
 extern otel_tracer_t* otel_tracer_provider_get_tracer(const otel_tracer_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
@@ -218,16 +222,21 @@ extern otel_meter_t* otel_meter_provider_get_meter(const otel_meter_provider_t*,
 extern otel_meter_t* otel_meter_provider_get_meter_with_options(
     const otel_meter_provider_t*, const otel_meter_options_t*);
 extern int otel_meter_create_u64_counter(const otel_meter_t*, otel_string_view_t, const void*, otel_counter_u64_t**);
+extern int otel_meter_create_i64_up_down_counter(const otel_meter_t*, otel_string_view_t, const void*, otel_up_down_counter_i64_t**);
 extern int otel_meter_create_f64_gauge(const otel_meter_t*, otel_string_view_t, const void*, otel_gauge_f64_t**);
 extern int otel_meter_create_f64_histogram(const otel_meter_t*, otel_string_view_t, const void*, otel_histogram_f64_t**);
+extern int otel_meter_create_u64_observable_counter(const otel_meter_t*, otel_string_view_t, const void*, void (*)(otel_observer_u64_t*, void*), void*, void (*)(void*), otel_observable_counter_u64_t**);
 extern int otel_meter_create_u64_observable_gauge(const otel_meter_t*, otel_string_view_t, const void*, void (*)(otel_observer_u64_t*, void*), void*, void (*)(void*), otel_observable_gauge_u64_t**);
 extern int otel_counter_u64_add(const otel_counter_u64_t*, uint64_t, const void*, size_t);
+extern int otel_up_down_counter_i64_add(const otel_up_down_counter_i64_t*, int64_t, const void*, size_t);
 extern int otel_gauge_f64_record(const otel_gauge_f64_t*, double, const void*, size_t);
 extern int otel_histogram_f64_record(const otel_histogram_f64_t*, double, const void*, size_t);
 extern int otel_observer_u64_observe(otel_observer_u64_t*, uint64_t, const void*, size_t);
 extern void otel_counter_u64_destroy(otel_counter_u64_t*);
+extern void otel_up_down_counter_i64_destroy(otel_up_down_counter_i64_t*);
 extern void otel_gauge_f64_destroy(otel_gauge_f64_t*);
 extern void otel_histogram_f64_destroy(otel_histogram_f64_t*);
+extern void otel_observable_counter_u64_destroy(otel_observable_counter_u64_t*);
 extern void otel_observable_gauge_u64_destroy(otel_observable_gauge_u64_t*);
 extern void otel_meter_destroy(otel_meter_t*);
 extern void otel_meter_provider_destroy(otel_meter_provider_t*);
@@ -256,6 +265,8 @@ extern int otel_otlp_metric_exporter_builder_set_endpoint(otel_otlp_metric_expor
 extern int otel_otlp_metric_exporter_builder_set_transport(otel_otlp_metric_exporter_builder_t*, uint32_t);
 extern int otel_otlp_metric_exporter_builder_set_compression(
     otel_otlp_metric_exporter_builder_t*, uint32_t);
+extern int otel_otlp_metric_exporter_builder_set_temporality(
+    otel_otlp_metric_exporter_builder_t*, uint32_t);
 extern int otel_otlp_metric_exporter_builder_set_timeout_millis(
     otel_otlp_metric_exporter_builder_t*, uint64_t);
 extern int otel_otlp_metric_exporter_builder_add_header(
@@ -273,6 +284,7 @@ extern int otel_sdk_builder_set_service_name(otel_sdk_builder_t*, otel_string_vi
 extern int otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t*, otel_key_value_t);
 extern int otel_sdk_builder_add_span_processor(otel_sdk_builder_t*, otel_span_processor_t*);
 extern int otel_sdk_builder_add_metric_reader(otel_sdk_builder_t*, otel_periodic_metric_reader_t*);
+extern int otel_sdk_builder_add_metric_view(otel_sdk_builder_t*, otel_metric_view_t*);
 extern int otel_sdk_build(otel_sdk_builder_t*, otel_sdk_t**);
 extern void otel_sdk_builder_destroy(otel_sdk_builder_t*);
 extern int otel_sdk_set_as_global(otel_sdk_t*);
@@ -282,12 +294,21 @@ extern int otel_sdk_metrics_force_flush(otel_sdk_t*, uint64_t);
 extern int otel_sdk_metrics_shutdown(otel_sdk_t*, uint64_t);
 extern int otel_sdk_shutdown(otel_sdk_t*, uint64_t);
 extern void otel_sdk_destroy(otel_sdk_t*);
+extern otel_metric_view_builder_t* otel_metric_view_builder_new(void);
+extern void otel_metric_view_builder_destroy(otel_metric_view_builder_t*);
+extern int otel_metric_view_builder_set_name_pattern(otel_metric_view_builder_t*, otel_string_view_t);
+extern int otel_metric_view_builder_set_aggregation(otel_metric_view_builder_t*, uint32_t);
+extern int otel_metric_view_builder_set_exponential_histogram(
+    otel_metric_view_builder_t*, uint32_t, int8_t, uint32_t);
+extern int otel_metric_view_builder_build(otel_metric_view_builder_t*, otel_metric_view_t**);
+extern void otel_metric_view_destroy(otel_metric_view_t*);
 static otel_string_view_t cs(const char* s){ otel_string_view_t v; v.ptr=s; v.len=s?strlen(s):0; return v; }
 static otel_string_view_t emp(void){ otel_string_view_t v; v.ptr=(void*)0; v.len=0; return v; }
 extern char* getenv(const char*);
 static int observable_calls=0;
 static int observable_destroyed=0;
 static otel_observable_gauge_u64_t* observable=(void*)0;
+static otel_observable_counter_u64_t* observable_counter=(void*)0;
 static void observe_queue(otel_observer_u64_t* observer, void* user_data){
     (void)user_data;
     otel_key_value_t attr;
@@ -296,6 +317,14 @@ static void observe_queue(otel_observer_u64_t* observer, void* user_data){
     attr.value.string_value=cs("checkout");
     observable_calls++;
     otel_observer_u64_observe(observer,17,&attr,1);
+}
+static void observe_requests(otel_observer_u64_t* observer, void* user_data){
+    (void)user_data;
+    otel_key_value_t attr;
+    attr.key=cs("route");
+    attr.value_type=0;
+    attr.value.string_value=cs("checkout");
+    otel_observer_u64_observe(observer,13,&attr,1);
 }
 static void destroy_observable_state(void* user_data){
     observable_destroyed++;
@@ -317,8 +346,11 @@ static int metrics_work(void){
     otel_meter_provider_t* p=(void*)0;
     otel_meter_t* m=(void*)0;
     otel_counter_u64_t* c=(void*)0;
+    otel_counter_u64_t* dropped=(void*)0;
+    otel_up_down_counter_i64_t* work=(void*)0;
     otel_gauge_f64_t* g=(void*)0;
     otel_histogram_f64_t* h=(void*)0;
+    otel_histogram_f64_t* exponential=(void*)0;
     double boundaries[2]={5.0,10.0};
     otel_instrument_options_t counter_options={
         sizeof(otel_instrument_options_t),cs("completed requests"),cs("{request}"),(void*)0,0
@@ -349,19 +381,39 @@ static int metrics_work(void){
     if (otel_meter_create_u64_counter(m,cs("requests"),&counter_options,&c)!=0||!c){
         result=3; goto cleanup;
     }
+    if (otel_meter_create_u64_counter(m,cs("dropped_requests"),0,&dropped)!=0||!dropped){
+        result=9; goto cleanup;
+    }
+    if (otel_meter_create_i64_up_down_counter(m,cs("work"),0,&work)!=0||!work){
+        result=10; goto cleanup;
+    }
     if (otel_meter_create_f64_gauge(m,cs("queue_depth"),&gauge_options,&g)!=0||!g){
         result=4; goto cleanup;
     }
     if (otel_meter_create_f64_histogram(m,cs("duration"),&histogram_options,&h)!=0||!h){
         result=5; goto cleanup;
     }
+    if (otel_meter_create_f64_histogram(m,cs("exponential_duration"),0,&exponential)!=0||
+        !exponential){
+        result=11; goto cleanup;
+    }
     if (otel_counter_u64_add(c,3,&attr,1)!=0){ result=6; goto cleanup; }
+    if (otel_counter_u64_add(dropped,99,0,0)!=0){ result=12; goto cleanup; }
+    if (otel_up_down_counter_i64_add(work,-2,&attr,1)!=0){ result=13; goto cleanup; }
     if (otel_gauge_f64_record(g,2.5,&attr,1)!=0){ result=7; goto cleanup; }
     if (otel_histogram_f64_record(h,7.5,&attr,1)!=0){ result=8; goto cleanup; }
+    if (otel_histogram_f64_record(h,11.0,&attr,1)!=0){ result=14; goto cleanup; }
+    if (otel_histogram_f64_record(exponential,-4.0,0,0)!=0){ result=15; goto cleanup; }
+    if (otel_histogram_f64_record(exponential,0.0,0,0)!=0){ result=16; goto cleanup; }
+    if (otel_histogram_f64_record(exponential,2.0,0,0)!=0){ result=17; goto cleanup; }
+    if (otel_histogram_f64_record(exponential,8.0,0,0)!=0){ result=18; goto cleanup; }
 
 cleanup:
+    if (exponential) otel_histogram_f64_destroy(exponential);
     if (h) otel_histogram_f64_destroy(h);
     if (g) otel_gauge_f64_destroy(g);
+    if (work) otel_up_down_counter_i64_destroy(work);
+    if (dropped) otel_counter_u64_destroy(dropped);
     if (c) otel_counter_u64_destroy(c);
     if (m) otel_meter_destroy(m);
     if (p) otel_meter_provider_destroy(p);
@@ -373,6 +425,7 @@ static int observable_setup(void){
     otel_meter_provider_t* p=(void*)0;
     otel_meter_t* m=(void*)0;
     otel_observable_gauge_u64_t* created=(void*)0;
+    otel_observable_counter_u64_t* created_counter=(void*)0;
     void* state=(void*)0;
     otel_instrument_options_t options={
         sizeof(otel_instrument_options_t),cs("observable queue"),cs("{item}"),(void*)0,0
@@ -399,8 +452,16 @@ static int observable_setup(void){
     if (!created){ result=5; goto cleanup; }
     observable=created;
     created=(void*)0;
+    if (otel_meter_create_u64_observable_counter(
+            m,cs("observed_requests"),0,observe_requests,0,0,&created_counter)!=0||
+        !created_counter){
+        result=6; goto cleanup;
+    }
+    observable_counter=created_counter;
+    created_counter=(void*)0;
 
 cleanup:
+    if (created_counter) otel_observable_counter_u64_destroy(created_counter);
     if (created) otel_observable_gauge_u64_destroy(created);
     if (state) free(state);
     if (m) otel_meter_destroy(m);
@@ -419,6 +480,8 @@ int main(void){
     otel_metric_exporter_t* mex=(void*)0;
     otel_periodic_metric_reader_builder_t* mrb=(void*)0;
     otel_periodic_metric_reader_t* mr=(void*)0;
+    otel_metric_view_builder_t* mvb=(void*)0;
+    otel_metric_view_t* mv=(void*)0;
     otel_sdk_t* sdk=(void*)0;
 
     work(); /* API-only no-op before install (must be safe) */
@@ -464,6 +527,16 @@ int main(void){
             result=74; goto cleanup;
         }
     }
+    {
+        otel_key_value_t attr;
+        const char* temporality=getenv("OTEL_TEST_METRICS_TEMPORALITY");
+        attr.key=cs("test.temporality");
+        attr.value_type=0;
+        attr.value.string_value=cs(temporality?temporality:"cumulative");
+        if (otel_sdk_builder_add_resource_attribute(b,attr)!=0){
+            result=79; goto cleanup;
+        }
+    }
     if (otel_sdk_builder_add_span_processor(b,processor)!=0){
         result=11; goto cleanup;
     }
@@ -485,6 +558,14 @@ int main(void){
         otel_otlp_metric_exporter_builder_set_compression(
             meb,(uint32_t)atoi(getenv("OTEL_TEST_METRICS_COMPRESSION")))!=0){
         result=77; goto cleanup;
+    }
+    if (getenv("OTEL_TEST_METRICS_TEMPORALITY")){
+        const char* temporality=getenv("OTEL_TEST_METRICS_TEMPORALITY");
+        uint32_t preference=strcmp(temporality,"cumulative")==0?1:
+                            strcmp(temporality,"delta")==0?2:3;
+        if (otel_otlp_metric_exporter_builder_set_temporality(meb,preference)!=0){
+            result=80; goto cleanup;
+        }
     }
     if (getenv("OTEL_TEST_METRICS_GRPC") &&
         otel_otlp_metric_exporter_builder_add_header(
@@ -511,6 +592,28 @@ int main(void){
         result=18; goto cleanup;
     }
     mr=(void*)0;
+    mvb=otel_metric_view_builder_new();
+    if (!mvb){ result=81; goto cleanup; }
+    if (otel_metric_view_builder_set_name_pattern(mvb,cs("exponential_duration"))!=0||
+        otel_metric_view_builder_set_exponential_histogram(mvb,160,4,1)!=0||
+        otel_metric_view_builder_build(mvb,&mv)!=0||!mv){
+        result=82; goto cleanup;
+    }
+    otel_metric_view_builder_destroy(mvb);
+    mvb=(void*)0;
+    if (otel_sdk_builder_add_metric_view(b,mv)!=0){ result=83; goto cleanup; }
+    mv=(void*)0;
+    mvb=otel_metric_view_builder_new();
+    if (!mvb){ result=84; goto cleanup; }
+    if (otel_metric_view_builder_set_name_pattern(mvb,cs("dropped_requests"))!=0||
+        otel_metric_view_builder_set_aggregation(mvb,1)!=0||
+        otel_metric_view_builder_build(mvb,&mv)!=0||!mv){
+        result=85; goto cleanup;
+    }
+    otel_metric_view_builder_destroy(mvb);
+    mvb=(void*)0;
+    if (otel_sdk_builder_add_metric_view(b,mv)!=0){ result=86; goto cleanup; }
+    mv=(void*)0;
     if (otel_sdk_build(b,&sdk)!=0||!sdk){ result=19; goto cleanup; }
     otel_sdk_builder_destroy(b);
     b=(void*)0;
@@ -527,6 +630,10 @@ int main(void){
     result=0;
 
 cleanup:
+    if (observable_counter){
+        otel_observable_counter_u64_destroy(observable_counter);
+        observable_counter=(void*)0;
+    }
     if (observable){
         otel_observable_gauge_u64_destroy(observable);
         observable=(void*)0;
@@ -538,6 +645,8 @@ cleanup:
         otel_sdk_destroy(sdk);
     }
     if (b) otel_sdk_builder_destroy(b);
+    if (mv) otel_metric_view_destroy(mv);
+    if (mvb) otel_metric_view_builder_destroy(mvb);
     if (mr) otel_periodic_metric_reader_destroy(mr);
     if (mrb) otel_periodic_metric_reader_builder_destroy(mrb);
     if (mex) otel_metric_exporter_destroy(mex);
@@ -748,18 +857,55 @@ fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
     assert_metric_requests(&requests);
 }
 
+#[derive(Default)]
+struct MetricEvidence {
+    resource: bool,
+    scope: bool,
+    counter: bool,
+    up_down_counter: bool,
+    gauge: bool,
+    histogram: bool,
+    exponential_histogram: bool,
+    observable_counter: bool,
+    observable_gauge: bool,
+}
+
+fn expected_temporality(scenario: &str, instrument: &str) -> i32 {
+    let delta = AggregationTemporality::Delta as i32;
+    let cumulative = AggregationTemporality::Cumulative as i32;
+    match (scenario, instrument) {
+        ("delta", "counter" | "histogram" | "observable_counter") => delta,
+        ("low-memory", "counter" | "histogram") => delta,
+        _ => cumulative,
+    }
+}
+
 fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
-    let mut resource_verified = false;
-    let mut scope_verified = false;
-    let mut counter_verified = false;
-    let mut gauge_verified = false;
-    let mut histogram_verified = false;
-    let mut observable_verified = false;
+    let mut cumulative = MetricEvidence::default();
+    let mut delta = MetricEvidence::default();
+    let mut low_memory = MetricEvidence::default();
 
     for request in requests {
         for resource_metrics in &request.resource_metrics {
+            let scenario = resource_metrics
+                .resource
+                .as_ref()
+                .and_then(|resource| {
+                    ["cumulative", "delta", "low-memory"]
+                        .into_iter()
+                        .find(|scenario| {
+                            has_string_attribute(&resource.attributes, "test.temporality", scenario)
+                        })
+                })
+                .expect("Metrics resource is missing its temporality scenario");
+            let evidence = match scenario {
+                "cumulative" => &mut cumulative,
+                "delta" => &mut delta,
+                "low-memory" => &mut low_memory,
+                _ => unreachable!(),
+            };
             if let Some(resource) = &resource_metrics.resource {
-                resource_verified |=
+                evidence.resource |=
                     has_string_attribute(&resource.attributes, "service.name", "cross-artifact")
                         && has_string_attribute(
                             &resource.attributes,
@@ -770,7 +916,7 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
             for scope_metrics in &resource_metrics.scope_metrics {
                 if let Some(scope) = &scope_metrics.scope {
                     if scope.name == "metric-instr" {
-                        scope_verified |= scope.version == "1.2.3"
+                        evidence.scope |= scope.version == "1.2.3"
                             && scope_metrics.schema_url == "https://schema.example/metrics/1.0"
                             && has_string_attribute(
                                 &scope.attributes,
@@ -782,9 +928,11 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                 for metric in &scope_metrics.metrics {
                     match (&*metric.name, metric.data.as_ref()) {
                         ("requests", Some(metric::Data::Sum(sum))) => {
-                            counter_verified |= metric.description == "completed requests"
+                            evidence.counter |= metric.description == "completed requests"
                                 && metric.unit == "{request}"
                                 && sum.is_monotonic
+                                && sum.aggregation_temporality
+                                    == expected_temporality(scenario, "counter")
                                 && sum.data_points.iter().any(|point| {
                                     matches!(point.value, Some(number_data_point::Value::AsInt(3)))
                                         && has_string_attribute(
@@ -794,8 +942,21 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                                         )
                                 });
                         }
+                        ("work", Some(metric::Data::Sum(sum))) => {
+                            evidence.up_down_counter |= !sum.is_monotonic
+                                && sum.aggregation_temporality
+                                    == expected_temporality(scenario, "up_down_counter")
+                                && sum.data_points.iter().any(|point| {
+                                    matches!(point.value, Some(number_data_point::Value::AsInt(-2)))
+                                        && has_string_attribute(
+                                            &point.attributes,
+                                            "route",
+                                            "checkout",
+                                        )
+                                });
+                        }
                         ("queue_depth", Some(metric::Data::Gauge(gauge))) => {
-                            gauge_verified |= metric.description == "queued work"
+                            evidence.gauge |= metric.description == "queued work"
                                 && metric.unit == "{item}"
                                 && gauge.data_points.iter().any(|point| {
                                     matches!(
@@ -810,13 +971,57 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                                 });
                         }
                         ("duration", Some(metric::Data::Histogram(histogram))) => {
-                            histogram_verified |= metric.description == "request duration"
+                            evidence.histogram |= metric.description == "request duration"
                                 && metric.unit == "ms"
+                                && histogram.aggregation_temporality
+                                    == expected_temporality(scenario, "histogram")
                                 && histogram.data_points.iter().any(|point| {
-                                    point.count == 1
-                                        && point.sum == Some(7.5)
+                                    point.count == 2
+                                        && point.sum == Some(18.5)
+                                        && point.min == Some(7.5)
+                                        && point.max == Some(11.0)
                                         && point.explicit_bounds == [5.0, 10.0]
-                                        && point.bucket_counts == [0, 1, 0]
+                                        && point.bucket_counts == [0, 1, 1]
+                                        && has_string_attribute(
+                                            &point.attributes,
+                                            "route",
+                                            "checkout",
+                                        )
+                                });
+                        }
+                        (
+                            "exponential_duration",
+                            Some(metric::Data::ExponentialHistogram(histogram)),
+                        ) => {
+                            evidence.exponential_histogram |= histogram.aggregation_temporality
+                                == expected_temporality(scenario, "histogram")
+                                && histogram.data_points.iter().any(|point| {
+                                    let positive = point.positive.as_ref();
+                                    let negative = point.negative.as_ref();
+                                    point.count == 4
+                                        && point.sum == Some(6.0)
+                                        && point.min == Some(-4.0)
+                                        && point.max == Some(8.0)
+                                        && point.scale == 4
+                                        && point.zero_count == 1
+                                        && point.zero_threshold == 0.0
+                                        && positive.is_some_and(|buckets| {
+                                            buckets.offset == 15
+                                                && buckets.bucket_counts.iter().sum::<u64>() == 2
+                                                && buckets.bucket_counts.first() == Some(&1)
+                                                && buckets.bucket_counts.last() == Some(&1)
+                                        })
+                                        && negative.is_some_and(|buckets| {
+                                            buckets.offset == 31 && buckets.bucket_counts == [1]
+                                        })
+                                });
+                        }
+                        ("observed_requests", Some(metric::Data::Sum(sum))) => {
+                            evidence.observable_counter |= sum.is_monotonic
+                                && sum.aggregation_temporality
+                                    == expected_temporality(scenario, "observable_counter")
+                                && sum.data_points.iter().any(|point| {
+                                    matches!(point.value, Some(number_data_point::Value::AsInt(13)))
                                         && has_string_attribute(
                                             &point.attributes,
                                             "route",
@@ -825,7 +1030,7 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                                 });
                         }
                         ("observable_queue", Some(metric::Data::Gauge(gauge))) => {
-                            observable_verified |= metric.description == "observable queue"
+                            evidence.observable_gauge |= metric.description == "observable queue"
                                 && metric.unit == "{item}"
                                 && gauge.data_points.iter().any(|point| {
                                     matches!(point.value, Some(number_data_point::Value::AsInt(17)))
@@ -836,6 +1041,9 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                                         )
                                 });
                         }
+                        ("dropped_requests", _) => {
+                            panic!("drop aggregation exported the matched instrument")
+                        }
                         _ => {}
                     }
                 }
@@ -843,24 +1051,36 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
         }
     }
 
-    assert!(resource_verified, "resource attributes were not exported");
-    assert!(
-        scope_verified,
-        "instrumentation scope name, version, schema URL, or attributes were not exported"
-    );
-    assert!(
-        counter_verified,
-        "counter metadata/value/attributes missing"
-    );
-    assert!(gauge_verified, "gauge metadata/value/attributes missing");
-    assert!(
-        histogram_verified,
-        "histogram metadata/value/boundaries/attributes missing"
-    );
-    assert!(
-        observable_verified,
-        "observable metric metadata/value/attributes missing"
-    );
+    for (scenario, evidence) in [
+        ("cumulative", cumulative),
+        ("delta", delta),
+        ("low-memory", low_memory),
+    ] {
+        assert!(evidence.resource, "{scenario} resource attributes missing");
+        assert!(evidence.scope, "{scenario} instrumentation scope missing");
+        assert!(evidence.counter, "{scenario} counter semantics missing");
+        assert!(
+            evidence.up_down_counter,
+            "{scenario} non-monotonic sum semantics missing"
+        );
+        assert!(evidence.gauge, "{scenario} gauge semantics missing");
+        assert!(
+            evidence.histogram,
+            "{scenario} explicit histogram semantics missing"
+        );
+        assert!(
+            evidence.exponential_histogram,
+            "{scenario} exponential histogram semantics missing"
+        );
+        assert!(
+            evidence.observable_counter,
+            "{scenario} observable counter semantics missing"
+        );
+        assert!(
+            evidence.observable_gauge,
+            "{scenario} observable gauge semantics missing"
+        );
+    }
 }
 
 #[test]
@@ -942,17 +1162,25 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     let collector = start_mock();
     let endpoint = format!("http://127.0.0.1:{}/v1/traces", collector.port);
     let metrics_endpoint = format!("http://127.0.0.1:{}/v1/metrics", collector.port);
-    let run = Command::new(&out)
-        .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &endpoint)
-        .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
-        .env("DYLD_LIBRARY_PATH", &lib_dir)
-        .env("LD_LIBRARY_PATH", &lib_dir)
-        .output()
-        .expect("run harness");
+    let runs = ["cumulative", "delta", "low-memory"]
+        .into_iter()
+        .map(|temporality| {
+            Command::new(&out)
+                .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &endpoint)
+                .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+                .env("OTEL_TEST_METRICS_TEMPORALITY", temporality)
+                .env("DYLD_LIBRARY_PATH", &lib_dir)
+                .env("LD_LIBRARY_PATH", &lib_dir)
+                .output()
+                .expect("run harness")
+        })
+        .collect::<Vec<_>>();
     // Wait (bounded) for the collector to receive the export. This avoids a fixed sleep that can
     // stop the mock too early under slow CI while still failing promptly if no POST arrives.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while collector.bytes.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+    while collector.metric_bodies.lock().unwrap().len() < runs.len()
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(20));
     }
     collector.stop.store(true, Ordering::Release);
@@ -961,13 +1189,15 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
 
-    assert!(
-        run.status.success(),
-        "harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
-        run.status.code(),
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr),
-    );
+    for (scenario, run) in ["cumulative", "delta", "low-memory"].into_iter().zip(&runs) {
+        assert!(
+            run.status.success(),
+            "{scenario} harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
+            run.status.code(),
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr),
+        );
+    }
     let received = collector.bytes.load(Ordering::Relaxed);
     assert!(
         received > 0,
@@ -1072,6 +1302,33 @@ fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
     );
     drop(requests);
 
+    let mut temporality_runs = Vec::new();
+    for (index, temporality) in ["delta", "low-memory"].into_iter().enumerate() {
+        let mut command = Command::new(&out);
+        command
+            .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &trace_endpoint)
+            .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+            .env("OTEL_TEST_METRICS_GRPC", "1")
+            .env("OTEL_TEST_METRICS_TEMPORALITY", temporality)
+            .env("DYLD_LIBRARY_PATH", &lib_dir)
+            .env("LD_LIBRARY_PATH", &lib_dir);
+        let run = output_with_timeout(&mut command, Duration::from_secs(10));
+        let expected_requests = index + 3;
+        let (requests, wait) = arrived
+            .wait_timeout_while(
+                request_mutex.lock().unwrap(),
+                Duration::from_secs(5),
+                |requests| requests.len() < expected_requests,
+            )
+            .expect("wait for gRPC Metrics temporality request");
+        assert!(
+            !wait.timed_out(),
+            "{temporality} gRPC Metrics export timed out"
+        );
+        drop(requests);
+        temporality_runs.push((temporality, run));
+    }
+
     #[cfg(feature = "otlp-grpc-gzip")]
     let compressed_run = {
         let mut compressed_command = Command::new(&out);
@@ -1087,7 +1344,7 @@ fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
             .wait_timeout_while(
                 request_mutex.lock().unwrap(),
                 Duration::from_secs(5),
-                |requests| requests.len() < 3,
+                |requests| requests.len() < 5,
             )
             .expect("wait for compressed gRPC Metrics request");
         assert!(
@@ -1131,6 +1388,15 @@ fn c_application_exports_metrics_through_grpc_without_tokio_runtime() {
         String::from_utf8_lossy(&run_without_shutdown.stdout),
         String::from_utf8_lossy(&run_without_shutdown.stderr),
     );
+    for (temporality, run) in temporality_runs {
+        assert!(
+            run.status.success(),
+            "{temporality} gRPC harness failed ({:?}):\nstdout: {}\nstderr: {}",
+            run.status.code(),
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr),
+        );
+    }
     #[cfg(feature = "otlp-grpc-gzip")]
     assert!(
         compressed_run.status.success(),
