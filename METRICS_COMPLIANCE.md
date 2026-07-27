@@ -7,7 +7,7 @@ experimental `0.x` C ABI.
 | --- | --- | --- |
 | API-only operation | Implemented | Independent API-owned global `MeterProvider`; no SDK dependency and safe no-op instruments before installation. |
 | Synchronous instruments | Implemented | `u64`/`f64` counters, `i64`/`f64` up-down counters, `u64`/`i64`/`f64` gauges, and `u64`/`f64` histograms. |
-| Observable instruments | Implemented | Counters, up-down counters, and gauges for all Rust SDK-supported numeric types; callback user data has exactly-once destruction independent of upstream closure release. |
+| Observable instruments | Implemented | Counters, up-down counters, and gauges for all Rust SDK-supported numeric types; successful creation owns callback user data with exactly-once destruction, while failure preserves caller ownership. |
 | Observer lifetime | Implemented | Observer tokens are valid only on the callback thread until return; stale and cross-thread use fail closed. Dispatch is thread-local, so independent readers are not serialized by an API-global lock. Destroying the public instrument disables future callback work. |
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
 | Instrumentation scope | Implemented | Versioned meter options carry name, version, schema URL, and uniquely keyed typed attributes into the upstream owned `InstrumentationScope`. |
@@ -22,12 +22,15 @@ experimental `0.x` C ABI.
 | Hot path | Implemented | SDK-backed synchronous handles own concrete Rust instruments; recording does not resolve providers, lock global state, or access readers/exporters/views. |
 | ABI compatibility | Implemented | Separate Metrics vtable with prefix-only version/size checks plus a common opaque-handle kind prefix validated before full typed access. |
 | Status/error policy | Implemented | Malformed arguments, incompatible configuration/ABI, timeout, export-pipeline failure, and internal infrastructure failure have signal-independent classifications and last-error diagnostics. |
+| Resource bounds | Implemented | SDK builders accept at most 64 span processors, 64 Metrics readers, 1024 views, and 1024 resource attributes; each view accepts at most 256 scope matchers and 1024 allowed attribute keys. Capacity is reserved before ownership transfer. |
 
 ## Known experimental constraints
 
 - Metrics are experimental and may change incompatibly between `0.x` releases.
-- The default Rust 0.32 blocking periodic reader controls collection on its worker thread; its
-  force flush may block, and its shutdown uses the upstream reader's fixed timeout behavior.
+- The default Rust 0.32 blocking periodic reader controls collection on its worker thread.
+  Metrics force flush has no upstream timeout input and can block indefinitely if an exporter
+  or collection callback does not return. Shutdown uses the upstream reader's fixed timeout
+  behavior.
 - The gRPC exporter owns one bounded Tokio runtime for its complete reader/provider lifetime.
   C callers do not supply a runtime. Its synchronous runtime wrapper is incompatible with the
   optional async periodic reader and is rejected during reader construction.
@@ -51,6 +54,15 @@ experimental `0.x` C ABI.
   handle disables callback work and releases user data after any in-flight callback. Metrics
   shutdown/destroy also removes the SDK's global provider registration when still current.
   Observer tokens cannot be handed to another thread, including work spawned by a callback.
+  Repeatedly creating and destroying observables retains one disabled upstream registration
+  per instrument until provider shutdown; applications should keep observable handles
+  long-lived rather than creating them per request.
+- The pinned SDK defaults to 2000 data points per instrument stream before aggregating
+  overflow. Applications that intentionally require a different bound can configure a view
+  cardinality limit.
+- Public C recording attributes are scalar string/bool/int64/double values. Array attributes
+  can be observed through the custom-export visitor when they originate in upstream resource
+  or scope data, but there is no C recording API for array-valued measurement attributes.
 - The supported shared-global deployment model is one shared API library on Linux or macOS,
   loaded before the matching SDK and retained for process lifetime after use. Windows
   shared-library use and static deployment are unsupported.
