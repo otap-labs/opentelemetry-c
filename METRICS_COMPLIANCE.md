@@ -29,8 +29,10 @@ experimental `0.x` C ABI.
 - Metrics are experimental and may change incompatibly between `0.x` releases.
 - The default Rust 0.32 blocking periodic reader controls collection on its worker thread.
   Metrics force flush has no upstream timeout input and can block indefinitely if an exporter
-  or collection callback does not return. Shutdown uses the upstream reader's fixed timeout
-  behavior.
+  or collection callback does not return. The trace helper-thread timeout is not reused
+  because an optional Metrics async runtime is owned outside the cloneable provider; a
+  detached flush must not outlive deterministic runtime disposal during SDK destruction.
+  Shutdown uses the upstream reader's fixed timeout behavior.
 - The gRPC exporter owns one bounded Tokio runtime for its complete reader/provider lifetime.
   C callers do not supply a runtime. Its synchronous runtime wrapper is incompatible with the
   optional async periodic reader and is rejected during reader construction.

@@ -14,7 +14,7 @@ use opentelemetry_c_abi::{
 };
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
-use crate::error::{fail, fail_abi};
+use crate::error::{fail, fail_abi, last_status_or, reset_last_status};
 
 enum SdkMetricInstrument {
     CounterU64(Counter<u64>),
@@ -272,7 +272,17 @@ extern "C" fn meter_create_instrument(
     meter_ctx: *mut c_void,
     config: *const OtelMetricInstrumentConfig,
 ) -> *mut c_void {
-    guard_ptr(|| {
+    let mut status = OtelStatus::Ok;
+    meter_create_instrument_with_status(meter_ctx, config, &mut status)
+}
+
+extern "C" fn meter_create_instrument_with_status(
+    meter_ctx: *mut c_void,
+    config: *const OtelMetricInstrumentConfig,
+    out_status: *mut OtelStatus,
+) -> *mut c_void {
+    reset_last_status();
+    let result = catch_unwind(AssertUnwindSafe(|| {
         if config.is_null() {
             fail(
                 OtelStatus::InvalidArgument,
@@ -536,7 +546,27 @@ extern "C" fn meter_create_instrument(
             }
         };
         Box::into_raw(Box::new(instrument)) as *mut c_void
-    })
+    }));
+    let ctx = match result {
+        Ok(ctx) => ctx,
+        Err(_) => {
+            fail(
+                OtelStatus::InternalError,
+                "metric instrument creation panicked",
+            );
+            std::ptr::null_mut()
+        }
+    };
+    if !out_status.is_null() {
+        unsafe {
+            *out_status = if ctx.is_null() {
+                last_status_or(OtelStatus::InvalidConfig)
+            } else {
+                OtelStatus::Ok
+            };
+        }
+    }
+    ctx
 }
 
 extern "C" fn meter_free(ctx: *mut c_void) {
@@ -682,6 +712,7 @@ pub(crate) static SDK_METRICS_VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     observer_observe_f64,
     instrument_free,
     provider_get_meter_with_scope,
+    meter_create_instrument_with_status,
 };
 
 pub(crate) fn vtable_ptr() -> *const OtelMetricsVtable {
@@ -1378,6 +1409,14 @@ mod tests {
 
     #[test]
     fn null_config_is_rejected_without_dereference() {
+        let mut status = OtelStatus::Ok;
+        assert!((SDK_METRICS_VTABLE.meter_create_instrument_with_status)(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &mut status,
+        )
+        .is_null());
+        assert_eq!(status, OtelStatus::InvalidArgument);
         assert!((SDK_METRICS_VTABLE.meter_create_instrument)(
             std::ptr::null_mut(),
             std::ptr::null()
@@ -1602,7 +1641,11 @@ mod tests {
                     &mut observable,
                 )
             },
-            OtelStatus::InvalidConfig
+            OtelStatus::InternalError
+        );
+        assert_eq!(
+            crate::api_ffi::test_probe::last_error(),
+            "metric instrument creation panicked"
         );
         assert!(observable.is_null());
         assert_eq!(destroyed.load(Ordering::SeqCst), 0);

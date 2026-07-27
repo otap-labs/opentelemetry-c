@@ -7,15 +7,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use opentelemetry_c_abi::{
-    metrics_vtable_supports_scope_config, OtelAttributeType, OtelHandleHeader, OtelKeyValue,
-    OtelMetricInstrumentConfig, OtelMetricInstrumentKind, OtelMetricNumberKind,
-    OtelMetricScopeConfig, OtelMetricsVtable, OtelStringView, OTEL_HANDLE_KIND_COUNTER_F64,
-    OTEL_HANDLE_KIND_COUNTER_U64, OTEL_HANDLE_KIND_GAUGE_F64, OTEL_HANDLE_KIND_GAUGE_I64,
-    OTEL_HANDLE_KIND_GAUGE_U64, OTEL_HANDLE_KIND_HISTOGRAM_F64, OTEL_HANDLE_KIND_HISTOGRAM_U64,
-    OTEL_HANDLE_KIND_METER, OTEL_HANDLE_KIND_METER_PROVIDER,
-    OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64, OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64,
-    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64, OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64,
-    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64, OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
+    metrics_vtable_supports_creation_status, metrics_vtable_supports_scope_config,
+    OtelAttributeType, OtelHandleHeader, OtelKeyValue, OtelMetricInstrumentConfig,
+    OtelMetricInstrumentKind, OtelMetricNumberKind, OtelMetricScopeConfig, OtelMetricsVtable,
+    OtelStringView, OTEL_HANDLE_KIND_COUNTER_F64, OTEL_HANDLE_KIND_COUNTER_U64,
+    OTEL_HANDLE_KIND_GAUGE_F64, OTEL_HANDLE_KIND_GAUGE_I64, OTEL_HANDLE_KIND_GAUGE_U64,
+    OTEL_HANDLE_KIND_HISTOGRAM_F64, OTEL_HANDLE_KIND_HISTOGRAM_U64, OTEL_HANDLE_KIND_METER,
+    OTEL_HANDLE_KIND_METER_PROVIDER, OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64,
+    OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64, OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64, OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64,
+    OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
     OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64, OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64,
     OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64,
 };
@@ -508,12 +509,23 @@ fn create_instrument(
     }
     config.kind = kind as u32;
     config.number = number as u32;
-    let ctx = unsafe { ((*meter.vtable).meter_create_instrument)(meter.ctx, &config) };
+    let mut status = OtelStatus::Ok;
+    let ctx = if unsafe { metrics_vtable_supports_creation_status(meter.vtable) } {
+        unsafe {
+            ((*meter.vtable).meter_create_instrument_with_status)(meter.ctx, &config, &mut status)
+        }
+    } else {
+        unsafe { ((*meter.vtable).meter_create_instrument)(meter.ctx, &config) }
+    };
     if ctx.is_null() {
         if !has_last_error() {
             set_last_error("backed metric instrument creation failed");
         }
-        return Err(OtelStatus::InvalidConfig);
+        return Err(if status == OtelStatus::Ok {
+            OtelStatus::InvalidConfig
+        } else {
+            status
+        });
     }
     Ok((meter.vtable, ctx))
 }
@@ -1119,12 +1131,23 @@ fn create_observable(
     config.callback = Some(trampoline);
     config.callback_state = Arc::into_raw(Arc::clone(state)) as *mut c_void;
     config.callback_state_free = Some(callback_state_free);
-    let ctx = unsafe { ((*meter.vtable).meter_create_instrument)(meter.ctx, &config) };
+    let mut status = OtelStatus::Ok;
+    let ctx = if unsafe { metrics_vtable_supports_creation_status(meter.vtable) } {
+        unsafe {
+            ((*meter.vtable).meter_create_instrument_with_status)(meter.ctx, &config, &mut status)
+        }
+    } else {
+        unsafe { ((*meter.vtable).meter_create_instrument)(meter.ctx, &config) }
+    };
     if ctx.is_null() {
         if !has_last_error() {
             set_last_error("backed observable metric instrument creation failed");
         }
-        return Err(OtelStatus::InvalidConfig);
+        return Err(if status == OtelStatus::Ok {
+            OtelStatus::InvalidConfig
+        } else {
+            status
+        });
     }
     Ok((meter.vtable, ctx))
 }
@@ -1405,6 +1428,24 @@ mod tests {
         .cast()
     }
 
+    extern "C" fn mock_meter_create_instrument_with_status(
+        meter_ctx: *mut c_void,
+        config: *const OtelMetricInstrumentConfig,
+        out_status: *mut OtelStatus,
+    ) -> *mut c_void {
+        let instrument = mock_meter_create_instrument(meter_ctx, config);
+        if !out_status.is_null() {
+            unsafe {
+                *out_status = if instrument.is_null() {
+                    OtelStatus::InvalidConfig
+                } else {
+                    OtelStatus::Ok
+                };
+            }
+        }
+        instrument
+    }
+
     extern "C" fn mock_record_u64(
         _ctx: *mut c_void,
         _value: u64,
@@ -1458,6 +1499,7 @@ mod tests {
         observer_observe_f64: mock_record_f64,
         instrument_free: mock_instrument_free,
         provider_get_meter_with_scope: mock_provider_get_meter_with_scope,
+        meter_create_instrument_with_status: mock_meter_create_instrument_with_status,
     };
 
     fn metrics_vtable_with_observer_u64(

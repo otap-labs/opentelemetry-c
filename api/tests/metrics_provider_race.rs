@@ -85,6 +85,17 @@ extern "C" fn create(_: *mut c_void, _: *const OtelMetricInstrumentConfig) -> *m
     std::ptr::null_mut()
 }
 
+extern "C" fn create_with_status(
+    ctx: *mut c_void,
+    config: *const OtelMetricInstrumentConfig,
+    out_status: *mut OtelStatus,
+) -> *mut c_void {
+    if !out_status.is_null() {
+        unsafe { *out_status = OtelStatus::InvalidConfig };
+    }
+    create(ctx, config)
+}
+
 extern "C" fn record_u64(_: *mut c_void, _: u64, _: *const OtelKeyValue, _: usize) -> OtelStatus {
     OtelStatus::Ok
 }
@@ -113,6 +124,7 @@ static VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     observer_observe_f64: record_f64,
     instrument_free: object_free,
     provider_get_meter_with_scope: get_meter_with_scope,
+    meter_create_instrument_with_status: create_with_status,
 };
 
 fn sv(value: &'static str) -> OtelStringView {

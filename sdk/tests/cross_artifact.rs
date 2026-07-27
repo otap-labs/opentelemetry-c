@@ -482,6 +482,8 @@ int main(void){
     otel_periodic_metric_reader_t* mr=(void*)0;
     otel_metric_view_builder_t* mvb=(void*)0;
     otel_metric_view_t* mv=(void*)0;
+    otel_sdk_builder_t* older_builder=(void*)0;
+    otel_sdk_t* older_sdk=(void*)0;
     otel_sdk_t* sdk=(void*)0;
 
     work(); /* API-only no-op before install (must be safe) */
@@ -618,7 +620,18 @@ int main(void){
     otel_sdk_builder_destroy(b);
     b=(void*)0;
     if (otel_sdk_set_as_global(sdk)!=0){ result=20; goto cleanup; }
+    older_builder=otel_sdk_builder_new();
+    if (!older_builder||otel_sdk_build(older_builder,&older_sdk)!=0||!older_sdk){
+        result=87; goto cleanup;
+    }
+    otel_sdk_builder_destroy(older_builder);
+    older_builder=(void*)0;
+    if (otel_sdk_set_metrics_as_global(older_sdk)!=0){ result=88; goto cleanup; }
     if (otel_sdk_set_metrics_as_global(sdk)!=0){ result=21; goto cleanup; }
+    if (otel_sdk_metrics_shutdown(older_sdk,5000)!=0){ result=89; goto cleanup; }
+    otel_sdk_destroy(older_sdk);
+    older_sdk=(void*)0;
+    /* Stale shutdown above must not clear the newer SDK registration. */
     work(); /* API-only calls AFTER install must export through the SDK */
     stage_status=metrics_work();
     if (stage_status!=0){ result=40+stage_status; goto cleanup; }
@@ -644,6 +657,11 @@ cleanup:
         otel_sdk_shutdown(sdk,5000);
         otel_sdk_destroy(sdk);
     }
+    if (older_sdk){
+        otel_sdk_metrics_shutdown(older_sdk,5000);
+        otel_sdk_destroy(older_sdk);
+    }
+    if (older_builder) otel_sdk_builder_destroy(older_builder);
     if (b) otel_sdk_builder_destroy(b);
     if (mv) otel_metric_view_destroy(mv);
     if (mvb) otel_metric_view_builder_destroy(mvb);

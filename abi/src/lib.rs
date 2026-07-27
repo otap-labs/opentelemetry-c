@@ -563,6 +563,12 @@ pub struct OtelMetricScopeConfig {
 pub type OtelProviderGetMeterWithScope =
     extern "C" fn(provider_ctx: *mut c_void, scope: *const OtelMetricScopeConfig) -> *mut c_void;
 
+pub type OtelMeterCreateInstrumentWithStatus = extern "C" fn(
+    meter_ctx: *mut c_void,
+    config: *const OtelMetricInstrumentConfig,
+    out_status: *mut OtelStatus,
+) -> *mut c_void;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OtelMetricsVtable {
@@ -623,6 +629,9 @@ pub struct OtelMetricsVtable {
     /// Append-only complete-scope extension. Access only when `struct_size` is at least
     /// [`OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE`].
     pub provider_get_meter_with_scope: OtelProviderGetMeterWithScope,
+    /// Append-only creation-status extension. Unlike the legacy NULL-only entry, this
+    /// preserves the implementation's exact failure classification.
+    pub meter_create_instrument_with_status: OtelMeterCreateInstrumentWithStatus,
 }
 
 /// Current Metrics implementation ABI kind/version identifier.
@@ -642,6 +651,12 @@ pub const OTEL_METRICS_VTABLE_REQUIRED_SIZE: usize = 56;
 pub const OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE: usize = 120;
 #[cfg(target_pointer_width = "32")]
 pub const OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE: usize = 60;
+
+/// Metrics vtable prefix size through exact instrument-creation status support.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE: usize = 128;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE: usize = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -696,10 +711,21 @@ pub unsafe fn metrics_vtable_supports_scope_config(vtable: *const OtelMetricsVta
         && header.struct_size >= OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE
 }
 
+/// Whether a compatible Metrics vtable includes exact instrument-creation status.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+pub unsafe fn metrics_vtable_supports_creation_status(vtable: *const OtelMetricsVtable) -> bool {
+    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    header.abi_version == OTEL_METRICS_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE
+}
+
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
 const _: () =
-    assert!(std::mem::size_of::<OtelMetricsVtable>() == OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE);
+    assert!(std::mem::size_of::<OtelMetricsVtable>() == OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE);
 
 // Compile-time ABI guards (64-bit) mirroring the C header `_Static_assert`s.
 #[cfg(target_pointer_width = "64")]

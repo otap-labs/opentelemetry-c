@@ -238,8 +238,11 @@ otel_status_t otel_sdk_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
 /*
  * Force every Metrics reader to collect and export. For a manual reader this is the sole
  * application-controlled collection trigger and runs synchronously on the calling thread.
- * The pinned Rust 0.32 reader API does not accept timeout_millis, so this call can block
- * indefinitely if an exporter or collection callback does not return.
+ * The pinned Rust 0.32 reader API does not accept timeout_millis, so this call currently
+ * ignores that argument and can block indefinitely if an exporter or collection callback
+ * does not return. Unlike the trace provider, Metrics may own an async runtime outside the
+ * cloneable provider. A detached timeout helper could therefore outlive that runtime after
+ * SDK destruction; bounded Metrics flush requires coordinated runtime and shutdown ownership.
  */
 otel_status_t otel_sdk_metrics_force_flush(otel_sdk_t* sdk, uint64_t timeout_millis);
 

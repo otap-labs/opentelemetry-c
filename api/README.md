@@ -110,8 +110,8 @@ unsupported.
 ## Platform support
 
 The dynamic API/SDK split (instrumentation links the API only; the SDK registers into the
-API-owned global slot) is verified on **Unix-like dynamic linking — Linux and macOS**. The
-cross-artifact proof test runs there.
+API-owned global slot) is supported and continuously verified on **Unix-like dynamic
+linking — Linux and macOS**. The cross-artifact proof test runs on both platforms in CI.
 
 **Windows shared-library use is unsupported.** The SDK cdylib references the API cdylib's `otel_api_*`
 symbols, which on Windows requires linking against the API's generated import library

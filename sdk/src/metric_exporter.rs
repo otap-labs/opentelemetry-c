@@ -108,7 +108,7 @@ fn dispose_grpc_runtime(runtime: tokio::runtime::Runtime) {
         Ok(_) => {
             // Tokio forbids blocking Runtime destruction inside an entered runtime. Move
             // disposal to a neutral thread and join it so no SDK runtime work survives the
-            // C destruction call or the documented dynamic-library unload boundary.
+            // C destruction call. Dynamic-library unloading after use remains unsupported.
             std::thread::Builder::new()
                 .name("otel-c-otlp-grpc-shutdown".to_owned())
                 .spawn(move || drop(runtime))
