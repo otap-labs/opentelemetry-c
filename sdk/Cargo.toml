@@ -75,6 +75,17 @@ required-features = ["otlp-http"]
 name = "metrics_allocations"
 harness = false
 
+[[bench]]
+name = "logs_hotpath"
+harness = false
+# Builds a real HTTP OTLP Logs exporter, so it requires the `otlp-http` feature.
+required-features = ["otlp-http"]
+
+[[bench]]
+name = "logs_allocations"
+harness = false
+required-features = ["otlp-http"]
+
 [features]
 # Default preserves today's experience: the OTLP HTTP/protobuf exporter with OS/platform TLS.
 default = ["native-tls"]

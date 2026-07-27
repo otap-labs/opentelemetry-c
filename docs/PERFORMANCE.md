@@ -161,6 +161,64 @@ Both suites call the real `#[no_mangle] extern "C"` symbols used by C consumers.
 compilation and the C examples cover C source-level linkage separately. Any future
 exporter/network benchmark should remain opt-in and outside the default regression set.
 
+### Logs (experimental)
+
+```sh
+cargo bench -p opentelemetry-c-sdk --bench logs_hotpath
+cargo bench -p opentelemetry-c-sdk --bench logs_allocations
+LOGS_BENCH_REPEATS=3 scripts/benchmark-logs.sh
+```
+
+Logs are benchmarked differently from Metrics because the cost is dominated by *conversion*
+rather than aggregation. A borrowed `otel_log_record_view_t` may not outlive its call, so every
+string, byte string, map, and array it references has to be copied into owned Rust storage on
+every emit. Both suites therefore sweep three body shapes — absent, a plain string, and a
+two-level map containing an array — against 0, 1, 5, and 6 attributes. The counts 5 and 6 are
+not arbitrary: the pinned `SdkLogRecord` keeps capacity for five attributes inline, so 6 is the
+first count that spills to the heap, and reporting only round numbers would hide that step.
+
+Each shape is measured on three paths so the numbers can be attributed rather than merely
+observed: `noop` (public C API, no SDK installed), `c_sdk` (public C API over a real SDK Logs
+pipeline), and `rust` (the pinned Rust SDK driven directly with equivalent data). The gap
+between `noop` and `c_sdk` is the bridge; the gap between `c_sdk` and `rust` is the honest price
+of the C boundary.
+
+`logs_allocations` is the more useful of the two for regression detection, because allocation
+counts are deterministic while timings on a shared machine are not. It configures a small
+bounded batch queue and a one-hour scheduled delay, and warms until the queue is full, so every
+measured emit performs the complete validate-convert-handoff and is then dropped by the queue.
+That is deliberate: an unbounded queue would fold amortized queue reallocation into the
+per-record figures, and allowing an export to run would let background-thread allocations be
+charged to whichever emit happened to be in flight, since the counting allocator is global.
+
+The result that matters most is that every `noop` case reports **exactly zero allocations and
+zero bytes per operation**. A C application that links the API but installs no SDK pays no heap
+traffic for logging at all, which is the property a C caller most needs to be able to depend on.
+
+Indicative figures from a developer machine (Apple silicon, macOS, release profile, default
+features) — informational only, not a baseline, and not comparable to the Linux VM numbers
+above:
+
+| Shape / attributes | `noop` allocs/op | `c_sdk` allocs/op | `rust` allocs/op |
+| --- | --- | --- | --- |
+| no body, 0 | 0 | 2.3 | 1.6 |
+| no body, 5 | 0 | 24.0 | 19.6 |
+| no body, 6 | 0 | 29.5 | 24.7 |
+| string body, 0 | 0 | 6.4 | 1.7 |
+| string body, 6 | 0 | 32.4 | 25.1 |
+| nested body, 0 | 0 | 30.6 | 12.5 |
+| nested body, 6 | 0 | 56.8 | 35.7 |
+
+Reading these honestly: scalar attributes cost the bridge roughly one extra allocation each
+over direct Rust, which is the unavoidable copy out of caller memory. Nested bodies cost
+proportionally more because the node pool is converted bottom-up into owned `AnyValue`
+containers. The `noop` column shows the C boundary itself contributes nothing when disabled.
+
+The corresponding `logs_hotpath` timings on the same machine put a no-SDK emit at roughly 3.4 ns
+regardless of payload — the API rejects the work before inspecting it — against roughly 106 ns
+for the simplest SDK-backed emit and roughly 900 ns for a nested body with six attributes, with
+the direct Rust baseline about 20–30% below the C figures across the matrix.
+
 ## Sanitizer validation
 
 Linux sanitizer runs are explicit because they require nightly Rust, `rust-src`, Clang, and

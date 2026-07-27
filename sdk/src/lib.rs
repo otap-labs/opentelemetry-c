@@ -68,6 +68,16 @@ pub use batch_processor::{
 pub use custom_metric_exporter::{
     otel_custom_metric_exporter_new, OtelCustomMetricExporterCallbacks,
 };
+pub use log_exporter::{otel_log_exporter_destroy, OtelLogExporter};
+pub use log_processor::{
+    otel_batch_log_processor_builder_build, otel_batch_log_processor_builder_destroy,
+    otel_batch_log_processor_builder_new, otel_batch_log_processor_builder_set_exporter,
+    otel_batch_log_processor_builder_set_max_export_batch_size,
+    otel_batch_log_processor_builder_set_max_export_timeout_millis,
+    otel_batch_log_processor_builder_set_max_queue_size,
+    otel_batch_log_processor_builder_set_scheduled_delay_millis, otel_log_processor_destroy,
+    otel_simple_log_processor_create, OtelBatchLogProcessorBuilder, OtelLogProcessor,
+};
 pub use manual_metric_reader::{
     otel_manual_metric_reader_destroy, otel_manual_metric_reader_new, OtelManualMetricReader,
 };
@@ -94,6 +104,13 @@ pub use otlp_exporter::{
     otel_otlp_trace_exporter_builder_destroy, otel_otlp_trace_exporter_builder_new,
     otel_otlp_trace_exporter_builder_set_endpoint,
     otel_otlp_trace_exporter_builder_set_timeout_millis, OtelOtlpTraceExporterBuilder,
+};
+pub use otlp_log_exporter::{
+    otel_otlp_log_exporter_builder_add_header, otel_otlp_log_exporter_builder_build,
+    otel_otlp_log_exporter_builder_destroy, otel_otlp_log_exporter_builder_new,
+    otel_otlp_log_exporter_builder_set_compression, otel_otlp_log_exporter_builder_set_endpoint,
+    otel_otlp_log_exporter_builder_set_timeout_millis,
+    otel_otlp_log_exporter_builder_set_transport, OtelOtlpLogExporterBuilder,
 };
 pub use otlp_metric_exporter::{
     otel_otlp_metric_exporter_builder_add_header, otel_otlp_metric_exporter_builder_build,
