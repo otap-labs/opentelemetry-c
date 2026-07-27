@@ -3,7 +3,7 @@
 [![Apache License][license-image]][license-url]
 
 The **C API facade** of the Rust-backed OpenTelemetry C binding. It exposes the public
-trace and Metrics APIs as opaque C handles, **owns independent process-global provider
+trace, Metrics, and (experimental) Logs APIs as opaque C handles, **owns independent process-global provider
 slots for each signal**, and ships **no-op defaults** so API-only instrumentation is safe
 with or without an SDK.
 
@@ -18,19 +18,29 @@ This crate depends only on an internal ABI-types crate — never on `opentelemet
 
 | Library | Who links it | Contains |
 | --- | --- | --- |
-| **`libopentelemetry_c_api`** (this crate) | instrumentation **and** applications | trace + Metrics APIs, global provider slots, no-op defaults |
+| **`libopentelemetry_c_api`** (this crate) | instrumentation **and** applications | trace + Metrics + Logs APIs, global provider slots, no-op defaults |
 | **`libopentelemetry_c_sdk`** | applications only | OTLP exporters, processors/readers/views, SDK lifecycle |
 
-- **Instrumentation libraries** link **only** `libopentelemetry_c_api`. Their trace and
-  Metrics calls are safe no-ops until an application installs the corresponding SDK
+- **Instrumentation libraries** link **only** `libopentelemetry_c_api`. Their trace,
+  Metrics, and Logs calls are safe no-ops until an application installs the corresponding SDK
   provider, then they dispatch to it.
 - **Applications** link **both** libraries. Installing the SDK
   (`otel_sdk_set_as_global`) registers it into *this* library's global provider slot
   (across the C ABI via the internal `otel_api_register_global_provider`), so it becomes
   visible to all API-only instrumentation.
 
-There is exactly **one trace slot and one Metrics slot** in the process — both owned here —
-so no duplicate global state exists across the two libraries.
+There is exactly **one trace slot, one Metrics slot, and one Logs slot** in the process — all
+owned here — so no duplicate global state exists across the two libraries. The three slots are
+fully independent: installing or shutting down one signal never affects another.
+
+### Logs (experimental)
+
+`logs.h` is a **log bridge**, meant for a logging library to route records through
+OpenTelemetry. Records are described by a borrowed, one-shot `otel_log_record_view_t`;
+structured values live in a flat node pool addressed by index range rather than a pointer
+graph, so cycles cannot be expressed and an entire record can be validated without a visited
+set. `event_name` and `target` are deliberately not exposed — see
+[LOGS_COMPLIANCE.md](../LOGS_COMPLIANCE.md) for why and for the full constraint list.
 
 ### Linking & library lifetime (important)
 

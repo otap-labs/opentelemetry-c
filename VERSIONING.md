@@ -54,6 +54,12 @@ Maturity is reported independently by signal and component in the root
 public C API, public native ABI, SDK, and exporters do not become stable merely because the
 underlying OpenTelemetry Rust component or specification is stable.
 
+Signals labelled **Experimental** in that table — currently Logs — sit below Alpha: their
+headers, struct layouts, and exported symbols may change in any `0.x` release, including
+patch releases, without the deprecation courtesy described above. Fields such as
+`otel_log_record_view_t::struct_size` and the Logs vtable size/version exist so such changes
+fail closed at run time rather than corrupting memory.
+
 Feature coverage and compatibility maturity are separate claims. A surface described as
 implemented or compliant may still be Alpha and subject to the pre-1.0 compatibility policy
 above. The internal API-to-SDK ABI is version-checked for safe dispatch, but remains an

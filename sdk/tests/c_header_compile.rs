@@ -326,6 +326,28 @@ int main(void) {
         ],
     );
 
+    let logs_example = manifest().join("examples/c-logs/main.c");
+    assert!(
+        logs_example.exists(),
+        "example missing: {}",
+        logs_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            logs_example.as_os_str(),
+        ],
+    );
+
     // The shipped split example (includes api.h + sdk.h).
     let example = manifest().join("examples/c-basic-traces/main.c");
     assert!(example.exists(), "example missing: {}", example.display());

@@ -33,8 +33,8 @@ The current `sdk/Cargo.toml` feature graph is:
 | --- | --- | --- |
 | `native-tls` | Yes | Implies `otlp-http`; HTTP HTTPS through the platform TLS backend. |
 | `otlp` | No | Compatibility alias that enables `otlp-http`. |
-| `otlp-http` | Via `native-tls` | OTLP HTTP/protobuf trace and Metrics exporters. |
-| `otlp-grpc` | No | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
+| `otlp-http` | Via `native-tls` | OTLP HTTP/protobuf trace, Metrics, and Logs exporters. |
+| `otlp-grpc` | No | OTLP/gRPC Metrics and Logs using tonic and an SDK-owned Tokio runtime. |
 | `metrics-async-runtime` | No | SDK-owned async periodic Metrics reader with configurable export timeout. |
 | `rustls-tls` | No | Implies `otlp-http`; HTTP HTTPS through rustls. |
 | `grpc-tls-ring` | No | Implies `otlp-grpc`; gRPC TLS using ring and platform roots. |
@@ -94,10 +94,11 @@ Link or globally load the API before the SDK. Keep both libraries loaded for the
 of all providers, tracers, spans, meters, instruments, callbacks, registrations, and other
 OpenTelemetry handles. `dlclose` after use is unsupported.
 
-The trace and Metrics examples provide working Makefiles:
+The trace, Metrics, and Logs examples provide working Makefiles:
 
 - [`sdk/examples/c-basic-traces`](../sdk/examples/c-basic-traces)
 - [`sdk/examples/c-metrics`](../sdk/examples/c-metrics)
+- [`sdk/examples/c-logs`](../sdk/examples/c-logs)
 
 Windows shared-library use and supported static deployment are not currently available.
 
