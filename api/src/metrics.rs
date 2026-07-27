@@ -1672,6 +1672,18 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    extern "C" fn mock_bind_null_ok(
+        _ctx: *mut c_void,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+        out_status: *mut OtelStatus,
+    ) -> *mut c_void {
+        if !out_status.is_null() {
+            unsafe { *out_status = OtelStatus::Ok };
+        }
+        std::ptr::null_mut()
+    }
+
     extern "C" fn mock_bound_record_u64(_ctx: *mut c_void, _value: u64) -> OtelStatus {
         OtelStatus::Ok
     }
@@ -1725,6 +1737,80 @@ mod tests {
             observer_observe_u64,
             ..MOCK_METRICS_VTABLE
         }
+    }
+
+    #[test]
+    fn bound_instrument_api_rejects_incompatible_and_malformed_results() {
+        let counter = |vtable: *const OtelMetricsVtable| OtelCounterU64 {
+            header: OtelHandleHeader::new(OtelCounterU64::KIND),
+            vtable,
+            ctx: std::ptr::NonNull::<c_void>::dangling().as_ptr(),
+        };
+        let mut out = std::ptr::null_mut();
+
+        assert_eq!(
+            unsafe {
+                otel_counter_u64_bind(
+                    &counter(&MOCK_METRICS_VTABLE),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                )
+            },
+            OtelStatus::InvalidArgument
+        );
+
+        let scope_only_vtable = OtelMetricsVtable {
+            struct_size: opentelemetry_c_abi::OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE,
+            ..MOCK_METRICS_VTABLE
+        };
+        assert_eq!(
+            unsafe {
+                otel_counter_u64_bind(&counter(&scope_only_vtable), std::ptr::null(), 0, &mut out)
+            },
+            OtelStatus::InvalidConfig
+        );
+        assert!(out.is_null());
+
+        let null_ok_vtable = OtelMetricsVtable {
+            instrument_bind: mock_bind_null_ok,
+            ..MOCK_METRICS_VTABLE
+        };
+        assert_eq!(
+            unsafe {
+                otel_counter_u64_bind(&counter(&null_ok_vtable), std::ptr::null(), 0, &mut out)
+            },
+            OtelStatus::InternalError
+        );
+        assert!(out.is_null());
+
+        assert_eq!(
+            unsafe {
+                otel_counter_u64_bind(
+                    &counter(&MOCK_METRICS_VTABLE),
+                    std::ptr::null(),
+                    0,
+                    &mut out,
+                )
+            },
+            OtelStatus::InvalidConfig
+        );
+        assert!(out.is_null());
+
+        let bound_histogram = OtelBoundHistogramU64 {
+            header: OtelHandleHeader::new(OtelBoundHistogramU64::KIND),
+            vtable: std::ptr::null(),
+            ctx: std::ptr::null_mut(),
+        };
+        assert_eq!(
+            unsafe {
+                otel_bound_counter_u64_add(
+                    (&bound_histogram as *const OtelBoundHistogramU64).cast(),
+                    1,
+                )
+            },
+            OtelStatus::InvalidArgument
+        );
     }
 
     struct ConcurrentObserverProbe {

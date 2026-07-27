@@ -151,6 +151,13 @@ void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
  * conversion. The bound handle owns the copied attributes and remains valid independently
  * of the source instrument handle. Without an installed SDK, binding succeeds and produces
  * a no-op bound handle without reading the attributes.
+ * Binding against an SDK vtable that predates this extension returns
+ * OTEL_STATUS_INVALID_CONFIG. Bound handles may be recorded concurrently from multiple
+ * threads. Destruction must not race with recording on the same handle.
+ *
+ * If the SDK stream's cardinality limit is already exhausted when binding, the handle is
+ * permanently attached to the overflow series. Drop and re-bind after capacity becomes
+ * available to resolve the original attribute set again.
  *
  * The pinned opentelemetry-rust 0.32 API supports bound counters and histograms only;
  * gauges and up/down counters therefore have no bound C API.

@@ -371,6 +371,10 @@ static int metrics_work(void){
     attr.key=cs("route");
     attr.value_type=0;
     attr.value.string_value=cs("checkout");
+    otel_key_value_t bound_attr;
+    bound_attr.key=cs("route");
+    bound_attr.value_type=0;
+    bound_attr.value.string_value=cs("bound-checkout");
     otel_key_value_t scope_attr;
     scope_attr.key=cs("scope.component");
     scope_attr.value_type=0;
@@ -404,7 +408,7 @@ static int metrics_work(void){
         result=11; goto cleanup;
     }
     if (otel_counter_u64_add(c,3,&attr,1)!=0){ result=6; goto cleanup; }
-    if (otel_counter_u64_bind(c,&attr,1,&bound_c)!=0||!bound_c){
+    if (otel_counter_u64_bind(c,&bound_attr,1,&bound_c)!=0||!bound_c){
         result=19; goto cleanup;
     }
     if (otel_bound_counter_u64_add(bound_c,4)!=0){ result=20; goto cleanup; }
@@ -963,11 +967,19 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                                 && sum.aggregation_temporality
                                     == expected_temporality(scenario, "counter")
                                 && sum.data_points.iter().any(|point| {
-                                    matches!(point.value, Some(number_data_point::Value::AsInt(7)))
+                                    matches!(point.value, Some(number_data_point::Value::AsInt(3)))
                                         && has_string_attribute(
                                             &point.attributes,
                                             "route",
                                             "checkout",
+                                        )
+                                })
+                                && sum.data_points.iter().any(|point| {
+                                    matches!(point.value, Some(number_data_point::Value::AsInt(4)))
+                                        && has_string_attribute(
+                                            &point.attributes,
+                                            "route",
+                                            "bound-checkout",
                                         )
                                 });
                         }

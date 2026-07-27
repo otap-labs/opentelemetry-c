@@ -760,6 +760,18 @@ pub unsafe fn metrics_vtable_supports_bound_instruments(vtable: *const OtelMetri
 
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
+const _: () = assert!(
+    OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE
+        == OTEL_METRICS_VTABLE_REQUIRED_SIZE + std::mem::size_of::<OtelProviderGetMeterWithScope>()
+);
+const _: () = assert!(
+    OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE
+        == OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE + std::mem::size_of::<*const c_void>()
+);
+const _: () = assert!(
+    OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE
+        == OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE + 4 * std::mem::size_of::<*const c_void>()
+);
 const _: () =
     assert!(std::mem::size_of::<OtelMetricsVtable>() == OTEL_METRICS_VTABLE_BOUND_INSTRUMENT_SIZE);
 

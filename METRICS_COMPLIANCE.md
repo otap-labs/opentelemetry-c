@@ -31,7 +31,12 @@ experimental `0.x` C ABI.
 - Bound instruments follow the upstream `experimental_metrics_bound_instruments` API.
   OpenTelemetry Rust 0.32 exposes bound counters and histograms, but not bound gauges or
   up-down counters. Binding copies and pre-resolves attributes during setup; callers should
-  reuse the bound handle only when that attribute set is stable.
+  reuse the bound handle only when that attribute set is stable. A handle bound while the
+  stream cardinality limit is exhausted remains attached to the overflow series for its
+  lifetime; drop and re-bind after capacity becomes available to resolve the original
+  attribute set. As with unbound upstream recording, a poisoned internal tracker lock causes
+  subsequent measurements to be discarded rather than panicking across the telemetry hot
+  path.
 - The default Rust 0.32 blocking periodic reader controls collection on its worker thread.
   Metrics force flush has no upstream timeout input and can block indefinitely if an exporter
   or collection callback does not return. The trace helper-thread timeout is not reused

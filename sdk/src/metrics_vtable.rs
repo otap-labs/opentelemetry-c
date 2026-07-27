@@ -1109,10 +1109,20 @@ mod tests {
             other => panic!("unexpected histogram aggregation: {other:?}"),
         }
 
+        provider.shutdown().unwrap();
+        // Bound handles retain the upstream pipeline state required for safe post-shutdown
+        // no-op recording until the handles themselves are released.
+        assert_eq!(
+            (SDK_METRICS_VTABLE.bound_instrument_record_u64)(bound_counter, 8),
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.bound_instrument_record_f64)(bound_histogram, 8.5),
+            OtelStatus::Ok
+        );
         (SDK_METRICS_VTABLE.bound_instrument_free)(bound_counter);
         (SDK_METRICS_VTABLE.bound_instrument_free)(bound_histogram);
         (SDK_METRICS_VTABLE.meter_free)(meter);
-        provider.shutdown().unwrap();
         (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
     }
 
