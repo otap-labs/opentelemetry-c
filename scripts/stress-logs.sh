@@ -39,4 +39,6 @@ for iteration in $(seq 1 "$iterations"); do
     sdk::tests::dropping_the_sdk_without_explicit_shutdown_clears_the_logs_global_slot -- --exact
   cargo test -q -p opentelemetry-c-sdk --lib --no-default-features \
     sdk::tests::logs_and_metrics_global_slots_are_independent -- --exact
+  cargo test -q -p opentelemetry-c-sdk --lib --no-default-features \
+    sdk::tests::saturated_batch_queue_survives_repeated_pipeline_lifecycles -- --exact
 done

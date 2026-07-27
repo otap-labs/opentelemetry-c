@@ -2006,6 +2006,143 @@ mod tests {
         }
     }
 
+    /// Batch queue saturation crossed with repeated pipeline creation and destruction.
+    ///
+    /// These are combined on purpose. Saturation is what makes the drop path hot, and repeated
+    /// create/destroy is what would expose a leak or a stale registration in that path; running
+    /// either alone leaves the other's failure mode untested. The queue is deliberately far
+    /// smaller than the emit count so records are dropped continuously while flush and shutdown
+    /// run against the same processor.
+    #[test]
+    fn saturated_batch_queue_survives_repeated_pipeline_lifecycles() {
+        use crate::log_exporter::{LogExporterImpl, OtelLogExporter};
+        use crate::log_processor::{
+            otel_batch_log_processor_builder_build, otel_batch_log_processor_builder_destroy,
+            otel_batch_log_processor_builder_new, otel_batch_log_processor_builder_set_exporter,
+            otel_batch_log_processor_builder_set_max_export_batch_size,
+            otel_batch_log_processor_builder_set_max_queue_size,
+            otel_batch_log_processor_builder_set_scheduled_delay_millis, OtelLogProcessor,
+        };
+        use opentelemetry_c_abi::{OtelLogRecordView, OtelScopeConfig};
+
+        const CYCLES: usize = 8;
+        const EMIT_THREADS: usize = 3;
+        const EMITS_PER_THREAD: usize = 400;
+        // Far below the emit count, so the queue is saturated for nearly the whole run.
+        const QUEUE_SIZE: usize = 8;
+
+        for cycle in 0..CYCLES {
+            unsafe {
+                let exporter = opentelemetry_sdk::logs::InMemoryLogExporter::default();
+                let exporter_handle = crate::handle::into_raw(OtelLogExporter::new(
+                    LogExporterImpl::InMemory(exporter.clone()),
+                ));
+                let processor_builder = otel_batch_log_processor_builder_new();
+                assert_eq!(
+                    otel_batch_log_processor_builder_set_exporter(
+                        processor_builder,
+                        exporter_handle
+                    ),
+                    OtelStatus::Ok,
+                    "cycle {cycle}"
+                );
+                assert_eq!(
+                    otel_batch_log_processor_builder_set_max_queue_size(
+                        processor_builder,
+                        QUEUE_SIZE
+                    ),
+                    OtelStatus::Ok
+                );
+                assert_eq!(
+                    otel_batch_log_processor_builder_set_max_export_batch_size(
+                        processor_builder,
+                        QUEUE_SIZE
+                    ),
+                    OtelStatus::Ok
+                );
+                assert_eq!(
+                    otel_batch_log_processor_builder_set_scheduled_delay_millis(
+                        processor_builder,
+                        1
+                    ),
+                    OtelStatus::Ok
+                );
+                let mut processor: *mut OtelLogProcessor = std::ptr::null_mut();
+                assert_eq!(
+                    otel_batch_log_processor_builder_build(processor_builder, &mut processor),
+                    OtelStatus::Ok
+                );
+                otel_batch_log_processor_builder_destroy(processor_builder);
+
+                let builder = otel_sdk_builder_new();
+                assert_eq!(
+                    otel_sdk_builder_add_log_processor(builder, processor),
+                    OtelStatus::Ok
+                );
+                let mut sdk: *mut OtelSdk = std::ptr::null_mut();
+                assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+                otel_sdk_builder_destroy(builder);
+
+                let barrier = Arc::new(Barrier::new(EMIT_THREADS + 1));
+                let mut emitters = Vec::new();
+                for _ in 0..EMIT_THREADS {
+                    let ctx =
+                        crate::logs_vtable::provider_ctx((*sdk).logger_provider.clone()) as usize;
+                    let barrier = Arc::clone(&barrier);
+                    emitters.push(std::thread::spawn(move || {
+                        let vtable = crate::logs_vtable::vtable_ptr();
+                        let ctx = ctx as *mut std::ffi::c_void;
+                        const SCOPE_NAME: &str = "saturation";
+                        let scope = OtelScopeConfig {
+                            name: OtelStringView {
+                                ptr: SCOPE_NAME.as_ptr().cast::<std::ffi::c_char>(),
+                                len: SCOPE_NAME.len(),
+                            },
+                            version: OtelStringView::empty(),
+                            schema_url: OtelStringView::empty(),
+                            attributes: std::ptr::null(),
+                            attribute_count: 0,
+                        };
+                        let logger = ((*vtable).provider_get_logger)(ctx, &scope);
+                        let mut record: OtelLogRecordView = std::mem::zeroed();
+                        record.struct_size = std::mem::size_of::<OtelLogRecordView>() as u64;
+                        record.severity_number = 9;
+                        barrier.wait();
+                        for _ in 0..EMITS_PER_THREAD {
+                            let status = ((*vtable).logger_emit)(logger, &record);
+                            assert!(
+                                matches!(status, OtelStatus::Ok | OtelStatus::AlreadyShutdown),
+                                "unexpected emit status {status:?}"
+                            );
+                        }
+                        ((*vtable).logger_free)(logger);
+                        ((*vtable).provider_free)(ctx);
+                    }));
+                }
+
+                barrier.wait();
+                // Flush against a saturated queue while emitters are still running.
+                let flush = otel_sdk_logs_force_flush(sdk, 1_000);
+                assert!(
+                    matches!(flush, OtelStatus::Ok | OtelStatus::AlreadyShutdown),
+                    "cycle {cycle}: unexpected flush status {flush:?}"
+                );
+
+                for emitter in emitters {
+                    emitter.join().expect("emitter thread must not panic");
+                }
+
+                assert_eq!(otel_sdk_logs_shutdown(sdk, 1_000), OtelStatus::Ok);
+                assert_eq!(
+                    otel_sdk_logs_shutdown(sdk, 0),
+                    OtelStatus::AlreadyShutdown,
+                    "cycle {cycle}: shutdown must stay one-shot under saturation"
+                );
+                otel_sdk_destroy(sdk);
+            }
+        }
+    }
+
     #[test]
     fn flush_guard_clears_on_panic() {
         let flag = Arc::new(AtomicBool::new(true));

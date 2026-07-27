@@ -172,10 +172,16 @@ LOGS_BENCH_REPEATS=3 scripts/benchmark-logs.sh
 Logs are benchmarked differently from Metrics because the cost is dominated by *conversion*
 rather than aggregation. A borrowed `otel_log_record_view_t` may not outlive its call, so every
 string, byte string, map, and array it references has to be copied into owned Rust storage on
-every emit. Both suites therefore sweep three body shapes — absent, a plain string, and a
-two-level map containing an array — against 0, 1, 5, and 6 attributes. The counts 5 and 6 are
-not arbitrary: the pinned `SdkLogRecord` keeps capacity for five attributes inline, so 6 is the
-first count that spills to the heap, and reporting only round numbers would hide that step.
+every emit. Both suites therefore sweep four body shapes — absent, a plain string, a
+64-byte byte string, and a two-level map containing an array — against 0, 1, 3, 5, and 6
+attributes. The counts 5 and 6 are not arbitrary: the pinned `SdkLogRecord` keeps capacity for
+five attributes inline, so 6 is the first count that spills to the heap, and reporting only
+round numbers would hide that step. Two cases sit outside the matrix and are measured on their
+own: a trace-correlated record, because correlation is the one field the bridge must set
+explicitly on every emit to stop the ambient Rust `Context` from leaking into a C caller's
+record, and `otel_logger_enabled` on a severity that is answered false, because that is the only
+Logs call a well-written C application makes when a level is disabled — it is the cost of *not*
+logging.
 
 Each shape is measured on three paths so the numbers can be attributed rather than merely
 observed: `noop` (public C API, no SDK installed), `c_sdk` (public C API over a real SDK Logs
@@ -201,18 +207,32 @@ above:
 
 | Shape / attributes | `noop` allocs/op | `c_sdk` allocs/op | `rust` allocs/op |
 | --- | --- | --- | --- |
-| no body, 0 | 0 | 2.3 | 1.6 |
-| no body, 5 | 0 | 24.0 | 19.6 |
-| no body, 6 | 0 | 29.5 | 24.7 |
-| string body, 0 | 0 | 6.4 | 1.7 |
-| string body, 6 | 0 | 32.4 | 25.1 |
-| nested body, 0 | 0 | 30.6 | 12.5 |
-| nested body, 6 | 0 | 56.8 | 35.7 |
+| no body, 0 | 0 | 2.3 | 1.4 |
+| no body, 3 | 0 | 15.5 | 11.2 |
+| no body, 5 | 0 | 24.3 | 18.8 |
+| no body, 6 | 0 | 29.3 | 23.4 |
+| string body, 0 | 0 | 6.5 | 2.1 |
+| string body, 6 | 0 | 32.4 | 24.4 |
+| bytes body, 0 | 0 | 9.0 | 6.3 |
+| bytes body, 6 | 0 | 34.0 | 30.0 |
+| nested body, 0 | 0 | 30.4 | 12.5 |
+| nested body, 6 | 0 | 57.3 | 35.7 |
+| trace-correlated, 1 | 0 | 11.4 | — |
 
 Reading these honestly: scalar attributes cost the bridge roughly one extra allocation each
-over direct Rust, which is the unavoidable copy out of caller memory. Nested bodies cost
-proportionally more because the node pool is converted bottom-up into owned `AnyValue`
-containers. The `noop` column shows the C boundary itself contributes nothing when disabled.
+over direct Rust, which is the unavoidable copy out of caller memory. Byte-string bodies track
+the Rust baseline closely because both must own the buffer. Nested bodies cost proportionally
+more because the node pool is converted bottom-up into owned `AnyValue` containers, and that
+gap — not the scalar path — is where any future optimization should be aimed. Trace correlation
+costs roughly half an allocation over the same record without it. The `noop` column shows the C
+boundary itself contributes nothing when logging is disabled.
+
+One combination in the specification is deliberately absent: a C-driven simple processor with an
+in-memory exporter. The in-memory exporter is a test-only construct in the SDK crate and is not
+reachable as a C handle, and substituting a real OTLP exporter behind a simple processor would
+measure a connection-refused syscall per record rather than the bridge. The simple processor is
+covered by correctness tests instead; the batch processor is what a production C caller uses and
+is what is measured here.
 
 The corresponding `logs_hotpath` timings on the same machine put a no-SDK emit at roughly 3.4 ns
 regardless of payload — the API rejects the work before inspecting it — against roughly 106 ns
@@ -278,6 +298,7 @@ LOGS_STRESS_ITERATIONS=100 scripts/stress-logs.sh
 
 It covers the global LoggerProvider slot under concurrent readers and re-registrations,
 emission racing shutdown, installation racing shutdown, one-shot shutdown, implicit slot
-clearing on drop, and the independence of the Logs and Metrics global slots. These cases are
+clearing on drop, the independence of the Logs and Metrics global slots, and batch queue
+saturation crossed with repeated pipeline creation and destruction. These cases are
 worth repeating rather than running once because a lost race normally still produces a passing
 interleaving; a single green run is close to no evidence at all.

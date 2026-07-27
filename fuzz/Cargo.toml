@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = { version = "1.4.2", features = ["derive"] }
 libfuzzer-sys = "0.4.13"
+opentelemetry-c-abi = { path = "../abi" }
 opentelemetry-c-api = { path = "../api" }
 opentelemetry-c-sdk = { path = "../sdk", default-features = false }
 

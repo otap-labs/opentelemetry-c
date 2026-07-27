@@ -19,11 +19,13 @@ use std::ptr;
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
+use opentelemetry_c_abi::{OtelBool, OtelLogsVtable, OtelScopeConfig, OTEL_LOGS_IMPL_ABI_VERSION};
 use opentelemetry_c_api::{
+    otel_api_logger_provider_new, otel_api_register_global_logger_provider_with_token,
     otel_global_logger_provider, otel_logger_destroy, otel_logger_emit, otel_logger_enabled,
     otel_logger_provider_destroy, otel_logger_provider_get_logger_with_options, OtelKeyValue,
     OtelLogBytesView, OtelLogRecordView, OtelLogTraceContext, OtelLogValue, OtelLogValueNode,
-    OtelLogValuePayload, OtelLogValueRange, OtelLoggerOptions, OtelStringView,
+    OtelLogValuePayload, OtelLogValueRange, OtelLoggerOptions, OtelStatus, OtelStringView,
 };
 use opentelemetry_c_sdk::{
     otel_sdk_build, otel_sdk_builder_destroy, otel_sdk_builder_new, otel_sdk_destroy,
@@ -45,7 +47,16 @@ struct NodeSpec {
 }
 
 #[derive(Arbitrary, Debug)]
+struct VtableSpec {
+    abi_version: u32,
+    struct_size: usize,
+    use_null: bool,
+    register: bool,
+}
+
+#[derive(Arbitrary, Debug)]
 struct Input {
+    vtable: VtableSpec,
     text: Vec<u8>,
     raw_bytes: Vec<u8>,
     scope_name: Vec<u8>,
@@ -65,6 +76,98 @@ struct Input {
     attributes: Vec<NodeSpec>,
     node_count_mode: u8,
     attribute_count_mode: u8,
+}
+
+/// A structurally complete Logs vtable whose slots are never expected to be called: any
+/// fuzzer-chosen header that reaches an indirect call is a bug, and these bodies make that
+/// observable as a deliberate abort rather than as silent corruption.
+extern "C" fn unreachable_get_logger(
+    _: *mut std::ffi::c_void,
+    _: *const OtelScopeConfig,
+) -> *mut std::ffi::c_void {
+    panic!("an incompatible logs vtable reached provider_get_logger");
+}
+
+extern "C" fn unreachable_retain(_: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
+    panic!("an incompatible logs vtable reached provider_retain");
+}
+
+extern "C" fn tracked_free(ctx: *mut std::ffi::c_void) {
+    if !ctx.is_null() {
+        drop(unsafe { Box::from_raw(ctx.cast::<u64>()) });
+    }
+}
+
+extern "C" fn unreachable_enabled(_: *mut std::ffi::c_void, _: u32) -> OtelBool {
+    panic!("an incompatible logs vtable reached logger_enabled");
+}
+
+extern "C" fn unreachable_emit(
+    _: *mut std::ffi::c_void,
+    _: *const OtelLogRecordView,
+) -> OtelStatus {
+    panic!("an incompatible logs vtable reached logger_emit");
+}
+
+/// Drive the vtable-header compatibility check with fuzzer-chosen ABI identifiers and sizes.
+///
+/// The registration contract is the interesting part: caller-owned context must transfer only
+/// on success. Leaking on the rejection path or freeing on the success path would both show up
+/// here, because the context is a real allocation freed by exactly one `provider_free`.
+fn exercise_vtable(spec: &VtableSpec) {
+    let vtable = OtelLogsVtable {
+        // Nudge the fuzzer toward the accept/reject boundary without pinning it there.
+        abi_version: match spec.abi_version % 4 {
+            0 => OTEL_LOGS_IMPL_ABI_VERSION,
+            1 => OTEL_LOGS_IMPL_ABI_VERSION.wrapping_add(1),
+            2 => spec.abi_version,
+            _ => 0,
+        },
+        struct_size: match spec.struct_size % 4 {
+            0 => std::mem::size_of::<OtelLogsVtable>(),
+            1 => std::mem::size_of::<OtelLogsVtable>() + 8,
+            2 => 0,
+            _ => spec.struct_size,
+        },
+        provider_get_logger: unreachable_get_logger,
+        provider_retain: unreachable_retain,
+        provider_free: tracked_free,
+        logger_enabled: unreachable_enabled,
+        logger_emit: unreachable_emit,
+        logger_free: tracked_free,
+    };
+    let vtable_ptr = if spec.use_null {
+        ptr::null()
+    } else {
+        &vtable as *const OtelLogsVtable
+    };
+
+    let ctx = Box::into_raw(Box::new(0xDEAD_BEEFu64)).cast::<std::ffi::c_void>();
+    if spec.register {
+        let mut id = 0u64;
+        let status = unsafe {
+            otel_api_register_global_logger_provider_with_token(vtable_ptr, ctx, &mut id)
+        };
+        if status == OtelStatus::Ok {
+            // The slot took ownership; give it straight back so the vtable, which lives on this
+            // stack frame, cannot outlive the registration.
+            assert_ne!(id, 0);
+            assert_eq!(
+                opentelemetry_c_api::otel_api_unregister_global_logger_provider(id),
+                OtelStatus::Ok
+            );
+        } else {
+            // Rejected: the context is still ours and must be released exactly once.
+            tracked_free(ctx);
+        }
+    } else {
+        let provider = unsafe { otel_api_logger_provider_new(vtable_ptr, ctx) };
+        if provider.is_null() {
+            tracked_free(ctx);
+        } else {
+            unsafe { otel_logger_provider_destroy(provider) };
+        }
+    }
 }
 
 /// Build a string view over a live buffer. Mode 2 yields NULL with a non-zero length, which
@@ -171,6 +274,8 @@ fn install_sdk() -> *mut OtelSdk {
 }
 
 fuzz_target!(|input: Input| {
+    exercise_vtable(&input.vtable);
+
     let sdk = install_sdk();
 
     let scope_name = view(&input.scope_name, input.string_mode);

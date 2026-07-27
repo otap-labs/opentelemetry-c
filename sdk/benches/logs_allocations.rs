@@ -36,8 +36,8 @@ use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider 
 use opentelemetry::{InstrumentationScope, Key};
 
 use opentelemetry_c_abi::{
-    OtelLogRecordView, OtelLogValue, OtelLogValueNode, OtelLogValuePayload, OtelLogValueRange,
-    OtelLogValueType, OTEL_LOG_FIELD_TIMESTAMP,
+    OtelLogBytesView, OtelLogRecordView, OtelLogValue, OtelLogValueNode, OtelLogValuePayload,
+    OtelLogValueRange, OtelLogValueType, OTEL_LOG_FIELD_TIMESTAMP, OTEL_LOG_FIELD_TRACE_CONTEXT,
 };
 use opentelemetry_c_api::{
     otel_global_logger_provider, otel_logger_destroy, otel_logger_emit,
@@ -65,6 +65,8 @@ const QUEUE_SIZE: usize = 512;
 const DEAD_ENDPOINT: &str = "http://127.0.0.1:1/v1/logs";
 const BODY_TEXT: &str = "request completed";
 const NESTED_TEXT: &str = "nested-value";
+/// 64 bytes: large enough that the copy is visible, small enough to stay a realistic payload.
+const BODY_BYTES: &[u8; 64] = &[0x5A; 64];
 
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
@@ -127,6 +129,7 @@ fn assert_ok(status: OtelStatus) {
 enum BodyShape {
     Absent,
     String,
+    Bytes,
     Nested,
 }
 
@@ -135,6 +138,7 @@ impl BodyShape {
         match self {
             Self::Absent => "no_body",
             Self::String => "string_body",
+            Self::Bytes => "bytes_body",
             Self::Nested => "nested_body",
         }
     }
@@ -210,6 +214,19 @@ impl RecordFixture {
                     },
                 },
             ),
+            BodyShape::Bytes => (
+                Vec::new(),
+                OtelLogValue {
+                    value_type: OtelLogValueType::Bytes as u32,
+                    reserved: 0,
+                    value: OtelLogValuePayload {
+                        bytes_value: OtelLogBytesView {
+                            ptr: BODY_BYTES.as_ptr(),
+                            len: BODY_BYTES.len(),
+                        },
+                    },
+                },
+            ),
             // map { detail: [string, bool], count: int }, children always at greater indices.
             BodyShape::Nested => (
                 vec![
@@ -269,6 +286,18 @@ impl RecordFixture {
         }
     }
 
+    /// A trace-correlated variant of the same record. Correlation is measured separately
+    /// because it is the one field the bridge must set explicitly on every emit to stop the
+    /// ambient Rust `Context` from leaking into a C caller's record.
+    fn correlated_record(&self) -> OtelLogRecordView {
+        let mut record = self.record();
+        record.present_fields |= OTEL_LOG_FIELD_TRACE_CONTEXT;
+        record.trace_context.trace_id = [0x11; 16];
+        record.trace_context.span_id = [0x22; 8];
+        record.trace_context.trace_flags = 1;
+        record
+    }
+
     fn record(&self) -> OtelLogRecordView {
         let mut record: OtelLogRecordView = unsafe { std::mem::zeroed() };
         record.struct_size = std::mem::size_of::<OtelLogRecordView>() as u64;
@@ -306,6 +335,7 @@ fn rust_body(shape: BodyShape) -> Option<AnyValue> {
     match shape {
         BodyShape::Absent => None,
         BodyShape::String => Some(AnyValue::String(BODY_TEXT.into())),
+        BodyShape::Bytes => Some(AnyValue::Bytes(Box::new(BODY_BYTES.to_vec()))),
         BodyShape::Nested => {
             let array = AnyValue::ListAny(Box::new(vec![
                 AnyValue::String(NESTED_TEXT.into()),
@@ -416,8 +446,13 @@ fn install_sdk() -> *mut OtelSdk {
     }
 }
 
-const SHAPES: [BodyShape; 3] = [BodyShape::Absent, BodyShape::String, BodyShape::Nested];
-const ATTRIBUTE_COUNTS: [usize; 4] = [0, 1, 5, 6];
+const SHAPES: [BodyShape; 4] = [
+    BodyShape::Absent,
+    BodyShape::String,
+    BodyShape::Bytes,
+    BodyShape::Nested,
+];
+const ATTRIBUTE_COUNTS: [usize; 5] = [0, 1, 3, 5, 6];
 
 fn measure_c_paths(prefix: &str) {
     let logger = CLogger::acquire();
@@ -432,6 +467,15 @@ fn measure_c_paths(prefix: &str) {
             });
         }
     }
+
+    // Trace correlation is measured on its own because the bridge must set it explicitly on
+    // every emit; folding it into the matrix would hide whether it costs an allocation.
+    let fixture = RecordFixture::new(BodyShape::String, 1);
+    let correlated = fixture.correlated_record();
+    measure(&format!("{prefix}/trace_correlated/1"), || {
+        let status = unsafe { otel_logger_emit(logger.logger, &correlated) };
+        black_box(status);
+    });
 }
 
 fn measure_rust_path() {

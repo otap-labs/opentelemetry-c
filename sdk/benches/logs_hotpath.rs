@@ -34,8 +34,8 @@ use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider 
 use opentelemetry::{InstrumentationScope, Key};
 
 use opentelemetry_c_abi::{
-    OtelLogRecordView, OtelLogValue, OtelLogValueNode, OtelLogValuePayload, OtelLogValueRange,
-    OtelLogValueType, OTEL_LOG_FIELD_TIMESTAMP,
+    OtelLogBytesView, OtelLogRecordView, OtelLogValue, OtelLogValueNode, OtelLogValuePayload,
+    OtelLogValueRange, OtelLogValueType, OTEL_LOG_FIELD_TIMESTAMP, OTEL_LOG_FIELD_TRACE_CONTEXT,
 };
 use opentelemetry_c_api::{
     otel_global_logger_provider, otel_logger_destroy, otel_logger_emit, otel_logger_enabled,
@@ -58,7 +58,13 @@ use opentelemetry_c_sdk::{
 /// Closed loopback port: connections are refused immediately, so export never blocks the loop.
 const DEAD_ENDPOINT: &str = "http://127.0.0.1:1/v1/logs";
 /// Attribute counts chosen to straddle the pinned record's inline attribute capacity of 5.
-const ATTRIBUTE_COUNTS: [usize; 4] = [0, 1, 5, 6];
+const ATTRIBUTE_COUNTS: [usize; 5] = [0, 1, 3, 5, 6];
+const SHAPES: [BodyShape; 4] = [
+    BodyShape::Absent,
+    BodyShape::String,
+    BodyShape::Bytes,
+    BodyShape::Nested,
+];
 
 fn sv(value: &str) -> OtelStringView {
     OtelStringView {
@@ -94,6 +100,8 @@ enum BodyShape {
     Absent,
     /// A plain string body: the common logging case.
     String,
+    /// A byte-string body: the one scalar whose conversion copies bulk data.
+    Bytes,
     /// A two-level map/array body: exercises the node pool walk and bottom-up conversion.
     Nested,
 }
@@ -103,6 +111,7 @@ impl BodyShape {
         match self {
             Self::Absent => "no_body",
             Self::String => "string_body",
+            Self::Bytes => "bytes_body",
             Self::Nested => "nested_body",
         }
     }
@@ -110,6 +119,8 @@ impl BodyShape {
 
 const BODY_TEXT: &str = "request completed";
 const NESTED_TEXT: &str = "nested-value";
+/// 64 bytes: large enough that the copy is visible, small enough to stay a realistic payload.
+const BODY_BYTES: &[u8; 64] = &[0x5A; 64];
 
 impl RecordFixture {
     fn new(shape: BodyShape, attribute_count: usize) -> Self {
@@ -184,6 +195,19 @@ impl RecordFixture {
                     },
                 },
             ),
+            BodyShape::Bytes => (
+                Vec::new(),
+                OtelLogValue {
+                    value_type: OtelLogValueType::Bytes as u32,
+                    reserved: 0,
+                    value: OtelLogValuePayload {
+                        bytes_value: OtelLogBytesView {
+                            ptr: BODY_BYTES.as_ptr(),
+                            len: BODY_BYTES.len(),
+                        },
+                    },
+                },
+            ),
             BodyShape::Nested => {
                 let nodes = vec![
                     OtelLogValueNode {
@@ -243,6 +267,18 @@ impl RecordFixture {
         }
     }
 
+    /// A trace-correlated variant of the same record. Correlation is measured separately
+    /// because it is the one field the bridge must set explicitly on every emit to stop the
+    /// ambient Rust `Context` from leaking into a C caller's record.
+    fn correlated_record(&self) -> OtelLogRecordView {
+        let mut record = self.record();
+        record.present_fields |= OTEL_LOG_FIELD_TRACE_CONTEXT;
+        record.trace_context.trace_id = [0x11; 16];
+        record.trace_context.span_id = [0x22; 8];
+        record.trace_context.trace_flags = 1;
+        record
+    }
+
     fn record(&self) -> OtelLogRecordView {
         let mut record: OtelLogRecordView = unsafe { std::mem::zeroed() };
         record.struct_size = std::mem::size_of::<OtelLogRecordView>() as u64;
@@ -280,6 +316,7 @@ impl RecordFixture {
         match shape {
             BodyShape::Absent => None,
             BodyShape::String => Some(AnyValue::String(BODY_TEXT.into())),
+            BodyShape::Bytes => Some(AnyValue::Bytes(Box::new(BODY_BYTES.to_vec()))),
             BodyShape::Nested => {
                 let array = AnyValue::ListAny(Box::new(vec![
                     AnyValue::String(NESTED_TEXT.into()),
@@ -390,10 +427,25 @@ impl Drop for CLogger {
     }
 }
 
+/// Emit-path benchmarks plus the two cases that are not part of the shape matrix: a
+/// trace-correlated record, and the `enabled` pre-check a caller uses to skip building a record
+/// at all. The pre-check matters because it is the only Logs call a well-written C application
+/// makes on a disabled severity, so its cost is the cost of *not* logging.
 fn bench_c_emit(criterion: &mut Criterion, group_name: &str) {
     let logger = CLogger::acquire();
     let mut group = criterion.benchmark_group(group_name);
-    for shape in [BodyShape::Absent, BodyShape::String, BodyShape::Nested] {
+
+    {
+        let fixture = RecordFixture::new(BodyShape::String, 1);
+        let correlated = fixture.correlated_record();
+        group.bench_function("trace_correlated", |bencher| {
+            bencher.iter(|| {
+                let status = unsafe { otel_logger_emit(logger.logger, &correlated) };
+                black_box(status)
+            });
+        });
+    }
+    for shape in SHAPES {
         for count in ATTRIBUTE_COUNTS {
             let fixture = RecordFixture::new(shape, count);
             let record = fixture.record();
@@ -420,6 +472,11 @@ fn logs_noop_emit(criterion: &mut Criterion) {
     criterion.bench_function("logs_noop_enabled", |bencher| {
         bencher.iter(|| black_box(unsafe { otel_logger_enabled(logger.logger, 9) }));
     });
+    // Severity 0 cannot be expressed by the pinned `event_enabled` signature, so it is answered
+    // false without entering Rust at all. This is the cheapest possible "skip this log" path.
+    criterion.bench_function("logs_noop_enabled_false", |bencher| {
+        bencher.iter(|| black_box(unsafe { otel_logger_enabled(logger.logger, 0) }));
+    });
 }
 
 fn logs_sdk_emit(criterion: &mut Criterion) {
@@ -429,6 +486,9 @@ fn logs_sdk_emit(criterion: &mut Criterion) {
     let logger = CLogger::acquire();
     criterion.bench_function("logs_sdk_enabled", |bencher| {
         bencher.iter(|| black_box(unsafe { otel_logger_enabled(logger.logger, 9) }));
+    });
+    criterion.bench_function("logs_sdk_enabled_false", |bencher| {
+        bencher.iter(|| black_box(unsafe { otel_logger_enabled(logger.logger, 0) }));
     });
 }
 
@@ -456,7 +516,7 @@ fn logs_rust_baseline(criterion: &mut Criterion) {
     let logger = provider.logger_with_scope(InstrumentationScope::builder("bench").build());
 
     let mut group = criterion.benchmark_group("logs_rust_emit");
-    for shape in [BodyShape::Absent, BodyShape::String, BodyShape::Nested] {
+    for shape in SHAPES {
         for count in ATTRIBUTE_COUNTS {
             let fixture = RecordFixture::new(shape, count);
             let attributes = fixture.rust_attributes(count);
