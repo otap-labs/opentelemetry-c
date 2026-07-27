@@ -21,6 +21,7 @@ general-purpose end-user logging API.
 | Timestamps | Implemented | Optional `timestamp`; an omitted `observed_timestamp` is defaulted by the upstream SDK rather than by this bridge. |
 | Level check | Implemented | `otel_logger_enabled()` maps to the upstream `event_enabled`. Severity `0` and values above 24 return false without entering Rust, since the upstream signature takes a non-optional `Severity`. |
 | SDK pipeline | Implemented | Independent `SdkLoggerProvider`, simple and batch log processors, resource/scope propagation, force flush, and one-shot shutdown. |
+| Custom exporter | Implemented | C callback-backed `otel_log_exporter_t` created by `otel_custom_log_exporter_new`, usable with either log processor. The export callback receives a callback-scoped, read-only batch view that reuses `otel_log_value_t` and the same flat node-pool invariants as the emit path. Callback state transfers on `OTEL_STATUS_OK` only and is released exactly once, after the last in-flight export returns. |
 | OTLP Logs | Implemented | HTTP/protobuf by default plus optional gRPC/tonic, explicit transport selection, endpoint, headers/ASCII metadata, timeout, and transport-specific compression. |
 | Lifecycle independence | Implemented | The Logs global slot, lock, and shutdown flag are separate from Trace and Metrics; shutting down one signal never disturbs another. Shutdown unregisters the global slot *before* stopping the provider, and only ever clears this SDK's own registration token. |
 | Split-artifact linking | Implemented | A C integration test links separate API/SDK shared libraries and decodes the exported OTLP protobuf to verify records reached the SDK through the API-owned global slot. |
@@ -35,6 +36,31 @@ general-purpose end-user logging API.
 ## Known experimental constraints
 
 - Logs are experimental and may change incompatibly between `0.x` releases.
+
+- **The custom exporter has no force-flush callback.** The pinned `LogExporter` trait has no
+  force-flush operation, so the SDK would never invoke one. Provider force-flush is handled
+  entirely by the log processor, which then exports through the ordinary export callback.
+
+- **The custom exporter's export callback is read-only and callback-scoped.** Every pointer
+  reachable from `otel_log_export_batch_view_t` dies when the callback returns. Nothing may be
+  retained; a bridge must copy what it needs before returning.
+
+- **A custom export callback must not reenter the SDK it is exporting for.** Both pinned
+  processors export inside a telemetry-suppressed scope, so a log record emitted from the
+  callback is dropped rather than recursing, but shutting down or destroying the SDK,
+  provider, processor, or exporter from inside the callback self-deadlocks: the simple
+  processor holds its exporter mutex and the exporter holds its own shutdown read lock across
+  the call.
+
+- **Conversion failures for a custom exporter are all-or-nothing.** A record that cannot be
+  represented within the ABI limits (an oversized value, an unrepresentable value kind, or a
+  pre-epoch timestamp) fails the whole export rather than being silently truncated or
+  substituted. With a batch processor the accompanying last-error diagnostic is recorded on
+  the processor's worker thread, so it is not visible to the C caller.
+
+- **Exported map keys are reproduced verbatim.** Unlike the emit path, which rejects empty and
+  duplicate map keys, the export path never rewrites legal upstream data. Map entries are
+  sorted by key so exports are deterministic, since the pinned map type is a `HashMap`.
 
 - **`event_name` is not exposed.** The pinned `LogRecord::set_event_name` takes a
   `&'static str`. Satisfying that from borrowed C memory would require either leaking every

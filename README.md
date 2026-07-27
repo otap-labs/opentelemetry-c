@@ -87,6 +87,9 @@ Then start with a complete, buildable example:
   reader, views, OTLP export, and lifecycle.
 - [C Logs](sdk/examples/c-logs) — experimental log bridge: logger acquisition, structured
   record values, trace correlation, batch processor, OTLP export, and lifecycle.
+- [C custom Logs exporter](sdk/examples/c-custom-log-exporter) — receive finished log batches
+  in your own C code, with no OTLP transport: callback registration, batch-view traversal, and
+  callback-state ownership.
 
 See [Building from a source release](docs/BUILDING.md) for Cargo features, both required
 header include roots, native linking, and platform constraints.

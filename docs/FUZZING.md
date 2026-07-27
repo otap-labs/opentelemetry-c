@@ -8,6 +8,7 @@ Targets never synthesize arbitrary addresses or reuse freed handles.
 | `metrics_inputs` | UTF-8, NULL/length pairs, attribute tags and values, option prefixes, duplicate scope keys, histogram boundaries, counts, and scalar recording. |
 | `handle_kinds` | Live wrong-type opaque handles and bounded operation sequences without double destroy or dangling-pointer access. |
 | `exporter_visitor` | Custom exporter callback-table size, temporality and callback presence; visitor size; callback status propagation; manual collection; and exactly-once state destruction. |
+| `log_exporter_callbacks` | Custom Logs exporter callback-table size and callback presence, callback status propagation, exactly-once state destruction, and — from inside the export callback — the exported batch view's declared struct sizes, presence-bit mask, child-range bounds, strictly forward child indices, and exactly-once node referencing. |
 | `logs_records` | Log record prefix sizes, presence bits, reserved words, severity numbers, value tags, trace context, and — most importantly — the flat value node pool: child ranges that are out of bounds, backwards, self-referential, shared between parents, or unreferenced. |
 
 `handle_kinds` also covers cross-signal confusion between Logs and Metrics handles, which is
