@@ -82,6 +82,9 @@ PY
     --all-features "${cargo_profile[@]}"
   CI=1 CARGO_TARGET_DIR="$target_dir" cargo test --locked \
     -p opentelemetry-c-sdk --test logs_cross_artifact --all-features "${cargo_profile[@]}"
+  CI=1 CARGO_TARGET_DIR="$target_dir" cargo test --locked \
+    -p opentelemetry-c-sdk --test custom_log_exporter_cross_artifact \
+    --all-features "${cargo_profile[@]}"
 }
 
 echo "sha=$(git rev-parse HEAD)"

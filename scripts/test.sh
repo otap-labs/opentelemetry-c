@@ -13,3 +13,4 @@ cargo test -p opentelemetry-c-sdk --lib --all-features
 cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
 cargo test -p opentelemetry-c-sdk --test cross_artifact --all-features
 cargo test -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact --all-features
+cargo test -p opentelemetry-c-sdk --test custom_log_exporter_cross_artifact --all-features

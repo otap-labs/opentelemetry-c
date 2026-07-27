@@ -184,6 +184,7 @@ const _: () = {
 
 /// A conversion failure. Carries the public status class plus a diagnostic that names the
 /// offending limit or field without reproducing telemetry content.
+#[derive(Debug)]
 pub(crate) struct ConversionError {
     pub(crate) status: OtelStatus,
     pub(crate) message: String,
@@ -707,6 +708,16 @@ pub(crate) struct ExportViewStorage {
     batch: OtelLogExportBatchView,
 }
 
+impl std::fmt::Debug for ExportViewStorage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExportViewStorage")
+            .field("record_count", &self.records.len())
+            .field("scope_count", &self.scopes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ExportViewStorage {
     /// The batch view handed to the C callback. Valid only while `self` is alive.
     pub(crate) fn view(&self) -> *const OtelLogExportBatchView {
@@ -966,4 +977,405 @@ pub(crate) fn convert_batch(
     storage.batch.resource_value_nodes = storage.resource_nodes.as_ptr();
     storage.batch.resource_value_node_count = storage.resource_nodes.len();
     Ok(storage)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider as _};
+    use opentelemetry::{InstrumentationScope, KeyValue, SpanId, TraceFlags, TraceId};
+    use opentelemetry_c_abi::OTEL_LOG_TRACE_FLAGS_SAMPLED;
+    use opentelemetry_sdk::logs::{SdkLogRecord, SdkLoggerProvider};
+    use std::collections::HashMap;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn record() -> SdkLogRecord {
+        let provider = SdkLoggerProvider::builder().build();
+        provider.logger("test").create_log_record()
+    }
+
+    fn scope() -> InstrumentationScope {
+        InstrumentationScope::builder("scope-name")
+            .with_version("1.2.3")
+            .with_schema_url("https://example.invalid/scope")
+            .with_attributes([KeyValue::new("scope.attr", 7_i64)])
+            .build()
+    }
+
+    fn resource() -> Resource {
+        Resource::builder_empty()
+            .with_attributes([KeyValue::new("service.name", "conversion-test")])
+            .build()
+    }
+
+    /// Convert one record and keep the storage alive so the returned pointers stay valid.
+    fn convert_one(record: &SdkLogRecord, scope: &InstrumentationScope) -> Box<ExportViewStorage> {
+        let records = [(record, scope)];
+        let batch = LogBatch::new(&records);
+        convert_batch(&batch, &resource()).expect("conversion succeeds")
+    }
+
+    fn text(view: OtelStringView) -> &'static str {
+        if view.len == 0 {
+            return "";
+        }
+        // SAFETY: the storage outlives every assertion in these tests.
+        unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(view.ptr.cast::<u8>(), view.len))
+                .expect("exported strings are UTF-8")
+        }
+    }
+
+    fn batch_of(storage: &ExportViewStorage) -> &OtelLogExportBatchView {
+        // SAFETY: `view()` returns a pointer into `storage`, which the caller keeps alive.
+        unsafe { &*storage.view() }
+    }
+
+    fn records_of(batch: &OtelLogExportBatchView) -> &[OtelLogExportRecordView] {
+        if batch.record_count == 0 {
+            return &[];
+        }
+        // SAFETY: the batch view describes a live, correctly sized array.
+        unsafe { std::slice::from_raw_parts(batch.records, batch.record_count) }
+    }
+
+    fn attributes_of(record: &OtelLogExportRecordView) -> &[OtelLogValueNode] {
+        if record.attribute_count == 0 {
+            return &[];
+        }
+        // SAFETY: the record view describes a live, correctly sized array.
+        unsafe { std::slice::from_raw_parts(record.attributes, record.attribute_count) }
+    }
+
+    fn nodes_of(record: &OtelLogExportRecordView) -> &[OtelLogValueNode] {
+        if record.value_node_count == 0 {
+            return &[];
+        }
+        // SAFETY: the record view describes a live, correctly sized array.
+        unsafe { std::slice::from_raw_parts(record.value_nodes, record.value_node_count) }
+    }
+
+    fn children(record: &OtelLogExportRecordView, value: &OtelLogValue) -> Vec<OtelLogValueNode> {
+        // SAFETY: the `children` member is active for ARRAY and MAP values.
+        let range = unsafe { value.value.children };
+        let nodes = nodes_of(record);
+        (0..range.count)
+            .map(|offset| nodes[range.first as usize + offset as usize])
+            .collect()
+    }
+
+    #[test]
+    fn empty_batch_converts_to_an_empty_view() {
+        let batch = LogBatch::new(&[]);
+        let storage = convert_batch(&batch, &resource()).expect("empty conversion succeeds");
+        let view = batch_of(&storage);
+        assert_eq!(view.record_count, 0);
+        assert_eq!(
+            view.struct_size as usize,
+            std::mem::size_of::<OtelLogExportBatchView>()
+        );
+        assert_eq!(view.resource_attribute_count, 1);
+    }
+
+    #[test]
+    fn absent_fields_clear_their_presence_bits() {
+        let record = record();
+        let scope = scope();
+        let storage = convert_one(&record, &scope);
+        let view = records_of(batch_of(&storage))[0];
+        assert_eq!(view.present_fields & OTEL_LOG_EXPORT_FIELD_TIMESTAMP, 0);
+        assert_eq!(view.present_fields & OTEL_LOG_EXPORT_FIELD_TRACE_CONTEXT, 0);
+        assert_eq!(view.present_fields & OTEL_LOG_EXPORT_FIELD_BODY, 0);
+        assert_eq!(view.present_fields & OTEL_LOG_EXPORT_FIELD_EVENT_NAME, 0);
+        assert_eq!(view.severity_number, 0);
+        assert_eq!(view.body.value_type, OtelLogValueType::Empty as u32);
+        assert_eq!(view.trace_context.trace_id, [0; 16]);
+        assert_eq!(view.trace_context.span_id, [0; 8]);
+        assert_eq!(view.trace_context.trace_flags, 0);
+        assert_eq!(view.present_fields & !OTEL_LOG_EXPORT_FIELD_KNOWN_MASK, 0);
+    }
+
+    #[test]
+    fn scalar_metadata_round_trips() {
+        let mut record = record();
+        record.set_timestamp(UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789));
+        record.set_observed_timestamp(UNIX_EPOCH + Duration::from_nanos(1_700_000_000_987_654_321));
+        record.set_severity_number(Severity::Warn);
+        record.set_severity_text("WARN");
+        record.set_event_name("event.name");
+        record.set_target("my::target");
+        let scope = scope();
+        let storage = convert_one(&record, &scope);
+        let view = records_of(batch_of(&storage))[0];
+
+        assert_eq!(view.timestamp_unix_nanos, 1_700_000_000_123_456_789);
+        assert_eq!(
+            view.observed_timestamp_unix_nanos,
+            1_700_000_000_987_654_321
+        );
+        assert_eq!(view.severity_number, Severity::Warn as u32);
+        assert_eq!(text(view.severity_text), "WARN");
+        assert_eq!(text(view.event_name), "event.name");
+        assert_eq!(text(view.target), "my::target");
+        assert_eq!(
+            view.present_fields,
+            OTEL_LOG_EXPORT_FIELD_TIMESTAMP
+                | OTEL_LOG_EXPORT_FIELD_OBSERVED_TIMESTAMP
+                | OTEL_LOG_EXPORT_FIELD_SEVERITY_TEXT
+                | OTEL_LOG_EXPORT_FIELD_EVENT_NAME
+                | OTEL_LOG_EXPORT_FIELD_TARGET
+        );
+    }
+
+    #[test]
+    fn timestamps_before_the_epoch_fail_the_export() {
+        // The ABI carries unsigned nanoseconds since the epoch, so a pre-epoch timestamp
+        // cannot be represented. Failing beats silently reporting a bogus instant.
+        let mut record = record();
+        record.set_timestamp(UNIX_EPOCH - Duration::from_secs(1));
+        let scope = scope();
+        let entries = [(&record, &scope)];
+        let batch = LogBatch::new(&entries);
+        let error = convert_batch(&batch, &resource()).expect_err("pre-epoch time is rejected");
+        assert_eq!(error.status, OtelStatus::ExportFailed);
+        assert!(error.message.contains("epoch"), "{}", error.message);
+    }
+
+    #[test]
+    fn trace_context_round_trips_including_absent_flags() {
+        let mut sampled = record();
+        sampled.set_trace_context(
+            TraceId::from_bytes([1; 16]),
+            SpanId::from_bytes([2; 8]),
+            Some(TraceFlags::SAMPLED),
+        );
+        let scope = scope();
+        let storage = convert_one(&sampled, &scope);
+        let view = records_of(batch_of(&storage))[0];
+        assert_ne!(view.present_fields & OTEL_LOG_EXPORT_FIELD_TRACE_CONTEXT, 0);
+        assert_eq!(view.trace_context.trace_id, [1; 16]);
+        assert_eq!(view.trace_context.span_id, [2; 8]);
+        assert_eq!(view.trace_context.trace_flags, OTEL_LOG_TRACE_FLAGS_SAMPLED);
+        assert_eq!(view.trace_context.reserved, [0; 7]);
+
+        let mut unsampled = record();
+        unsampled.set_trace_context(
+            TraceId::from_bytes([3; 16]),
+            SpanId::from_bytes([4; 8]),
+            None,
+        );
+        let storage = convert_one(&unsampled, &scope);
+        let view = records_of(batch_of(&storage))[0];
+        assert_eq!(view.trace_context.trace_flags, 0);
+    }
+
+    #[test]
+    fn every_scalar_value_kind_is_represented() {
+        let mut record = record();
+        record.add_attribute("int", AnyValue::Int(-9));
+        record.add_attribute("double", AnyValue::Double(1.5));
+        record.add_attribute("bool", AnyValue::Boolean(true));
+        record.add_attribute("string", AnyValue::String("text".into()));
+        record.add_attribute("bytes", AnyValue::Bytes(Box::new(vec![1_u8, 2, 3])));
+        let scope = scope();
+        let storage = convert_one(&record, &scope);
+        let view = records_of(batch_of(&storage))[0];
+        let attributes = attributes_of(&view);
+        assert_eq!(attributes.len(), 5);
+
+        assert_eq!(text(attributes[0].key), "int");
+        assert_eq!(
+            attributes[0].value.value_type,
+            OtelLogValueType::Int64 as u32
+        );
+        assert_eq!(unsafe { attributes[0].value.value.int64_value }, -9);
+        assert_eq!(
+            attributes[1].value.value_type,
+            OtelLogValueType::Double as u32
+        );
+        assert_eq!(unsafe { attributes[1].value.value.double_value }, 1.5);
+        assert_eq!(
+            attributes[2].value.value_type,
+            OtelLogValueType::Bool as u32
+        );
+        assert_ne!(unsafe { attributes[2].value.value.bool_value }, 0);
+        assert_eq!(
+            attributes[3].value.value_type,
+            OtelLogValueType::String as u32
+        );
+        assert_eq!(
+            text(unsafe { attributes[3].value.value.string_value }),
+            "text"
+        );
+        assert_eq!(
+            attributes[4].value.value_type,
+            OtelLogValueType::Bytes as u32
+        );
+        let bytes = unsafe { attributes[4].value.value.bytes_value };
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len) },
+            &[1_u8, 2, 3]
+        );
+    }
+
+    #[test]
+    fn nested_containers_flatten_into_the_pool() {
+        let mut record = record();
+        let mut map = HashMap::new();
+        map.insert(
+            Key::new("zeta"),
+            AnyValue::ListAny(Box::new(vec![AnyValue::Int(1), AnyValue::Int(2)])),
+        );
+        map.insert(Key::new("alpha"), AnyValue::Boolean(false));
+        record.set_body(AnyValue::Map(Box::new(map)));
+        let scope = scope();
+        let storage = convert_one(&record, &scope);
+        let view = records_of(batch_of(&storage))[0];
+
+        assert_ne!(view.present_fields & OTEL_LOG_EXPORT_FIELD_BODY, 0);
+        assert_eq!(view.body.value_type, OtelLogValueType::Map as u32);
+        let entries = children(&view, &view.body);
+        // Map entries are sorted by key so exports are deterministic.
+        assert_eq!(text(entries[0].key), "alpha");
+        assert_eq!(text(entries[1].key), "zeta");
+        assert_eq!(entries[1].value.value_type, OtelLogValueType::Array as u32);
+
+        let elements = children(&view, &entries[1].value);
+        assert_eq!(elements.len(), 2);
+        assert_eq!(text(elements[0].key), "");
+        assert_eq!(unsafe { elements[0].value.value.int64_value }, 1);
+        assert_eq!(unsafe { elements[1].value.value.int64_value }, 2);
+    }
+
+    #[test]
+    fn children_always_live_at_strictly_greater_indices() {
+        let mut record = record();
+        record.set_body(AnyValue::ListAny(Box::new(vec![AnyValue::ListAny(
+            Box::new(vec![AnyValue::ListAny(Box::new(vec![AnyValue::Int(0)]))]),
+        )])));
+        let scope = scope();
+        let storage = convert_one(&record, &scope);
+        let view = records_of(batch_of(&storage))[0];
+        let nodes = nodes_of(&view);
+        for (index, node) in nodes.iter().enumerate() {
+            if node.value.value_type == OtelLogValueType::Array as u32
+                || node.value.value_type == OtelLogValueType::Map as u32
+            {
+                let range = unsafe { node.value.value.children };
+                assert!(range.first as usize > index);
+                assert!(range.first as usize + range.count as usize <= nodes.len());
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_attribute_keys_and_order_are_preserved() {
+        let mut record = record();
+        record.add_attribute("k", AnyValue::Int(1));
+        record.add_attribute("k", AnyValue::Int(2));
+        let scope = scope();
+        let storage = convert_one(&record, &scope);
+        let view = records_of(batch_of(&storage))[0];
+        let attributes = attributes_of(&view);
+        assert_eq!(attributes.len(), 2);
+        assert_eq!(text(attributes[0].key), "k");
+        assert_eq!(text(attributes[1].key), "k");
+        assert_eq!(unsafe { attributes[0].value.value.int64_value }, 1);
+        assert_eq!(unsafe { attributes[1].value.value.int64_value }, 2);
+    }
+
+    #[test]
+    fn scopes_are_deduplicated_per_batch() {
+        let first = record();
+        let second = record();
+        let third = record();
+        let shared = scope();
+        let other = InstrumentationScope::builder("other").build();
+        let entries = [(&first, &shared), (&second, &other), (&third, &shared)];
+        let batch = LogBatch::new(&entries);
+        let storage = convert_batch(&batch, &resource()).expect("conversion succeeds");
+        let views = records_of(batch_of(&storage));
+        assert_eq!(views.len(), 3);
+        assert_eq!(views[0].scope, views[2].scope);
+        assert_ne!(views[0].scope, views[1].scope);
+
+        let scope_view = unsafe { &*views[0].scope };
+        assert_eq!(text(scope_view.name), "scope-name");
+        assert_eq!(text(scope_view.version), "1.2.3");
+        assert_eq!(text(scope_view.schema_url), "https://example.invalid/scope");
+        assert_eq!(scope_view.attribute_count, 1);
+        let attributes = unsafe {
+            std::slice::from_raw_parts(scope_view.attributes, scope_view.attribute_count)
+        };
+        assert_eq!(text(attributes[0].key), "scope.attr");
+        assert_eq!(unsafe { attributes[0].value.value.int64_value }, 7);
+
+        let other_view = unsafe { &*views[1].scope };
+        assert_eq!(text(other_view.version), "");
+        assert_eq!(other_view.attribute_count, 0);
+    }
+
+    #[test]
+    fn oversized_values_fail_the_export_instead_of_truncating() {
+        let mut record = record();
+        record.add_attribute(
+            "big",
+            AnyValue::ListAny(Box::new(vec![
+                AnyValue::Int(0);
+                OTEL_LOG_MAX_ARRAY_ELEMENTS + 1
+            ])),
+        );
+        let scope = scope();
+        let entries = [(&record, &scope)];
+        let batch = LogBatch::new(&entries);
+        let error = convert_batch(&batch, &resource()).expect_err("oversized array is rejected");
+        assert_eq!(error.status, OtelStatus::ExportFailed);
+        assert!(error.message.contains("exceeds"), "{}", error.message);
+    }
+
+    #[test]
+    fn too_many_attributes_fail_the_export() {
+        let mut record = record();
+        for index in 0..=OTEL_LOG_MAX_ATTRIBUTES {
+            record.add_attribute(Key::from(format!("k{index}")), AnyValue::Int(0));
+        }
+        let scope = scope();
+        let entries = [(&record, &scope)];
+        let batch = LogBatch::new(&entries);
+        let error = convert_batch(&batch, &resource()).expect_err("attribute limit is enforced");
+        assert_eq!(error.status, OtelStatus::ExportFailed);
+    }
+
+    #[test]
+    fn deeply_nested_values_fail_the_export() {
+        let mut value = AnyValue::Int(0);
+        for _ in 0..=OTEL_LOG_MAX_VALUE_DEPTH {
+            value = AnyValue::ListAny(Box::new(vec![value]));
+        }
+        let mut record = record();
+        record.set_body(value);
+        let scope = scope();
+        let entries = [(&record, &scope)];
+        let batch = LogBatch::new(&entries);
+        let error = convert_batch(&batch, &resource()).expect_err("depth limit is enforced");
+        assert_eq!(error.status, OtelStatus::ExportFailed);
+        assert!(error.message.contains("nesting"), "{}", error.message);
+    }
+
+    #[test]
+    fn resource_attributes_are_exposed_once_per_batch() {
+        let record = record();
+        let scope = scope();
+        let storage = convert_one(&record, &scope);
+        let view = batch_of(&storage);
+        assert_eq!(view.resource_attribute_count, 1);
+        let attributes = unsafe {
+            std::slice::from_raw_parts(view.resource_attributes, view.resource_attribute_count)
+        };
+        assert_eq!(text(attributes[0].key), "service.name");
+        assert_eq!(
+            text(unsafe { attributes[0].value.value.string_value }),
+            "conversion-test"
+        );
+    }
 }

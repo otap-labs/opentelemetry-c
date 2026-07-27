@@ -71,6 +71,14 @@ run_rust_sanitizer() {
     -p opentelemetry-c-api -p opentelemetry-c-sdk
   cargo +nightly test -Zbuild-std --target "$target" \
     -p opentelemetry-c-sdk --test logs_cross_artifact
+  # The custom exporter is the only path where the SDK hands borrowed pointers *out* to C, so
+  # it is sanitized separately from the emit path.
+  cargo +nightly test -Zbuild-std --target "$target" \
+    -p opentelemetry-c-sdk --lib --all-features custom_log_exporter
+  cargo +nightly test -Zbuild-std --target "$target" \
+    -p opentelemetry-c-sdk --lib --all-features log_export_view
+  cargo +nightly test -Zbuild-std --target "$target" \
+    -p opentelemetry-c-sdk --test custom_log_exporter_cross_artifact --all-features
   run_instrumented_stress
 }
 
@@ -90,7 +98,8 @@ case "$mode" in
   undefined)
     unset RUSTFLAGS RUSTDOCFLAGS
     export CFLAGS="-fsanitize=undefined -fno-sanitize-recover=all"
-    cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk
+    cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
     cargo test -p opentelemetry-c-sdk --test logs_cross_artifact
+    cargo test -p opentelemetry-c-sdk --test custom_log_exporter_cross_artifact --all-features
     ;;
 esac
