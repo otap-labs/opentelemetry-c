@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Experimental Logs API: an API-owned global `LoggerProvider` slot independent of the trace
+  and Metrics slots, API-only no-op loggers, versioned logger options carrying a complete
+  instrumentation scope, severity-based `otel_logger_enabled`, and a borrowed one-shot
+  `otel_log_record_view_t` whose structured values are expressed through a flat node pool.
+  Pool nodes may reference children only at a strictly greater index, so cycles are
+  structurally unrepresentable. `event_name` and `target` are deliberately not exposed; see
+  `LOGS_COMPLIANCE.md`.
+
 ### Fixed
 
 - Observable instrument creation failures now preserve caller ownership of callback user data

@@ -3,9 +3,9 @@
 [![Apache License][license-image]][license-url]
 
 The **C SDK** of the Rust-backed OpenTelemetry C binding: OTLP **HTTP/protobuf** trace
-export, HTTP/protobuf and optional gRPC Metrics export, a batch span processor, periodic
-and manual Metrics readers, callback-backed custom Metrics exporters, and declarative Metrics
-views behind C functions. Installing a signal provider registers it into the **API
+export, HTTP/protobuf and optional gRPC Metrics and Logs export, a batch span processor,
+periodic and manual Metrics readers, callback-backed custom Metrics exporters, declarative
+Metrics views, and simple/batch log processors behind C functions. Installing a signal provider registers it into the **API
 library's** corresponding global slot, so
 instrumentation that links only [`opentelemetry-c-api`](../api) exports through it.
 
@@ -66,6 +66,31 @@ when that token still owns the slot. If another SDK installed a newer Metrics pr
 older SDK's shutdown is a no-op for the global slot. Explicitly acquired MeterProvider/meter
 handles remain caller-owned and must be destroyed for normal cleanup while both libraries
 remain loaded.
+
+Logs global installation uses the same token model as Metrics: each successful
+`otel_sdk_set_logs_as_global` receives a registration token, and `otel_sdk_logs_shutdown` /
+`otel_sdk_destroy` clear the Logs slot only while that token still owns it. Unlike trace and
+Metrics, Logs shutdown unregisters the global slot **before** stopping the provider, so no C
+caller can acquire a logger from a provider that is about to stop accepting records.
+
+### Logs pipeline (experimental)
+
+```
+otlp_log_exporter.h  ->  log_processor.h        ->  sdk.h
+  builder             ->  simple OR batch        ->  otel_sdk_builder_add_log_processor
+```
+
+Each arrow is an **ownership transfer** that happens only on `OTEL_STATUS_OK`; on failure the
+object remains caller-owned and must still be destroyed. Lifecycle is
+`otel_sdk_set_logs_as_global` / `otel_sdk_logs_force_flush` / `otel_sdk_logs_shutdown`, all
+independent of the other signals.
+
+Two upstream limitations are surfaced as absent capabilities rather than emulated or faked:
+`otel_sdk_logs_force_flush()` takes no timeout (the pinned provider flush accepts none), and
+there is no batch export-timeout setter (the pinned synchronous Logs batch config has none).
+Use `otel_otlp_log_exporter_builder_set_timeout_millis()` to bound the OTLP transport.
+Neither API returns `OTEL_STATUS_OK` for configuration it cannot apply. See
+[LOGS_COMPLIANCE.md](../LOGS_COMPLIANCE.md).
 
 Using `fork()` without an immediate `exec()` after SDK background workers start is
 unsupported.

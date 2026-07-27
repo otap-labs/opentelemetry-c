@@ -161,6 +161,84 @@ Both suites call the real `#[no_mangle] extern "C"` symbols used by C consumers.
 compilation and the C examples cover C source-level linkage separately. Any future
 exporter/network benchmark should remain opt-in and outside the default regression set.
 
+### Logs (experimental)
+
+```sh
+cargo bench -p opentelemetry-c-sdk --bench logs_hotpath
+cargo bench -p opentelemetry-c-sdk --bench logs_allocations
+LOGS_BENCH_REPEATS=3 scripts/benchmark-logs.sh
+```
+
+Logs are benchmarked differently from Metrics because the cost is dominated by *conversion*
+rather than aggregation. A borrowed `otel_log_record_view_t` may not outlive its call, so every
+string, byte string, map, and array it references has to be copied into owned Rust storage on
+every emit. Both suites therefore sweep four body shapes — absent, a plain string, a
+64-byte byte string, and a two-level map containing an array — against 0, 1, 3, 5, and 6
+attributes. The counts 5 and 6 are not arbitrary: the pinned `SdkLogRecord` keeps capacity for
+five attributes inline, so 6 is the first count that spills to the heap, and reporting only
+round numbers would hide that step. Two cases sit outside the matrix and are measured on their
+own: a trace-correlated record, because correlation is the one field the bridge must set
+explicitly on every emit to stop the ambient Rust `Context` from leaking into a C caller's
+record, and `otel_logger_enabled` on a severity that is answered false, because that is the only
+Logs call a well-written C application makes when a level is disabled — it is the cost of *not*
+logging.
+
+Each shape is measured on three paths so the numbers can be attributed rather than merely
+observed: `noop` (public C API, no SDK installed), `c_sdk` (public C API over a real SDK Logs
+pipeline), and `rust` (the pinned Rust SDK driven directly with equivalent data). The gap
+between `noop` and `c_sdk` is the bridge; the gap between `c_sdk` and `rust` is the honest price
+of the C boundary.
+
+`logs_allocations` is the more useful of the two for regression detection, because allocation
+counts are deterministic while timings on a shared machine are not. It configures a small
+bounded batch queue and a one-hour scheduled delay, and warms until the queue is full, so every
+measured emit performs the complete validate-convert-handoff and is then dropped by the queue.
+That is deliberate: an unbounded queue would fold amortized queue reallocation into the
+per-record figures, and allowing an export to run would let background-thread allocations be
+charged to whichever emit happened to be in flight, since the counting allocator is global.
+
+The result that matters most is that every `noop` case reports **exactly zero allocations and
+zero bytes per operation**. A C application that links the API but installs no SDK pays no heap
+traffic for logging at all, which is the property a C caller most needs to be able to depend on.
+
+Indicative figures from a developer machine (Apple silicon, macOS, release profile, default
+features) — informational only, not a baseline, and not comparable to the Linux VM numbers
+above:
+
+| Shape / attributes | `noop` allocs/op | `c_sdk` allocs/op | `rust` allocs/op |
+| --- | --- | --- | --- |
+| no body, 0 | 0 | 2.3 | 1.4 |
+| no body, 3 | 0 | 15.5 | 11.2 |
+| no body, 5 | 0 | 24.3 | 18.8 |
+| no body, 6 | 0 | 29.3 | 23.4 |
+| string body, 0 | 0 | 6.5 | 2.1 |
+| string body, 6 | 0 | 32.4 | 24.4 |
+| bytes body, 0 | 0 | 9.0 | 6.3 |
+| bytes body, 6 | 0 | 34.0 | 30.0 |
+| nested body, 0 | 0 | 30.4 | 12.5 |
+| nested body, 6 | 0 | 57.3 | 35.7 |
+| trace-correlated, 1 | 0 | 11.4 | — |
+
+Reading these honestly: scalar attributes cost the bridge roughly one extra allocation each
+over direct Rust, which is the unavoidable copy out of caller memory. Byte-string bodies track
+the Rust baseline closely because both must own the buffer. Nested bodies cost proportionally
+more because the node pool is converted bottom-up into owned `AnyValue` containers, and that
+gap — not the scalar path — is where any future optimization should be aimed. Trace correlation
+costs roughly half an allocation over the same record without it. The `noop` column shows the C
+boundary itself contributes nothing when logging is disabled.
+
+One combination in the specification is deliberately absent: a C-driven simple processor with an
+in-memory exporter. The in-memory exporter is a test-only construct in the SDK crate and is not
+reachable as a C handle, and substituting a real OTLP exporter behind a simple processor would
+measure a connection-refused syscall per record rather than the bridge. The simple processor is
+covered by correctness tests instead; the batch processor is what a production C caller uses and
+is what is measured here.
+
+The corresponding `logs_hotpath` timings on the same machine put a no-SDK emit at roughly 3.4 ns
+regardless of payload — the API rejects the work before inspecting it — against roughly 106 ns
+for the simplest SDK-backed emit and roughly 900 ns for a nested body with six attributes, with
+the direct Rust baseline about 20–30% below the C figures across the matrix.
+
 ## Sanitizer validation
 
 Linux sanitizer runs are explicit because they require nightly Rust, `rust-src`, Clang, and
@@ -189,6 +267,15 @@ or leak mode:
 METRICS_SANITIZER_STRESS_ITERATIONS=10 scripts/sanitize-metrics.sh address
 ```
 
+`scripts/sanitize-logs.sh` takes the same four modes and the same
+`LOGS_SANITIZER_STRESS_ITERATIONS` knob. It exists separately because the Logs bridge stresses
+sanitizers differently from Metrics: one `otel_logger_emit` call borrows a record, an attribute
+array, and an arbitrarily nested pool of caller-owned value nodes, none of which may be read
+past or retained after the call returns. Address and leak modes are therefore the real evidence
+that the two-pass validator/converter respects those borrows, and the mode runs
+`logs_cross_artifact` because only the two-cdylib layout has a genuine C owner for the buffers.
+Thread mode covers emission racing shutdown and the separate global LoggerProvider slot.
+
 ## Lifecycle stress
 
 Deterministic lifecycle tests use barriers, channels, and condition variables to force the
@@ -202,3 +289,16 @@ The loop covers provider replacement and retention, concurrent installs, older-S
 destroy-without-shutdown, observable callback versus destruction, exporter export versus
 shutdown, multiple manual and async readers, and fail-closed async reentrancy. A failed
 iteration stops immediately; rerunning a failure is not treated as a pass.
+
+The Logs equivalent is:
+
+```sh
+LOGS_STRESS_ITERATIONS=100 scripts/stress-logs.sh
+```
+
+It covers the global LoggerProvider slot under concurrent readers and re-registrations,
+emission racing shutdown, installation racing shutdown, one-shot shutdown, implicit slot
+clearing on drop, the independence of the Logs and Metrics global slots, and batch queue
+saturation crossed with repeated pipeline creation and destruction. These cases are
+worth repeating rather than running once because a lost race normally still produces a passing
+interleaving; a single green run is close to no evidence at all.

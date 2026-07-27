@@ -58,6 +58,10 @@ verify_profile() {
   readelf -h "$sdk" | grep -q 'Type:.*DYN'
   objdump -T "$api" | grep -q 'otel_global_meter_provider'
   objdump -T "$sdk" | grep -q 'otel_sdk_set_metrics_as_global'
+  # Logs is a separate signal with its own global slot, so prove its symbols are exported
+  # from the real artifacts too rather than assuming the allowlist diff covered them.
+  objdump -T "$api" | grep -q 'otel_global_logger_provider'
+  objdump -T "$sdk" | grep -q 'otel_sdk_set_logs_as_global'
   ldd "$api"
   ldd "$sdk"
 
@@ -76,6 +80,8 @@ PY
   CI=1 CARGO_TARGET_DIR="$target_dir" cargo test --locked \
     -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact \
     --all-features "${cargo_profile[@]}"
+  CI=1 CARGO_TARGET_DIR="$target_dir" cargo test --locked \
+    -p opentelemetry-c-sdk --test logs_cross_artifact --all-features "${cargo_profile[@]}"
 }
 
 echo "sha=$(git rev-parse HEAD)"

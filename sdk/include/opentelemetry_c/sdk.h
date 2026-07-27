@@ -1,10 +1,11 @@
 /*
  * opentelemetry_c/sdk.h
  *
- * SDK configuration and lifecycle: build a tracer provider with an OTLP HTTP/protobuf
- * exporter and a batch span processor, install it globally, flush, and shut down.
+ * SDK configuration and lifecycle: build tracer, meter, and (experimental) logger providers
+ * with OTLP exporters and batch processors, install them globally, flush, and shut down.
+ * Each signal has its own independent global slot and lifecycle.
  *
- * The SDK owns all of its own threading (a dedicated batch-processor OS thread and the
+ * The SDK owns all of its own threading (dedicated batch-processor OS threads and the
  * blocking HTTP client). No user-managed async runtime is required. Metrics reader
  * collection may invoke observable and custom-exporter C callbacks on SDK-managed
  * collection threads or, for a manual reader, on the force-flush caller's thread.
@@ -28,6 +29,9 @@
  *     OTEL_STATUS_ALREADY_SHUTDOWN and publishes nothing. Concurrent same-SDK installations
  *     are serialized; the last successful installation is the token later removed by
  *     shutdown or destroy.
+ *   - Logs installation and Logs shutdown are serialized per SDK with the same rules, using
+ *     their own lock and their own global slot: Logs lifecycle calls never affect the Trace
+ *     or Metrics registrations, and vice versa.
  *   - A timed otel_sdk_force_flush() runs the flush on a helper thread; at most one such
  *     helper exists at a time (a concurrent timed flush returns OTEL_STATUS_TIMEOUT
  *     rather than spawning another). A blocking flush (timeout 0) uses the calling
@@ -106,6 +110,8 @@
 #include <opentelemetry_c/manual_metric_reader.h>
 #include <opentelemetry_c/trace.h>
 #include <opentelemetry_c/span_processor.h>
+#include <opentelemetry_c/logs.h>
+#include <opentelemetry_c/log_processor.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -168,6 +174,21 @@ otel_status_t otel_sdk_builder_add_manual_metric_reader(
 otel_status_t otel_sdk_builder_add_metric_view(otel_sdk_builder_t* builder,
                                                otel_metric_view_t* view);
 
+/* ---- Log processors (EXPERIMENTAL) ---------------------------------------- */
+
+/*
+ * Add (transfer) a log processor to the SDK's logs pipeline. Build the processor with
+ * log_processor.h, which in turn consumes a log exporter (e.g. otlp_log_exporter.h).
+ *
+ * Ownership: on OTEL_STATUS_OK, ownership of `processor` transfers to the SDK builder and the
+ * original pointer becomes invalid. On failure (invalid builder or processor, or the limit
+ * being reached) the caller still owns `processor`. A builder accepts at most 64 log
+ * processors. A builder with no log processor still builds a valid SDK whose log records are
+ * simply not exported.
+ */
+otel_status_t otel_sdk_builder_add_log_processor(otel_sdk_builder_t* builder,
+                                                 otel_log_processor_t* processor);
+
 /* ---- Build ---------------------------------------------------------------- */
 
 /*
@@ -212,6 +233,22 @@ otel_status_t otel_sdk_set_as_global(otel_sdk_t* sdk);
  */
 otel_status_t otel_sdk_set_metrics_as_global(otel_sdk_t* sdk);
 
+/*
+ * EXPERIMENTAL. Return an owned logger-provider handle backed by this SDK. Independent of the
+ * SDK handle's lifetime; release with otel_logger_provider_destroy(). NULL if `sdk` is
+ * invalid.
+ */
+otel_logger_provider_t* otel_sdk_get_logger_provider(const otel_sdk_t* sdk);
+
+/*
+ * EXPERIMENTAL. Install this SDK's LoggerProvider as the process-global Logs provider. The
+ * Logs global slot is independent of the Trace and Metrics slots: installing here neither
+ * replaces nor is replaced by the other signals. Repeated and concurrent calls on one SDK are
+ * serialized; the most recent successful call wins. Returns OTEL_STATUS_ALREADY_SHUTDOWN once
+ * Logs shutdown has been observed.
+ */
+otel_status_t otel_sdk_set_logs_as_global(otel_sdk_t* sdk);
+
 /* ---- Lifecycle ------------------------------------------------------------ */
 
 /*
@@ -253,9 +290,34 @@ otel_status_t otel_sdk_metrics_force_flush(otel_sdk_t* sdk, uint64_t timeout_mil
 otel_status_t otel_sdk_metrics_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
 
 /*
+ * EXPERIMENTAL. Flush every configured log processor.
+ *
+ * Unlike the Trace and Metrics equivalents this takes NO caller timeout, because the pinned
+ * upstream LoggerProvider force-flush accepts none. Its synchronous batch processor applies
+ * an internal, non-configurable five-second wait; if that wait expires this function returns
+ * a non-OK export-pipeline status while the worker may still be exporting. Configurable
+ * support can be added later through a new function such as
+ * otel_sdk_logs_force_flush_with_timeout(), leaving this C signature unchanged. Returns
+ * OTEL_STATUS_ALREADY_SHUTDOWN after Logs shutdown.
+ */
+otel_status_t otel_sdk_logs_force_flush(otel_sdk_t* sdk);
+
+/*
+ * EXPERIMENTAL. Shut down the LoggerProvider. Independent of trace and Metrics shutdown, and
+ * runs at most once: the first call performs it; concurrent or later calls return
+ * OTEL_STATUS_ALREADY_SHUTDOWN. If this SDK still owns the API global Logs slot, that
+ * registration is removed BEFORE the provider is shut down, so no C caller can obtain a
+ * logger from a provider that is about to stop accepting records. A newer SDK's registration
+ * is never cleared by an older SDK. `timeout_millis` of 0 uses the SDK default (5s). After
+ * shutdown, emitting through this SDK's loggers becomes a no-op.
+ */
+otel_status_t otel_sdk_logs_shutdown(otel_sdk_t* sdk, uint64_t timeout_millis);
+
+/*
  * Destroy an SDK handle (no-op on NULL). If not already shut down, dropping the SDK
  * triggers a best-effort shutdown; prefer calling the signal-specific shutdown functions
- * explicitly. Destroy also conditionally removes this SDK's global Metrics registration.
+ * explicitly. Destroy also conditionally removes this SDK's global Metrics and Logs
+ * registrations.
  * Must not race with any other call on the same SDK handle.
  */
 void otel_sdk_destroy(otel_sdk_t* sdk);

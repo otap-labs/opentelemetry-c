@@ -272,7 +272,7 @@ unsafe fn validate_instrument_config(
     })
 }
 
-unsafe fn validate_scope_attributes(
+pub(crate) unsafe fn validate_scope_attributes(
     attributes: *const OtelKeyValue,
     attribute_count: usize,
 ) -> Result<(), OtelStatus> {

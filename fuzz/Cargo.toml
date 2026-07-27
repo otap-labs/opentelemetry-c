@@ -10,12 +10,20 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = { version = "1.4.2", features = ["derive"] }
 libfuzzer-sys = "0.4.13"
+opentelemetry-c-abi = { path = "../abi" }
 opentelemetry-c-api = { path = "../api" }
 opentelemetry-c-sdk = { path = "../sdk", default-features = false }
 
 [[bin]]
 name = "metrics_inputs"
 path = "fuzz_targets/metrics_inputs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "logs_records"
+path = "fuzz_targets/logs_records.rs"
 test = false
 doc = false
 bench = false

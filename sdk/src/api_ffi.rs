@@ -8,7 +8,7 @@
 
 use std::os::raw::{c_char, c_void};
 
-use opentelemetry_c_abi::{OtelImplVtable, OtelMetricsVtable, OtelStatus};
+use opentelemetry_c_abi::{OtelImplVtable, OtelLogsVtable, OtelMetricsVtable, OtelStatus};
 
 #[cfg(not(test))]
 mod imp {
@@ -36,6 +36,16 @@ mod imp {
             vtable: *const OtelMetricsVtable,
             provider_ctx: *mut c_void,
         ) -> *mut c_void;
+        pub fn otel_api_register_global_logger_provider_with_token(
+            vtable: *const OtelLogsVtable,
+            provider_ctx: *mut c_void,
+            out_id: *mut u64,
+        ) -> OtelStatus;
+        pub fn otel_api_unregister_global_logger_provider(registration_id: u64) -> OtelStatus;
+        pub fn otel_api_logger_provider_new(
+            vtable: *const OtelLogsVtable,
+            provider_ctx: *mut c_void,
+        ) -> *mut c_void;
         pub fn otel_api_set_last_error(ptr: *const c_char, len: usize);
         pub fn otel_api_clear_last_error();
     }
@@ -54,7 +64,9 @@ mod imp {
     // Records the most recently registered (vtable, ctx) so tests can drive it.
     pub(super) static REGISTERED: Mutex<Option<(usize, usize)>> = Mutex::new(None);
     pub(super) static METRICS_REGISTERED: Mutex<Option<(usize, usize, u64)>> = Mutex::new(None);
+    pub(super) static LOGS_REGISTERED: Mutex<Option<(usize, usize, u64)>> = Mutex::new(None);
     static NEXT_METRICS_ID: AtomicU64 = AtomicU64::new(1);
+    static NEXT_LOGS_ID: AtomicU64 = AtomicU64::new(1);
 
     /// # Safety
     /// Test stub mirroring the real ABI.
@@ -107,6 +119,47 @@ mod imp {
             unsafe { ((*(vtable as *const OtelMetricsVtable)).provider_free)(ctx as *mut c_void) };
         }
         OtelStatus::Ok
+    }
+    pub unsafe fn otel_api_register_global_logger_provider_with_token(
+        vtable: *const OtelLogsVtable,
+        provider_ctx: *mut c_void,
+        out_id: *mut u64,
+    ) -> OtelStatus {
+        if out_id.is_null() {
+            return OtelStatus::InvalidArgument;
+        }
+        let id = NEXT_LOGS_ID.fetch_add(1, Ordering::Relaxed);
+        let old =
+            LOGS_REGISTERED
+                .lock()
+                .unwrap()
+                .replace((vtable as usize, provider_ctx as usize, id));
+        if let Some((old_vtable, old_ctx, _)) = old {
+            unsafe {
+                ((*(old_vtable as *const OtelLogsVtable)).provider_free)(old_ctx as *mut c_void)
+            };
+        }
+        unsafe { *out_id = id };
+        OtelStatus::Ok
+    }
+    pub unsafe fn otel_api_unregister_global_logger_provider(registration_id: u64) -> OtelStatus {
+        let old = {
+            let mut registered = LOGS_REGISTERED.lock().unwrap();
+            match *registered {
+                Some((_, _, id)) if id == registration_id => registered.take(),
+                _ => None,
+            }
+        };
+        if let Some((vtable, ctx, _)) = old {
+            unsafe { ((*(vtable as *const OtelLogsVtable)).provider_free)(ctx as *mut c_void) };
+        }
+        OtelStatus::Ok
+    }
+    pub unsafe fn otel_api_logger_provider_new(
+        _vtable: *const OtelLogsVtable,
+        provider_ctx: *mut c_void,
+    ) -> *mut c_void {
+        provider_ctx
     }
     pub unsafe fn otel_api_meter_provider_new(
         _vtable: *const OtelMetricsVtable,
@@ -174,6 +227,32 @@ pub(crate) fn meter_provider_new(
     unsafe { imp::otel_api_meter_provider_new(vtable, provider_ctx) }
 }
 
+pub(crate) fn register_global_logger_provider(
+    vtable: *const OtelLogsVtable,
+    provider_ctx: *mut c_void,
+) -> (OtelStatus, u64) {
+    let mut registration_id = 0;
+    let status = unsafe {
+        imp::otel_api_register_global_logger_provider_with_token(
+            vtable,
+            provider_ctx,
+            &mut registration_id,
+        )
+    };
+    (status, registration_id)
+}
+
+pub(crate) fn unregister_global_logger_provider(registration_id: u64) -> OtelStatus {
+    unsafe { imp::otel_api_unregister_global_logger_provider(registration_id) }
+}
+
+pub(crate) fn logger_provider_new(
+    vtable: *const OtelLogsVtable,
+    provider_ctx: *mut c_void,
+) -> *mut c_void {
+    unsafe { imp::otel_api_logger_provider_new(vtable, provider_ctx) }
+}
+
 /// Record a diagnostic in the API-owned thread-local error slot.
 pub(crate) fn set_last_error(message: &str) {
     unsafe { imp::otel_api_set_last_error(message.as_ptr().cast::<c_char>(), message.len()) };
@@ -199,6 +278,20 @@ pub(crate) mod test_probe {
             .unwrap()
             .as_ref()
             .map(|&(v, c)| (v as *const OtelImplVtable, c as *mut c_void))
+    }
+
+    pub static LOGS_GLOBAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub fn logs_registered() -> bool {
+        imp::LOGS_REGISTERED.lock().unwrap().is_some()
+    }
+
+    pub fn logs_registration_id() -> Option<u64> {
+        imp::LOGS_REGISTERED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|&(_, _, id)| id)
     }
 
     pub fn metrics_registered() -> bool {
