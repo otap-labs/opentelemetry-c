@@ -851,15 +851,17 @@ macro_rules! define_bound_instrument {
                         &mut status,
                     )
                 };
+                if status != OtelStatus::Ok {
+                    if !ctx.is_null() {
+                        unsafe { ((*instrument.vtable).bound_instrument_free)(ctx) };
+                    }
+                    return status;
+                }
                 if ctx.is_null() {
-                    return if status == OtelStatus::Ok {
-                        fail(
-                            OtelStatus::InternalError,
-                            "Metrics SDK returned a NULL bound instrument",
-                        )
-                    } else {
-                        status
-                    };
+                    return fail(
+                        OtelStatus::InternalError,
+                        "Metrics SDK returned a NULL bound instrument",
+                    );
                 }
                 unsafe {
                     *out = into_raw($handle {
@@ -1684,6 +1686,27 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    static INCONSISTENT_BOUND_FREES: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn mock_bind_context_with_error(
+        _ctx: *mut c_void,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+        out_status: *mut OtelStatus,
+    ) -> *mut c_void {
+        if !out_status.is_null() {
+            unsafe { *out_status = OtelStatus::InvalidUtf8 };
+        }
+        Box::into_raw(Box::new(0_u8)).cast()
+    }
+
+    extern "C" fn mock_inconsistent_bound_free(ctx: *mut c_void) {
+        if !ctx.is_null() {
+            drop(unsafe { Box::from_raw(ctx.cast::<u8>()) });
+            INCONSISTENT_BOUND_FREES.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     extern "C" fn mock_bound_record_u64(_ctx: *mut c_void, _value: u64) -> OtelStatus {
         OtelStatus::Ok
     }
@@ -1783,6 +1806,26 @@ mod tests {
             OtelStatus::InternalError
         );
         assert!(out.is_null());
+
+        INCONSISTENT_BOUND_FREES.store(0, Ordering::SeqCst);
+        let context_with_error_vtable = OtelMetricsVtable {
+            instrument_bind: mock_bind_context_with_error,
+            bound_instrument_free: mock_inconsistent_bound_free,
+            ..MOCK_METRICS_VTABLE
+        };
+        assert_eq!(
+            unsafe {
+                otel_counter_u64_bind(
+                    &counter(&context_with_error_vtable),
+                    std::ptr::null(),
+                    0,
+                    &mut out,
+                )
+            },
+            OtelStatus::InvalidUtf8
+        );
+        assert!(out.is_null());
+        assert_eq!(INCONSISTENT_BOUND_FREES.load(Ordering::SeqCst), 1);
 
         assert_eq!(
             unsafe {
