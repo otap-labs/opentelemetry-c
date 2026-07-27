@@ -41,4 +41,11 @@ for iteration in $(seq 1 "$iterations"); do
     sdk::tests::logs_and_metrics_global_slots_are_independent -- --exact
   cargo test -q -p opentelemetry-c-sdk --lib --no-default-features \
     sdk::tests::saturated_batch_queue_survives_repeated_pipeline_lifecycles -- --exact
+
+  # The custom exporter releases its callback state only after the last in-flight export
+  # returns, which is a lock-ordering property and therefore worth repeating.
+  cargo test -q -p opentelemetry-c-sdk --lib --no-default-features \
+    custom_log_exporter::tests::shutdown_waits_for_an_in_flight_export -- --exact
+  cargo test -q -p opentelemetry-c-sdk --lib --no-default-features \
+    custom_log_exporter::tests::repeated_shutdown_invokes_the_callback_once -- --exact
 done
