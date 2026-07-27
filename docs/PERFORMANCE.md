@@ -189,6 +189,15 @@ or leak mode:
 METRICS_SANITIZER_STRESS_ITERATIONS=10 scripts/sanitize-metrics.sh address
 ```
 
+`scripts/sanitize-logs.sh` takes the same four modes and the same
+`LOGS_SANITIZER_STRESS_ITERATIONS` knob. It exists separately because the Logs bridge stresses
+sanitizers differently from Metrics: one `otel_logger_emit` call borrows a record, an attribute
+array, and an arbitrarily nested pool of caller-owned value nodes, none of which may be read
+past or retained after the call returns. Address and leak modes are therefore the real evidence
+that the two-pass validator/converter respects those borrows, and the mode runs
+`logs_cross_artifact` because only the two-cdylib layout has a genuine C owner for the buffers.
+Thread mode covers emission racing shutdown and the separate global LoggerProvider slot.
+
 ## Lifecycle stress
 
 Deterministic lifecycle tests use barriers, channels, and condition variables to force the
@@ -202,3 +211,15 @@ The loop covers provider replacement and retention, concurrent installs, older-S
 destroy-without-shutdown, observable callback versus destruction, exporter export versus
 shutdown, multiple manual and async readers, and fail-closed async reentrancy. A failed
 iteration stops immediately; rerunning a failure is not treated as a pass.
+
+The Logs equivalent is:
+
+```sh
+LOGS_STRESS_ITERATIONS=100 scripts/stress-logs.sh
+```
+
+It covers the global LoggerProvider slot under concurrent readers and re-registrations,
+emission racing shutdown, installation racing shutdown, one-shot shutdown, implicit slot
+clearing on drop, and the independence of the Logs and Metrics global slots. These cases are
+worth repeating rather than running once because a lost race normally still produces a passing
+interleaving; a single green run is close to no evidence at all.

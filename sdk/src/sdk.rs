@@ -1916,6 +1916,96 @@ mod tests {
         }
     }
 
+    /// Emission and shutdown race by construction: a C caller can hold a logger handle across a
+    /// shutdown on another thread, and the pinned `SdkLoggerProvider` answers that by turning
+    /// its loggers into no-ops rather than by invalidating them. This drives that window hard
+    /// and asserts the only two properties we can actually promise: every emit returns a
+    /// defined status without unwinding across the ABI, and the export buffer never sees more
+    /// records than were emitted.
+    #[test]
+    fn concurrent_emit_during_logs_shutdown_stays_defined() {
+        const THREADS: usize = 4;
+        const EMITS_PER_THREAD: usize = 500;
+
+        use opentelemetry_c_abi::{OtelLogRecordView, OtelScopeConfig};
+
+        unsafe {
+            let (sdk, exporter) = sdk_with_in_memory_logs();
+            let barrier = Arc::new(Barrier::new(THREADS + 1));
+            let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+            let mut emitters = Vec::new();
+            for _ in 0..THREADS {
+                // Each thread takes its own owned provider reference through the vtable, exactly
+                // as an independent C caller would, so no Rust-side sharing is assumed.
+                let ctx = crate::logs_vtable::provider_ctx((*sdk).logger_provider.clone()) as usize;
+                let barrier = Arc::clone(&barrier);
+                let accepted = Arc::clone(&accepted);
+                emitters.push(std::thread::spawn(move || {
+                    let vtable = crate::logs_vtable::vtable_ptr();
+                    let ctx = ctx as *mut std::ffi::c_void;
+                    const SCOPE_NAME: &str = "stress";
+                    let scope = OtelScopeConfig {
+                        name: OtelStringView {
+                            ptr: SCOPE_NAME.as_ptr().cast::<std::ffi::c_char>(),
+                            len: SCOPE_NAME.len(),
+                        },
+                        version: OtelStringView::empty(),
+                        schema_url: OtelStringView::empty(),
+                        attributes: std::ptr::null(),
+                        attribute_count: 0,
+                    };
+                    let logger = ((*vtable).provider_get_logger)(ctx, &scope);
+                    let mut record: OtelLogRecordView = std::mem::zeroed();
+                    record.struct_size = std::mem::size_of::<OtelLogRecordView>() as u64;
+                    record.severity_number = 9;
+
+                    barrier.wait();
+                    for _ in 0..EMITS_PER_THREAD {
+                        let status = ((*vtable).logger_emit)(logger, &record);
+                        match status {
+                            OtelStatus::Ok => {
+                                accepted.fetch_add(1, Ordering::Relaxed);
+                            }
+                            // A shut-down provider must degrade, not fail loudly or corrupt.
+                            other => assert_eq!(other, OtelStatus::AlreadyShutdown),
+                        }
+                        let _ = ((*vtable).logger_enabled)(logger, 9);
+                    }
+                    ((*vtable).logger_free)(logger);
+                    ((*vtable).provider_free)(ctx);
+                }));
+            }
+
+            barrier.wait();
+            // Land the shutdown in the middle of the emit storm rather than after it.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert_eq!(otel_sdk_logs_shutdown(sdk, 1_000), OtelStatus::Ok);
+
+            for emitter in emitters {
+                emitter.join().expect("emitter thread must not panic");
+            }
+
+            let accepted = accepted.load(Ordering::Relaxed);
+            assert!(accepted > 0, "the race left no emit path exercised");
+            assert!(accepted <= THREADS * EMITS_PER_THREAD);
+            // The in-memory exporter clears on shutdown, so this is an upper-bound check on the
+            // records that survived: it must never exceed what was accepted.
+            let exported = exporter
+                .get_emitted_logs()
+                .map(|logs| logs.len())
+                .unwrap_or(0);
+            assert!(
+                exported <= accepted,
+                "exported {exported} records but only {accepted} emits were accepted"
+            );
+
+            // Shutdown is one-shot regardless of the racing traffic.
+            assert_eq!(otel_sdk_logs_shutdown(sdk, 0), OtelStatus::AlreadyShutdown);
+            otel_sdk_destroy(sdk);
+        }
+    }
+
     #[test]
     fn flush_guard_clears_on_panic() {
         let flag = Arc::new(AtomicBool::new(true));

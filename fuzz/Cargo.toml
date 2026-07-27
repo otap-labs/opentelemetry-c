@@ -21,6 +21,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "logs_records"
+path = "fuzz_targets/logs_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "handle_kinds"
 path = "fuzz_targets/handle_kinds.rs"
 test = false
