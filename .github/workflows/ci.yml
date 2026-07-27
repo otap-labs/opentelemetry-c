@@ -83,6 +83,23 @@ jobs:
       - name: Verify debug and release shared libraries
         run: scripts/verify-shared-libraries.sh
 
+  macos-shared-libraries:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build API and SDK shared libraries
+        run: cargo build --locked -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
+      - name: Test split artifacts
+        env:
+          CI: "1"
+        run: |
+          cargo test --locked -p opentelemetry-c-sdk --test c_header_compile --all-features
+          cargo test --locked -p opentelemetry-c-sdk --test cross_artifact --all-features
+          cargo test --locked -p opentelemetry-c-sdk \
+            --test custom_metric_exporter_cross_artifact --all-features
+
   test:
     runs-on: ubuntu-latest
     steps:

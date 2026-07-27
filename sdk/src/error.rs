@@ -4,24 +4,47 @@
 
 use opentelemetry_c_abi::{AbiError, OtelStatus};
 use opentelemetry_sdk::error::OTelSdkError;
+use std::cell::Cell;
 
 use crate::api_ffi;
 
+thread_local! {
+    static LAST_STATUS: Cell<OtelStatus> = const { Cell::new(OtelStatus::Ok) };
+}
+
 /// Record `message` in the API error slot and return `status`.
 pub(crate) fn fail(status: OtelStatus, message: &str) -> OtelStatus {
+    LAST_STATUS.with(|slot| slot.set(status));
     api_ffi::set_last_error(message);
     status
 }
 
 /// Record an owned `message` and return `status`.
 pub(crate) fn fail_owned(status: OtelStatus, message: String) -> OtelStatus {
+    LAST_STATUS.with(|slot| slot.set(status));
     api_ffi::set_last_error(&message);
     status
 }
 
 /// Clear the API error slot (called at the start of fallible entry points).
 pub(crate) fn clear_last_error() {
+    reset_last_status();
     api_ffi::clear_last_error();
+}
+
+pub(crate) fn reset_last_status() {
+    LAST_STATUS.with(|slot| slot.set(OtelStatus::Ok));
+}
+
+pub(crate) fn last_status_or(fallback: OtelStatus) -> OtelStatus {
+    LAST_STATUS.with(|slot| {
+        let status = slot.get();
+        if status == OtelStatus::Ok {
+            fallback
+        } else {
+            status
+        }
+    })
 }
 
 /// Map an [`AbiError`] onto a status, recording its message.
