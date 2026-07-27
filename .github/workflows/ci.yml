@@ -106,6 +106,8 @@ jobs:
           cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-http
           cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-grpc
           cargo test -p opentelemetry-c-sdk --lib --no-default-features --features otlp-http,otlp-grpc
+      - name: Test all-feature SDK unit coverage
+        run: cargo test -p opentelemetry-c-sdk --lib --all-features
       - name: Test split artifacts with OTLP gRPC Metrics
         run: |
           cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
