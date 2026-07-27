@@ -127,6 +127,61 @@ int main(void) {
 }
 
 #[test]
+fn logs_header_compiles_and_helpers_build_structured_records() {
+    let cc = match find_cc() {
+        Some(cc) => cc,
+        None => return,
+    };
+    syntax_check(
+        &cc,
+        &include_dir(),
+        r#"#include <opentelemetry_c/logs.h>
+int main(void) {
+    otel_logger_provider_t* provider = otel_global_logger_provider();
+    otel_logger_options_t scope = OTEL_LOGGER_OPTIONS_INIT;
+    otel_logger_t* logger = NULL;
+    otel_log_record_view_t record = OTEL_LOG_RECORD_VIEW_INIT;
+    /* body = ["one", {"k": 2}] laid out in the flat node pool. */
+    static const uint8_t raw[] = {0xDE, 0xAD};
+    otel_log_key_value_t nodes[3];
+    otel_log_key_value_t attrs[2];
+    nodes[0] = otel_log_element(otel_log_value_string(otel_cstr("one")));
+    nodes[1] = otel_log_element(otel_log_value_map(2, 1));
+    nodes[2] = otel_log_kv(otel_cstr("k"), otel_log_value_int64(2));
+    attrs[0] = otel_log_kv(otel_cstr("bytes"), otel_log_value_bytes(raw, sizeof(raw)));
+    attrs[1] = otel_log_kv(otel_cstr("ok"), otel_log_value_bool(OTEL_TRUE));
+
+    scope.name = otel_cstr("scope");
+    logger = otel_logger_provider_get_logger_with_options(provider, &scope);
+
+    record.present_fields = OTEL_LOG_FIELD_TIMESTAMP | OTEL_LOG_FIELD_OBSERVED_TIMESTAMP |
+                            OTEL_LOG_FIELD_TRACE_CONTEXT;
+    record.timestamp_unix_nanos = 1;
+    record.observed_timestamp_unix_nanos = 2;
+    record.severity_number = OTEL_LOG_SEVERITY_ERROR;
+    record.body = otel_log_value_array(0, 2);
+    record.attributes = attrs;
+    record.attribute_count = sizeof(attrs) / sizeof(attrs[0]);
+    record.value_nodes = nodes;
+    record.value_node_count = sizeof(nodes) / sizeof(nodes[0]);
+    record.trace_context.trace_id[15] = 1;
+    record.trace_context.span_id[7] = 1;
+    record.trace_context.trace_flags = OTEL_LOG_TRACE_FLAGS_SAMPLED;
+
+    if (otel_logger_enabled(logger, OTEL_LOG_SEVERITY_ERROR)) {
+        (void)otel_logger_emit(logger, &record);
+    }
+    (void)otel_log_value_double(1.5);
+    (void)otel_log_value_empty();
+    otel_logger_destroy(logger);
+    otel_logger_provider_destroy(provider);
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
 fn metrics_header_complete_family_compiles() {
     let cc = match find_cc() {
         Some(cc) => cc,

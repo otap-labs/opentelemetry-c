@@ -24,6 +24,8 @@
 mod error;
 mod global;
 mod handle;
+mod logs;
+mod logs_global;
 mod metrics;
 mod metrics_global;
 mod trace;
@@ -31,13 +33,24 @@ mod trace;
 // Re-export the shared ABI value types so Rust consumers (and this crate's tests) can use
 // them by name; these are the same `#[repr(C)]` types the C headers describe.
 pub use opentelemetry_c_abi::{
-    OtelAttributeType, OtelAttributeValue, OtelBool, OtelKeyValue, OtelMetricInstrumentKind,
-    OtelMetricNumberKind, OtelSpanKind, OtelSpanStatusCode, OtelStatus, OtelStringView,
+    OtelAttributeType, OtelAttributeValue, OtelBool, OtelKeyValue, OtelLogBytesView,
+    OtelLogRecordView, OtelLogTraceContext, OtelLogValue, OtelLogValueNode, OtelLogValuePayload,
+    OtelLogValueRange, OtelLogValueType, OtelMetricInstrumentKind, OtelMetricNumberKind,
+    OtelSpanKind, OtelSpanStatusCode, OtelStatus, OtelStringView,
 };
 
 pub use error::{otel_api_clear_last_error, otel_api_set_last_error, otel_last_error_message};
 pub use global::{
     otel_api_provider_new, otel_api_register_global_provider, otel_global_tracer_provider,
+};
+pub use logs::{
+    otel_logger_destroy, otel_logger_emit, otel_logger_enabled, otel_logger_provider_destroy,
+    otel_logger_provider_get_logger, otel_logger_provider_get_logger_with_options, OtelLogger,
+    OtelLoggerOptions, OtelLoggerProvider,
+};
+pub use logs_global::{
+    otel_api_logger_provider_new, otel_api_register_global_logger_provider_with_token,
+    otel_api_unregister_global_logger_provider, otel_global_logger_provider,
 };
 pub use metrics::*;
 pub use metrics_global::{

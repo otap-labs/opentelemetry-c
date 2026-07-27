@@ -4,11 +4,13 @@
  * Umbrella header for the OpenTelemetry **C API** library (`libopentelemetry_c_api`).
  * Include this to pull in the full trace API surface used by instrumentation:
  *
- *   #include <opentelemetry_c/api.h>       // common.h + trace.h
+ *   #include <opentelemetry_c/api.h>       // common.h + logs.h + metrics.h + trace.h
  *
  * or the individual headers:
  *
  *   #include <opentelemetry_c/common.h>    // status, string views, attributes, version
+ *   #include <opentelemetry_c/logs.h>      // logger provider, logger, log records
+ *   #include <opentelemetry_c/metrics.h>   // meter provider, meter, instruments
  *   #include <opentelemetry_c/trace.h>     // tracer provider, tracer, span
  *
  * Linking model
@@ -40,6 +42,7 @@
 #define OPENTELEMETRY_C_API_H
 
 #include "common.h"
+#include "logs.h"
 #include "metrics.h"
 #include "trace.h"
 
