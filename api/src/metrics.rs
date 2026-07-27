@@ -7,16 +7,18 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use opentelemetry_c_abi::{
-    metrics_vtable_supports_creation_status, metrics_vtable_supports_scope_config,
-    OtelAttributeType, OtelHandleHeader, OtelKeyValue, OtelMetricInstrumentConfig,
-    OtelMetricInstrumentKind, OtelMetricNumberKind, OtelMetricScopeConfig, OtelMetricsVtable,
-    OtelStringView, OTEL_HANDLE_KIND_COUNTER_F64, OTEL_HANDLE_KIND_COUNTER_U64,
-    OTEL_HANDLE_KIND_GAUGE_F64, OTEL_HANDLE_KIND_GAUGE_I64, OTEL_HANDLE_KIND_GAUGE_U64,
-    OTEL_HANDLE_KIND_HISTOGRAM_F64, OTEL_HANDLE_KIND_HISTOGRAM_U64, OTEL_HANDLE_KIND_METER,
-    OTEL_HANDLE_KIND_METER_PROVIDER, OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64,
-    OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64, OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64,
-    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64, OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64,
-    OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
+    metrics_vtable_supports_bound_instruments, metrics_vtable_supports_creation_status,
+    metrics_vtable_supports_scope_config, OtelAttributeType, OtelHandleHeader, OtelKeyValue,
+    OtelMetricInstrumentConfig, OtelMetricInstrumentKind, OtelMetricNumberKind,
+    OtelMetricScopeConfig, OtelMetricsVtable, OtelStringView, OTEL_HANDLE_KIND_BOUND_COUNTER_F64,
+    OTEL_HANDLE_KIND_BOUND_COUNTER_U64, OTEL_HANDLE_KIND_BOUND_HISTOGRAM_F64,
+    OTEL_HANDLE_KIND_BOUND_HISTOGRAM_U64, OTEL_HANDLE_KIND_COUNTER_F64,
+    OTEL_HANDLE_KIND_COUNTER_U64, OTEL_HANDLE_KIND_GAUGE_F64, OTEL_HANDLE_KIND_GAUGE_I64,
+    OTEL_HANDLE_KIND_GAUGE_U64, OTEL_HANDLE_KIND_HISTOGRAM_F64, OTEL_HANDLE_KIND_HISTOGRAM_U64,
+    OTEL_HANDLE_KIND_METER, OTEL_HANDLE_KIND_METER_PROVIDER,
+    OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_F64, OTEL_HANDLE_KIND_OBSERVABLE_COUNTER_U64,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_F64, OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_I64,
+    OTEL_HANDLE_KIND_OBSERVABLE_GAUGE_U64, OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_F64,
     OTEL_HANDLE_KIND_OBSERVABLE_UP_DOWN_COUNTER_I64, OTEL_HANDLE_KIND_UP_DOWN_COUNTER_F64,
     OTEL_HANDLE_KIND_UP_DOWN_COUNTER_I64,
 };
@@ -771,6 +773,191 @@ define_sync_instrument!(
     true
 );
 
+macro_rules! define_bound_instrument {
+    (
+        $source:ident, $handle:ident, $handle_kind:expr_2021, $bind:ident, $record:ident,
+        $destroy_fn:ident, $value:ty, $vtable_record:ident
+    ) => {
+        #[repr(C)]
+        pub struct $handle {
+            header: OtelHandleHeader,
+            vtable: *const OtelMetricsVtable,
+            ctx: *mut c_void,
+        }
+
+        impl HasHandleHeader for $handle {
+            const KIND: u64 = $handle_kind;
+            fn header(&self) -> &OtelHandleHeader {
+                &self.header
+            }
+            fn header_mut(&mut self) -> &mut OtelHandleHeader {
+                &mut self.header
+            }
+        }
+
+        unsafe impl Send for $handle {}
+        unsafe impl Sync for $handle {}
+
+        #[doc = "Bind an attribute set to a synchronous metric instrument."]
+        #[doc = ""]
+        #[doc = "# Safety"]
+        #[doc = ""]
+        #[doc = "`instrument` must be live. When `attribute_count` is non-zero, `attributes` \
+                 must address that many readable values. `out` must address writable storage."]
+        #[no_mangle]
+        pub unsafe extern "C" fn $bind(
+            instrument: *const $source,
+            attributes: *const OtelKeyValue,
+            attribute_count: usize,
+            out: *mut *mut $handle,
+        ) -> OtelStatus {
+            guard_status(|| {
+                clear_last_error();
+                if out.is_null() {
+                    return fail(
+                        OtelStatus::InvalidArgument,
+                        "bound instrument out pointer is NULL",
+                    );
+                }
+                unsafe { *out = std::ptr::null_mut() };
+                let instrument = match unsafe { checked_ref(instrument) } {
+                    Some(instrument) => instrument,
+                    None => return OtelStatus::InvalidArgument,
+                };
+                if instrument.vtable.is_null() {
+                    unsafe {
+                        *out = into_raw($handle {
+                            header: OtelHandleHeader::new($handle::KIND),
+                            vtable: std::ptr::null(),
+                            ctx: std::ptr::null_mut(),
+                        });
+                    }
+                    return OtelStatus::Ok;
+                }
+                if !unsafe {
+                    metrics_vtable_supports_bound_instruments(instrument.vtable)
+                } {
+                    return fail(
+                        OtelStatus::InvalidConfig,
+                        "installed Metrics SDK does not support bound instruments",
+                    );
+                }
+                let mut status = OtelStatus::Ok;
+                let ctx = unsafe {
+                    ((*instrument.vtable).instrument_bind)(
+                        instrument.ctx,
+                        attributes,
+                        attribute_count,
+                        &mut status,
+                    )
+                };
+                if ctx.is_null() {
+                    return if status == OtelStatus::Ok {
+                        fail(
+                            OtelStatus::InternalError,
+                            "Metrics SDK returned a NULL bound instrument",
+                        )
+                    } else {
+                        status
+                    };
+                }
+                unsafe {
+                    *out = into_raw($handle {
+                        header: OtelHandleHeader::new($handle::KIND),
+                        vtable: instrument.vtable,
+                        ctx,
+                    });
+                }
+                OtelStatus::Ok
+            })
+        }
+
+        #[doc = "Record through a bound metric instrument."]
+        #[doc = ""]
+        #[doc = "# Safety"]
+        #[doc = ""]
+        #[doc = "`instrument` must be a live handle of the exact expected type."]
+        #[no_mangle]
+        pub unsafe extern "C" fn $record(
+            instrument: *const $handle,
+            value: $value,
+        ) -> OtelStatus {
+            guard_status(|| {
+                clear_last_error();
+                let instrument = match unsafe { checked_ref(instrument) } {
+                    Some(instrument) => instrument,
+                    None => return OtelStatus::InvalidArgument,
+                };
+                if instrument.vtable.is_null() {
+                    return OtelStatus::Ok;
+                }
+                unsafe { ((*instrument.vtable).$vtable_record)(instrument.ctx, value) }
+            })
+        }
+
+        #[doc = "Destroy a bound metric instrument."]
+        #[doc = ""]
+        #[doc = "# Safety"]
+        #[doc = ""]
+        #[doc = "`instrument` must be NULL or a live handle, and destruction must not race \
+                 with another use of that handle."]
+        #[no_mangle]
+        pub unsafe extern "C" fn $destroy_fn(instrument: *mut $handle) {
+            guard_unit(|| {
+                if let Some(instrument) = unsafe { checked_ref::<$handle>(instrument) } {
+                    if !instrument.vtable.is_null() {
+                        unsafe {
+                            ((*instrument.vtable).bound_instrument_free)(instrument.ctx)
+                        };
+                    }
+                }
+                unsafe { destroy(instrument) };
+            });
+        }
+    };
+}
+
+define_bound_instrument!(
+    OtelCounterU64,
+    OtelBoundCounterU64,
+    OTEL_HANDLE_KIND_BOUND_COUNTER_U64,
+    otel_counter_u64_bind,
+    otel_bound_counter_u64_add,
+    otel_bound_counter_u64_destroy,
+    u64,
+    bound_instrument_record_u64
+);
+define_bound_instrument!(
+    OtelCounterF64,
+    OtelBoundCounterF64,
+    OTEL_HANDLE_KIND_BOUND_COUNTER_F64,
+    otel_counter_f64_bind,
+    otel_bound_counter_f64_add,
+    otel_bound_counter_f64_destroy,
+    f64,
+    bound_instrument_record_f64
+);
+define_bound_instrument!(
+    OtelHistogramU64,
+    OtelBoundHistogramU64,
+    OTEL_HANDLE_KIND_BOUND_HISTOGRAM_U64,
+    otel_histogram_u64_bind,
+    otel_bound_histogram_u64_record,
+    otel_bound_histogram_u64_destroy,
+    u64,
+    bound_instrument_record_u64
+);
+define_bound_instrument!(
+    OtelHistogramF64,
+    OtelBoundHistogramF64,
+    OTEL_HANDLE_KIND_BOUND_HISTOGRAM_F64,
+    otel_histogram_f64_bind,
+    otel_bound_histogram_f64_record,
+    otel_bound_histogram_f64_destroy,
+    f64,
+    bound_instrument_record_f64
+);
+
 pub enum OtelObserverU64 {}
 pub enum OtelObserverI64 {}
 pub enum OtelObserverF64 {}
@@ -1473,6 +1660,26 @@ mod tests {
         OtelStatus::Ok
     }
 
+    extern "C" fn mock_bind(
+        _ctx: *mut c_void,
+        _attributes: *const OtelKeyValue,
+        _attribute_count: usize,
+        out_status: *mut OtelStatus,
+    ) -> *mut c_void {
+        if !out_status.is_null() {
+            unsafe { *out_status = OtelStatus::InvalidConfig };
+        }
+        std::ptr::null_mut()
+    }
+
+    extern "C" fn mock_bound_record_u64(_ctx: *mut c_void, _value: u64) -> OtelStatus {
+        OtelStatus::Ok
+    }
+
+    extern "C" fn mock_bound_record_f64(_ctx: *mut c_void, _value: f64) -> OtelStatus {
+        OtelStatus::Ok
+    }
+
     extern "C" fn mock_instrument_free(ctx: *mut c_void) {
         let instrument = unsafe { Box::from_raw(ctx.cast::<MockInstrument>()) };
         (instrument.state_free)(instrument.state);
@@ -1500,6 +1707,10 @@ mod tests {
         instrument_free: mock_instrument_free,
         provider_get_meter_with_scope: mock_provider_get_meter_with_scope,
         meter_create_instrument_with_status: mock_meter_create_instrument_with_status,
+        instrument_bind: mock_bind,
+        bound_instrument_record_u64: mock_bound_record_u64,
+        bound_instrument_record_f64: mock_bound_record_f64,
+        bound_instrument_free: mock_free,
     };
 
     fn metrics_vtable_with_observer_u64(

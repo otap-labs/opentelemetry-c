@@ -146,11 +146,15 @@ int main(void) {
         provider, otel_cstr("scope"), otel_string_view_empty(), otel_string_view_empty());
     otel_instrument_options_t options = OTEL_INSTRUMENT_OPTIONS_INIT;
     otel_counter_u64_t* counter = NULL;
+    otel_bound_counter_u64_t* bound_counter = NULL;
     otel_observable_gauge_u64_t* observable = NULL;
     (void)otel_meter_create_u64_counter(meter, otel_cstr("counter"), &options, &counter);
+    (void)otel_counter_u64_bind(counter, NULL, 0, &bound_counter);
+    (void)otel_bound_counter_u64_add(bound_counter, 1);
     (void)otel_meter_create_u64_observable_gauge(
         meter, otel_cstr("observable"), &options, observe, NULL, NULL, &observable);
     otel_observable_gauge_u64_destroy(observable);
+    otel_bound_counter_u64_destroy(bound_counter);
     otel_counter_u64_destroy(counter);
     otel_meter_destroy(meter);
     otel_meter_provider_destroy(provider);

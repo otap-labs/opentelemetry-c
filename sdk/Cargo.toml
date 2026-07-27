@@ -28,6 +28,7 @@ opentelemetry_sdk = { workspace = true, features = [
     "metrics",
     "spec_unstable_metrics_views",
     "experimental_metrics_custom_reader",
+    "experimental_metrics_bound_instruments",
 ] }
 futures-executor = "0.3"
 # OTLP transports are optional exporter implementations, not SDK core. HTTP/protobuf is

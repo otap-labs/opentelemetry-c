@@ -200,6 +200,7 @@ typedef struct otel_span_t otel_span_t;
 typedef struct otel_meter_provider_t otel_meter_provider_t;
 typedef struct otel_meter_t otel_meter_t;
 typedef struct otel_counter_u64_t otel_counter_u64_t;
+typedef struct otel_bound_counter_u64_t otel_bound_counter_u64_t;
 typedef struct otel_up_down_counter_i64_t otel_up_down_counter_i64_t;
 typedef struct otel_gauge_f64_t otel_gauge_f64_t;
 typedef struct otel_histogram_f64_t otel_histogram_f64_t;
@@ -228,11 +229,15 @@ extern int otel_meter_create_f64_histogram(const otel_meter_t*, otel_string_view
 extern int otel_meter_create_u64_observable_counter(const otel_meter_t*, otel_string_view_t, const void*, void (*)(otel_observer_u64_t*, void*), void*, void (*)(void*), otel_observable_counter_u64_t**);
 extern int otel_meter_create_u64_observable_gauge(const otel_meter_t*, otel_string_view_t, const void*, void (*)(otel_observer_u64_t*, void*), void*, void (*)(void*), otel_observable_gauge_u64_t**);
 extern int otel_counter_u64_add(const otel_counter_u64_t*, uint64_t, const void*, size_t);
+extern int otel_counter_u64_bind(
+    const otel_counter_u64_t*, const void*, size_t, otel_bound_counter_u64_t**);
+extern int otel_bound_counter_u64_add(const otel_bound_counter_u64_t*, uint64_t);
 extern int otel_up_down_counter_i64_add(const otel_up_down_counter_i64_t*, int64_t, const void*, size_t);
 extern int otel_gauge_f64_record(const otel_gauge_f64_t*, double, const void*, size_t);
 extern int otel_histogram_f64_record(const otel_histogram_f64_t*, double, const void*, size_t);
 extern int otel_observer_u64_observe(otel_observer_u64_t*, uint64_t, const void*, size_t);
 extern void otel_counter_u64_destroy(otel_counter_u64_t*);
+extern void otel_bound_counter_u64_destroy(otel_bound_counter_u64_t*);
 extern void otel_up_down_counter_i64_destroy(otel_up_down_counter_i64_t*);
 extern void otel_gauge_f64_destroy(otel_gauge_f64_t*);
 extern void otel_histogram_f64_destroy(otel_histogram_f64_t*);
@@ -346,6 +351,7 @@ static int metrics_work(void){
     otel_meter_provider_t* p=(void*)0;
     otel_meter_t* m=(void*)0;
     otel_counter_u64_t* c=(void*)0;
+    otel_bound_counter_u64_t* bound_c=(void*)0;
     otel_counter_u64_t* dropped=(void*)0;
     otel_up_down_counter_i64_t* work=(void*)0;
     otel_gauge_f64_t* g=(void*)0;
@@ -398,6 +404,10 @@ static int metrics_work(void){
         result=11; goto cleanup;
     }
     if (otel_counter_u64_add(c,3,&attr,1)!=0){ result=6; goto cleanup; }
+    if (otel_counter_u64_bind(c,&attr,1,&bound_c)!=0||!bound_c){
+        result=19; goto cleanup;
+    }
+    if (otel_bound_counter_u64_add(bound_c,4)!=0){ result=20; goto cleanup; }
     if (otel_counter_u64_add(dropped,99,0,0)!=0){ result=12; goto cleanup; }
     if (otel_up_down_counter_i64_add(work,-2,&attr,1)!=0){ result=13; goto cleanup; }
     if (otel_gauge_f64_record(g,2.5,&attr,1)!=0){ result=7; goto cleanup; }
@@ -409,6 +419,7 @@ static int metrics_work(void){
     if (otel_histogram_f64_record(exponential,8.0,0,0)!=0){ result=18; goto cleanup; }
 
 cleanup:
+    if (bound_c) otel_bound_counter_u64_destroy(bound_c);
     if (exponential) otel_histogram_f64_destroy(exponential);
     if (h) otel_histogram_f64_destroy(h);
     if (g) otel_gauge_f64_destroy(g);
@@ -952,7 +963,7 @@ fn assert_metric_requests(requests: &[ExportMetricsServiceRequest]) {
                                 && sum.aggregation_temporality
                                     == expected_temporality(scenario, "counter")
                                 && sum.data_points.iter().any(|point| {
-                                    matches!(point.value, Some(number_data_point::Value::AsInt(3)))
+                                    matches!(point.value, Some(number_data_point::Value::AsInt(7)))
                                         && has_string_attribute(
                                             &point.attributes,
                                             "route",

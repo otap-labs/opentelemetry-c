@@ -2,12 +2,13 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use opentelemetry_c_abi::{
-    metrics_vtable_compatible, metrics_vtable_supports_creation_status,
-    metrics_vtable_supports_scope_config, trace_vtable_compatible, OtelImplVtable, OtelKeyValue,
-    OtelMetricInstrumentConfig, OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus,
-    OtelStringView, OtelVtableHeader, OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE,
-    OTEL_METRICS_IMPL_ABI_VERSION, OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE,
-    OTEL_METRICS_VTABLE_REQUIRED_SIZE, OTEL_TRACE_IMPL_ABI_VERSION,
+    metrics_vtable_compatible, metrics_vtable_supports_bound_instruments,
+    metrics_vtable_supports_creation_status, metrics_vtable_supports_scope_config,
+    trace_vtable_compatible, OtelImplVtable, OtelKeyValue, OtelMetricInstrumentConfig,
+    OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus, OtelStringView, OtelVtableHeader,
+    OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE, OTEL_METRICS_IMPL_ABI_VERSION,
+    OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE, OTEL_METRICS_VTABLE_REQUIRED_SIZE,
+    OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE, OTEL_TRACE_IMPL_ABI_VERSION,
 };
 use opentelemetry_c_api::{
     otel_api_meter_provider_new, otel_api_provider_new, otel_api_register_global_meter_provider,
@@ -63,6 +64,26 @@ extern "C" fn record_f64(_: *mut c_void, _: f64, _: *const OtelKeyValue, _: usiz
     OtelStatus::Ok
 }
 
+extern "C" fn bind(
+    _: *mut c_void,
+    _: *const OtelKeyValue,
+    _: usize,
+    status: *mut OtelStatus,
+) -> *mut c_void {
+    if !status.is_null() {
+        unsafe { *status = OtelStatus::InvalidConfig };
+    }
+    std::ptr::null_mut()
+}
+
+extern "C" fn bound_record_u64(_: *mut c_void, _: u64) -> OtelStatus {
+    OtelStatus::Ok
+}
+
+extern "C" fn bound_record_f64(_: *mut c_void, _: f64) -> OtelStatus {
+    OtelStatus::Ok
+}
+
 const VALID: OtelMetricsVtable = OtelMetricsVtable {
     abi_version: OTEL_METRICS_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelMetricsVtable>(),
@@ -80,6 +101,10 @@ const VALID: OtelMetricsVtable = OtelMetricsVtable {
     instrument_free: free,
     provider_get_meter_with_scope: get_meter_with_scope,
     meter_create_instrument_with_status: create_with_status,
+    instrument_bind: bind,
+    bound_instrument_record_u64: bound_record_u64,
+    bound_instrument_record_f64: bound_record_f64,
+    bound_instrument_free: free,
 };
 
 extern "C" fn get_tracer(
@@ -184,10 +209,7 @@ fn vtable_kind_and_size_validation_is_signal_specific() {
     assert!(unsafe { metrics_vtable_compatible(&VALID) });
     assert!(unsafe { metrics_vtable_supports_scope_config(&VALID) });
     assert!(unsafe { metrics_vtable_supports_creation_status(&VALID) });
-    assert_eq!(
-        std::mem::size_of::<OtelMetricsVtable>(),
-        OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE
-    );
+    assert!(unsafe { metrics_vtable_supports_bound_instruments(&VALID) });
     let original_metrics_prefix = OtelMetricsVtable {
         struct_size: OTEL_METRICS_VTABLE_REQUIRED_SIZE,
         ..VALID
@@ -195,6 +217,20 @@ fn vtable_kind_and_size_validation_is_signal_specific() {
     assert!(unsafe { metrics_vtable_compatible(&original_metrics_prefix) });
     assert!(!unsafe { metrics_vtable_supports_scope_config(&original_metrics_prefix) });
     assert!(!unsafe { metrics_vtable_supports_creation_status(&original_metrics_prefix) });
+    assert!(!unsafe { metrics_vtable_supports_bound_instruments(&original_metrics_prefix) });
+    let scope_only_metrics_prefix = OtelMetricsVtable {
+        struct_size: OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE,
+        ..VALID
+    };
+    assert!(unsafe { metrics_vtable_supports_scope_config(&scope_only_metrics_prefix) });
+    assert!(!unsafe { metrics_vtable_supports_creation_status(&scope_only_metrics_prefix) });
+    assert!(!unsafe { metrics_vtable_supports_bound_instruments(&scope_only_metrics_prefix) });
+    let creation_status_metrics_prefix = OtelMetricsVtable {
+        struct_size: OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE,
+        ..VALID
+    };
+    assert!(unsafe { metrics_vtable_supports_creation_status(&creation_status_metrics_prefix) });
+    assert!(!unsafe { metrics_vtable_supports_bound_instruments(&creation_status_metrics_prefix) });
 
     // Cross-kind checks read only the common header and reject before any function slot.
     assert!(!unsafe { metrics_vtable_compatible((&VALID_TRACE as *const OtelImplVtable).cast()) });

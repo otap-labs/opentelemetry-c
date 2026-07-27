@@ -4,7 +4,8 @@ use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use opentelemetry::metrics::{
-    AsyncInstrument, Counter, Gauge, Histogram, Meter, MeterProvider, UpDownCounter,
+    AsyncInstrument, BoundCounter, BoundHistogram, Counter, Gauge, Histogram, Meter, MeterProvider,
+    UpDownCounter,
 };
 use opentelemetry::InstrumentationScope;
 use opentelemetry_c_abi::{
@@ -27,6 +28,13 @@ enum SdkMetricInstrument {
     HistogramU64(Histogram<u64>),
     HistogramF64(Histogram<f64>),
     Observable,
+}
+
+enum SdkBoundMetricInstrument {
+    CounterU64(BoundCounter<u64>),
+    CounterF64(BoundCounter<f64>),
+    HistogramU64(BoundHistogram<u64>),
+    HistogramF64(BoundHistogram<f64>),
 }
 
 struct CallbackLease {
@@ -696,6 +704,129 @@ extern "C" fn instrument_free(ctx: *mut c_void) {
     });
 }
 
+extern "C" fn instrument_bind(
+    ctx: *mut c_void,
+    attributes: *const opentelemetry_c_abi::OtelKeyValue,
+    attribute_count: usize,
+    out_status: *mut OtelStatus,
+) -> *mut c_void {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if out_status.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "bound instrument status pointer is NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        unsafe { *out_status = OtelStatus::Ok };
+        if ctx.is_null() {
+            unsafe { *out_status = OtelStatus::InvalidArgument };
+            fail(
+                OtelStatus::InvalidArgument,
+                "metric instrument context is NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        let attributes =
+            match unsafe { crate::vtable::collect_key_values(attributes, attribute_count) } {
+                Ok(attributes) => attributes,
+                Err(status) => {
+                    unsafe { *out_status = status };
+                    return std::ptr::null_mut();
+                }
+            };
+        let instrument = unsafe { &*(ctx as *const SdkMetricInstrument) };
+        let bound = match instrument {
+            SdkMetricInstrument::CounterU64(instrument) => {
+                SdkBoundMetricInstrument::CounterU64(instrument.bind(&attributes))
+            }
+            SdkMetricInstrument::CounterF64(instrument) => {
+                SdkBoundMetricInstrument::CounterF64(instrument.bind(&attributes))
+            }
+            SdkMetricInstrument::HistogramU64(instrument) => {
+                SdkBoundMetricInstrument::HistogramU64(instrument.bind(&attributes))
+            }
+            SdkMetricInstrument::HistogramF64(instrument) => {
+                SdkBoundMetricInstrument::HistogramF64(instrument.bind(&attributes))
+            }
+            _ => {
+                unsafe { *out_status = OtelStatus::InvalidArgument };
+                fail(
+                    OtelStatus::InvalidArgument,
+                    "instrument kind does not support bound instruments",
+                );
+                return std::ptr::null_mut();
+            }
+        };
+        Box::into_raw(Box::new(bound)) as *mut c_void
+    }));
+    match result {
+        Ok(ctx) => ctx,
+        Err(_) => {
+            if !out_status.is_null() {
+                unsafe { *out_status = OtelStatus::InternalError };
+            }
+            fail(
+                OtelStatus::InternalError,
+                "panic while binding metric instrument",
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+extern "C" fn bound_instrument_record_u64(ctx: *mut c_void, value: u64) -> OtelStatus {
+    guard_status(|| {
+        if ctx.is_null() {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "bound metric instrument context is NULL",
+            );
+        }
+        match unsafe { &*(ctx as *const SdkBoundMetricInstrument) } {
+            SdkBoundMetricInstrument::CounterU64(instrument) => instrument.add(value),
+            SdkBoundMetricInstrument::HistogramU64(instrument) => instrument.record(value),
+            _ => {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "bound metric operation does not match the instrument numeric type",
+                )
+            }
+        }
+        OtelStatus::Ok
+    })
+}
+
+extern "C" fn bound_instrument_record_f64(ctx: *mut c_void, value: f64) -> OtelStatus {
+    guard_status(|| {
+        if ctx.is_null() {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "bound metric instrument context is NULL",
+            );
+        }
+        match unsafe { &*(ctx as *const SdkBoundMetricInstrument) } {
+            SdkBoundMetricInstrument::CounterF64(instrument) => instrument.add(value),
+            SdkBoundMetricInstrument::HistogramF64(instrument) => instrument.record(value),
+            _ => {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "bound metric operation does not match the instrument numeric type",
+                )
+            }
+        }
+        OtelStatus::Ok
+    })
+}
+
+extern "C" fn bound_instrument_free(ctx: *mut c_void) {
+    guard_unit(|| {
+        if !ctx.is_null() {
+            drop(unsafe { Box::from_raw(ctx as *mut SdkBoundMetricInstrument) });
+        }
+    });
+}
+
 pub(crate) static SDK_METRICS_VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     abi_version: OTEL_METRICS_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelMetricsVtable>(),
@@ -713,6 +844,10 @@ pub(crate) static SDK_METRICS_VTABLE: OtelMetricsVtable = OtelMetricsVtable {
     instrument_free,
     provider_get_meter_with_scope,
     meter_create_instrument_with_status,
+    instrument_bind,
+    bound_instrument_record_u64,
+    bound_instrument_record_f64,
+    bound_instrument_free,
 };
 
 pub(crate) fn vtable_ptr() -> *const OtelMetricsVtable {
@@ -877,6 +1012,105 @@ mod tests {
         for instrument in instruments {
             (SDK_METRICS_VTABLE.instrument_free)(instrument);
         }
+        (SDK_METRICS_VTABLE.meter_free)(meter);
+        provider.shutdown().unwrap();
+        (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
+    }
+
+    #[test]
+    fn bound_counter_and_histogram_record_prebound_attributes() {
+        let exporter = InMemoryMetricExporter::default();
+        let reader = PeriodicReader::builder(exporter.clone()).build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
+        let provider_ctx_raw = provider_ctx(provider.clone());
+        let meter = (SDK_METRICS_VTABLE.provider_get_meter)(
+            provider_ctx_raw,
+            sv("bound_scope"),
+            OtelStringView::empty(),
+            OtelStringView::empty(),
+        );
+        let attributes = [OtelKeyValue {
+            key: sv("route"),
+            value_type: OtelAttributeType::String as u32,
+            value: OtelAttributeValue {
+                string_value: sv("/bound"),
+            },
+        }];
+
+        let counter_config = config(
+            OtelMetricInstrumentKind::Counter,
+            OtelMetricNumberKind::U64,
+            "bound_counter",
+        );
+        let counter = (SDK_METRICS_VTABLE.meter_create_instrument)(meter, &counter_config);
+        let mut status = OtelStatus::Ok;
+        let bound_counter = (SDK_METRICS_VTABLE.instrument_bind)(
+            counter,
+            attributes.as_ptr(),
+            attributes.len(),
+            &mut status,
+        );
+        assert_eq!(status, OtelStatus::Ok);
+        assert!(!bound_counter.is_null());
+        // A bound upstream instrument owns everything needed to outlive this wrapper.
+        (SDK_METRICS_VTABLE.instrument_free)(counter);
+        assert_eq!(
+            (SDK_METRICS_VTABLE.bound_instrument_record_u64)(bound_counter, 3),
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            (SDK_METRICS_VTABLE.bound_instrument_record_u64)(bound_counter, 4),
+            OtelStatus::Ok
+        );
+
+        let histogram_config = config(
+            OtelMetricInstrumentKind::Histogram,
+            OtelMetricNumberKind::F64,
+            "bound_histogram",
+        );
+        let histogram = (SDK_METRICS_VTABLE.meter_create_instrument)(meter, &histogram_config);
+        let bound_histogram = (SDK_METRICS_VTABLE.instrument_bind)(
+            histogram,
+            attributes.as_ptr(),
+            attributes.len(),
+            &mut status,
+        );
+        assert_eq!(status, OtelStatus::Ok);
+        assert!(!bound_histogram.is_null());
+        (SDK_METRICS_VTABLE.instrument_free)(histogram);
+        assert_eq!(
+            (SDK_METRICS_VTABLE.bound_instrument_record_f64)(bound_histogram, 2.5),
+            OtelStatus::Ok
+        );
+
+        provider.force_flush().unwrap();
+        let metrics = exporter.get_finished_metrics().unwrap();
+        match metric(&metrics, "bound_counter").data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                let point = sum.data_points().next().unwrap();
+                assert_eq!(point.value(), 7);
+                assert_eq!(
+                    point.attributes().cloned().collect::<Vec<_>>(),
+                    vec![KeyValue::new("route", "/bound")]
+                );
+            }
+            other => panic!("unexpected counter aggregation: {other:?}"),
+        }
+        match metric(&metrics, "bound_histogram").data() {
+            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                let point = histogram.data_points().next().unwrap();
+                assert_eq!(point.count(), 1);
+                assert_eq!(point.sum(), 2.5);
+                assert_eq!(
+                    point.attributes().cloned().collect::<Vec<_>>(),
+                    vec![KeyValue::new("route", "/bound")]
+                );
+            }
+            other => panic!("unexpected histogram aggregation: {other:?}"),
+        }
+
+        (SDK_METRICS_VTABLE.bound_instrument_free)(bound_counter);
+        (SDK_METRICS_VTABLE.bound_instrument_free)(bound_histogram);
         (SDK_METRICS_VTABLE.meter_free)(meter);
         provider.shutdown().unwrap();
         (SDK_METRICS_VTABLE.provider_free)(provider_ctx_raw);
