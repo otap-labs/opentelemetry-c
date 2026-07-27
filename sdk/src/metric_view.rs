@@ -200,16 +200,22 @@ pub unsafe extern "C" fn otel_metric_view_builder_add_scope_attribute(
 ) -> OtelStatus {
     unsafe {
         with_builder(builder, |config| {
+            if attribute.is_null() {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "scope attribute must not be NULL",
+                );
+            }
             if config.scope_attributes.len() >= MAX_VIEW_SCOPE_ATTRIBUTES {
                 return fail(
                     OtelStatus::InvalidConfig,
                     "Metrics view scope attribute limit exceeded",
                 );
             }
-            if attribute.is_null() {
+            if config.scope_attributes.try_reserve(1).is_err() {
                 return fail(
-                    OtelStatus::InvalidArgument,
-                    "scope attribute must not be NULL",
+                    OtelStatus::InternalError,
+                    "failed to allocate space for a Metrics view scope attribute",
                 );
             }
             let attribute = match crate::vtable::to_key_value(&*attribute) {
@@ -272,6 +278,12 @@ pub unsafe extern "C" fn otel_metric_view_builder_add_allowed_attribute(
                 return fail(
                     OtelStatus::InvalidConfig,
                     "Metrics view allowed attribute limit exceeded",
+                );
+            }
+            if config.allowed_attributes.try_reserve(1).is_err() {
+                return fail(
+                    OtelStatus::InternalError,
+                    "failed to allocate space for a Metrics view allowed attribute",
                 );
             }
             match key.to_string_strict() {

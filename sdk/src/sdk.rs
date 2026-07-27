@@ -195,6 +195,12 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_view(
                 "SDK builder Metrics view limit exceeded",
             );
         }
+        if builder.metric_views.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a Metrics view",
+            );
+        }
         let view = match unsafe { take(view) } {
             Some(view) => view,
             None => return OtelStatus::InvalidArgument,
@@ -225,6 +231,12 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_reader(
             return fail(
                 OtelStatus::InvalidConfig,
                 "SDK builder Metrics reader limit exceeded",
+            );
+        }
+        if builder.metric_readers.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a Metrics reader",
             );
         }
         let reader = match unsafe { take(reader) } {
@@ -261,6 +273,12 @@ pub unsafe extern "C" fn otel_sdk_builder_add_manual_metric_reader(
             return fail(
                 OtelStatus::InvalidConfig,
                 "SDK builder Metrics reader limit exceeded",
+            );
+        }
+        if builder.metric_readers.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a Metrics reader",
             );
         }
         let reader = match unsafe { take(reader) } {
@@ -336,6 +354,12 @@ pub unsafe extern "C" fn otel_sdk_builder_add_resource_attribute(
                     "SDK builder resource attribute limit exceeded",
                 );
             }
+            if b.resource_attributes.try_reserve(1).is_err() {
+                return fail(
+                    OtelStatus::InternalError,
+                    "failed to allocate space for a resource attribute",
+                );
+            }
             match vtable_to_key_value(&attribute) {
                 Ok(kv) => {
                     b.resource_attributes.push(kv);
@@ -371,6 +395,12 @@ pub unsafe extern "C" fn otel_sdk_builder_add_span_processor(
             return fail(
                 OtelStatus::InvalidConfig,
                 "SDK builder span processor limit exceeded",
+            );
+        }
+        if builder.processors.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a span processor",
             );
         }
         let owned = match unsafe { take::<OtelSpanProcessor>(processor) } {
