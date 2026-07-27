@@ -148,6 +148,9 @@ void otel_histogram_f64_destroy(otel_histogram_f64_t* instrument);
  * but must not be retained, passed to another thread, or used by work spawned from the
  * callback. Cross-thread and stale uses return OTEL_STATUS_INVALID_ARGUMENT without
  * dispatching to the SDK. Callbacks must finish in finite time.
+ * On successful observable creation, the instrument owns user_data and invokes
+ * user_data_destroy exactly once. On failure, ownership remains with the caller and the
+ * library does not invoke user_data_destroy.
  * Destroying the public observable handle disables future callback work and releases its
  * user-data ownership. user_data_destroy runs exactly once after any callback already in
  * flight releases its temporary reference; it does not depend on the SDK pipeline closure

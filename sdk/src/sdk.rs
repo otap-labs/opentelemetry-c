@@ -39,6 +39,11 @@ use crate::periodic_metric_reader::{OtelPeriodicMetricReader, PeriodicMetricRead
 use crate::span_processor::{OtelSpanProcessor, SpanProcessorImpl};
 use crate::vtable;
 
+const MAX_SPAN_PROCESSORS: usize = 64;
+const MAX_METRIC_READERS: usize = 64;
+const MAX_METRIC_VIEWS: usize = 1024;
+const MAX_RESOURCE_ATTRIBUTES: usize = 1024;
+
 /// Opaque builder handle (`otel_sdk_builder_t`). Not thread-safe; confine to one thread.
 #[repr(C)]
 pub struct OtelSdkBuilder {
@@ -184,6 +189,18 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_view(
             Some(builder) => builder,
             None => return OtelStatus::InvalidArgument,
         };
+        if builder.metric_views.len() >= MAX_METRIC_VIEWS {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "SDK builder Metrics view limit exceeded",
+            );
+        }
+        if builder.metric_views.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a Metrics view",
+            );
+        }
         let view = match unsafe { take(view) } {
             Some(view) => view,
             None => return OtelStatus::InvalidArgument,
@@ -210,6 +227,18 @@ pub unsafe extern "C" fn otel_sdk_builder_add_metric_reader(
             Some(builder) => builder,
             None => return OtelStatus::InvalidArgument,
         };
+        if builder.metric_readers.len() >= MAX_METRIC_READERS {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "SDK builder Metrics reader limit exceeded",
+            );
+        }
+        if builder.metric_readers.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a Metrics reader",
+            );
+        }
         let reader = match unsafe { take(reader) } {
             Some(reader) => reader,
             None => return OtelStatus::InvalidArgument,
@@ -240,6 +269,18 @@ pub unsafe extern "C" fn otel_sdk_builder_add_manual_metric_reader(
             Some(builder) => builder,
             None => return OtelStatus::InvalidArgument,
         };
+        if builder.metric_readers.len() >= MAX_METRIC_READERS {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "SDK builder Metrics reader limit exceeded",
+            );
+        }
+        if builder.metric_readers.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a Metrics reader",
+            );
+        }
         let reader = match unsafe { take(reader) } {
             Some(reader) => reader,
             None => return OtelStatus::InvalidArgument,
@@ -306,12 +347,26 @@ pub unsafe extern "C" fn otel_sdk_builder_add_resource_attribute(
     attribute: OtelKeyValue,
 ) -> OtelStatus {
     unsafe {
-        with_builder(builder, |b| match vtable_to_key_value(&attribute) {
-            Ok(kv) => {
-                b.resource_attributes.push(kv);
-                OtelStatus::Ok
+        with_builder(builder, |b| {
+            if b.resource_attributes.len() >= MAX_RESOURCE_ATTRIBUTES {
+                return fail(
+                    OtelStatus::InvalidConfig,
+                    "SDK builder resource attribute limit exceeded",
+                );
             }
-            Err(status) => status,
+            if b.resource_attributes.try_reserve(1).is_err() {
+                return fail(
+                    OtelStatus::InternalError,
+                    "failed to allocate space for a resource attribute",
+                );
+            }
+            match vtable_to_key_value(&attribute) {
+                Ok(kv) => {
+                    b.resource_attributes.push(kv);
+                    OtelStatus::Ok
+                }
+                Err(status) => status,
+            }
         })
     }
 }
@@ -336,6 +391,18 @@ pub unsafe extern "C" fn otel_sdk_builder_add_span_processor(
             Some(b) => b,
             None => return OtelStatus::InvalidArgument,
         };
+        if builder.processors.len() >= MAX_SPAN_PROCESSORS {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "SDK builder span processor limit exceeded",
+            );
+        }
+        if builder.processors.try_reserve(1).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate space for a span processor",
+            );
+        }
         let owned = match unsafe { take::<OtelSpanProcessor>(processor) } {
             Some(p) => p,
             None => return OtelStatus::InvalidArgument,
@@ -795,8 +862,52 @@ mod tests {
     };
     #[cfg(feature = "otlp-http")]
     use crate::span_processor::otel_span_processor_destroy;
+    use opentelemetry_c_abi::{OtelAttributeType, OtelAttributeValue};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{Arc, Barrier, Condvar};
+
+    #[test]
+    fn sdk_builder_enforces_resource_and_view_limits_without_consuming_view() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            (*builder).resource_attributes =
+                vec![KeyValue::new("existing", "value"); MAX_RESOURCE_ATTRIBUTES];
+            let key = b"extra";
+            let value = b"value";
+            let attribute = OtelKeyValue {
+                key: OtelStringView {
+                    ptr: key.as_ptr().cast(),
+                    len: key.len(),
+                },
+                value_type: OtelAttributeType::String as u32,
+                value: OtelAttributeValue {
+                    string_value: OtelStringView {
+                        ptr: value.as_ptr().cast(),
+                        len: value.len(),
+                    },
+                },
+            };
+            assert_eq!(
+                otel_sdk_builder_add_resource_attribute(builder, attribute),
+                OtelStatus::InvalidConfig
+            );
+
+            let view_builder = crate::metric_view::otel_metric_view_builder_new();
+            let mut view = std::ptr::null_mut();
+            assert_eq!(
+                crate::metric_view::otel_metric_view_builder_build(view_builder, &mut view),
+                OtelStatus::Ok
+            );
+            crate::metric_view::otel_metric_view_builder_destroy(view_builder);
+            (*builder).metric_views = vec![(*view).config.clone(); MAX_METRIC_VIEWS];
+            assert_eq!(
+                otel_sdk_builder_add_metric_view(builder, view),
+                OtelStatus::InvalidConfig
+            );
+            crate::metric_view::otel_metric_view_destroy(view);
+            otel_sdk_builder_destroy(builder);
+        }
+    }
 
     #[cfg(feature = "otlp-http")]
     fn sv(s: &str) -> OtelStringView {

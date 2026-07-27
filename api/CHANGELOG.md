@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- Observable instrument creation failures now preserve caller ownership of callback user data
+  consistently, including failures after the backing SDK accepts and releases callback state.
+
 ### Added
 
 - API-only Metrics benchmarks now measure counter, gauge, and histogram recording with
@@ -22,8 +27,8 @@
 - Versioned, signal-namespaced internal Metrics vtable with kind/version and size compatibility
   checks that reject trace vtables before dispatch, plus race-safe provider replacement.
 - Prefix-only ABI validation rejects truncated vtables before forming a full Rust reference.
-  Observable callback state ownership is consumed exactly once even when SDK construction
-  panics, and token-based Metrics deregistration releases the global provider on Metrics
+  Backing SDK callback-state ownership is released exactly once even when construction panics,
+  and token-based Metrics deregistration releases the global provider on Metrics
   shutdown/destroy without clearing a newer installation.
 - Initial release of `opentelemetry-c-api` as part of the split of `opentelemetry-c` into
   separate C **API** and **SDK** artifacts. The API library exposes the public trace API

@@ -100,3 +100,18 @@ The trace and Metrics examples provide working Makefiles:
 - [`sdk/examples/c-metrics`](../sdk/examples/c-metrics)
 
 Windows shared-library use and supported static deployment are not currently available.
+
+## Linux shared-library verification
+
+The supported deployment model is continuously checked in debug and release profiles:
+
+```sh
+scripts/verify-shared-libraries.sh
+```
+
+The Linux-only script builds separate API and SDK shared objects, compares their `otel_*`
+exports with the committed inventories, verifies that the SDK imports rather than defines the
+API-owned registration symbols, inspects dynamic objects with `nm`, `readelf`, `objdump`, and
+`ldd`, loads the API globally before the SDK, compiles C11/C++17 headers, and runs the OTLP and
+custom-exporter split-artifact applications. Intentional symbol additions or removals require
+an explicit inventory update.

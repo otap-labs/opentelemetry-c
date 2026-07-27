@@ -13,6 +13,8 @@ use crate::handle::{
 };
 
 const ANY_KIND: u32 = u32::MAX;
+const MAX_VIEW_SCOPE_ATTRIBUTES: usize = 256;
+const MAX_VIEW_ALLOWED_ATTRIBUTES: usize = 1024;
 
 #[derive(Clone)]
 pub(crate) enum AggregationConfig {
@@ -204,6 +206,18 @@ pub unsafe extern "C" fn otel_metric_view_builder_add_scope_attribute(
                     "scope attribute must not be NULL",
                 );
             }
+            if config.scope_attributes.len() >= MAX_VIEW_SCOPE_ATTRIBUTES {
+                return fail(
+                    OtelStatus::InvalidConfig,
+                    "Metrics view scope attribute limit exceeded",
+                );
+            }
+            if config.scope_attributes.try_reserve(1).is_err() {
+                return fail(
+                    OtelStatus::InternalError,
+                    "failed to allocate space for a Metrics view scope attribute",
+                );
+            }
             let attribute = match crate::vtable::to_key_value(&*attribute) {
                 Ok(attribute) => attribute,
                 Err(status) => return status,
@@ -259,17 +273,31 @@ pub unsafe extern "C" fn otel_metric_view_builder_add_allowed_attribute(
     key: OtelStringView,
 ) -> OtelStatus {
     unsafe {
-        with_builder(builder, |config| match key.to_string_strict() {
-            Ok(key) if !key.is_empty() => {
-                config.attribute_filter_enabled = true;
-                config.allowed_attributes.push(key);
-                OtelStatus::Ok
+        with_builder(builder, |config| {
+            if config.allowed_attributes.len() >= MAX_VIEW_ALLOWED_ATTRIBUTES {
+                return fail(
+                    OtelStatus::InvalidConfig,
+                    "Metrics view allowed attribute limit exceeded",
+                );
             }
-            Ok(_) => fail(
-                OtelStatus::InvalidArgument,
-                "allowed attribute key must not be empty",
-            ),
-            Err(err) => fail_abi(err),
+            if config.allowed_attributes.try_reserve(1).is_err() {
+                return fail(
+                    OtelStatus::InternalError,
+                    "failed to allocate space for a Metrics view allowed attribute",
+                );
+            }
+            match key.to_string_strict() {
+                Ok(key) if !key.is_empty() => {
+                    config.attribute_filter_enabled = true;
+                    config.allowed_attributes.push(key);
+                    OtelStatus::Ok
+                }
+                Ok(_) => fail(
+                    OtelStatus::InvalidArgument,
+                    "allowed attribute key must not be empty",
+                ),
+                Err(err) => fail_abi(err),
+            }
         })
     }
 }
@@ -1094,6 +1122,48 @@ mod tests {
                 vec![KeyValue::new("component", "checkout")]
             );
             otel_metric_view_destroy(view);
+            otel_metric_view_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn view_builder_enforces_scope_and_allowed_attribute_limits() {
+        unsafe {
+            let builder = otel_metric_view_builder_new();
+            (*builder).config.scope_attributes =
+                vec![KeyValue::new("existing", "value"); MAX_VIEW_SCOPE_ATTRIBUTES];
+            let key = b"extra";
+            let value = b"value";
+            let attribute = OtelKeyValue {
+                key: OtelStringView {
+                    ptr: key.as_ptr().cast(),
+                    len: key.len(),
+                },
+                value_type: OtelAttributeType::String as u32,
+                value: OtelAttributeValue {
+                    string_value: OtelStringView {
+                        ptr: value.as_ptr().cast(),
+                        len: value.len(),
+                    },
+                },
+            };
+            assert_eq!(
+                otel_metric_view_builder_add_scope_attribute(builder, &attribute),
+                OtelStatus::InvalidConfig
+            );
+
+            (*builder).config.allowed_attributes =
+                vec!["existing".to_owned(); MAX_VIEW_ALLOWED_ATTRIBUTES];
+            assert_eq!(
+                otel_metric_view_builder_add_allowed_attribute(
+                    builder,
+                    OtelStringView {
+                        ptr: key.as_ptr().cast(),
+                        len: key.len(),
+                    },
+                ),
+                OtelStatus::InvalidConfig
+            );
             otel_metric_view_builder_destroy(builder);
         }
     }

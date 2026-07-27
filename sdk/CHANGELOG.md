@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- SDK builders now bound transferred processors, Metrics readers, views, resource attributes,
+  and per-view attribute lists before allocation or worker growth can become unbounded.
+
 ### Added
 
 - Metrics hot-path benchmarks now expose attribute-count and value-type scaling for counter,
@@ -42,8 +47,8 @@
   synchronous and observable values, attributes, and histogram data. C11/C++17 header
   compilation covers all Metrics headers.
 - Metrics global installation now uses conditional registration tokens so shutdown/destroy
-  releases the current global provider without clearing a newer SDK. Observable callback
-  state is consumed exactly once across success, validation failure, and caught construction
+  releases the current global provider without clearing a newer SDK. Backing SDK callback
+  state is released exactly once across success, validation failure, and caught construction
   panics. Periodic-reader destruction actively shuts down its worker and exporter, and
   explicit Metrics shutdown followed by SDK destruction does not shut the pipeline down twice.
 - Exporter/processor separation of concerns with **optional OTLP**. The generic

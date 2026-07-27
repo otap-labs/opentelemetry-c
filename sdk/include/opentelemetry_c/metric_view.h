@@ -43,7 +43,7 @@ otel_status_t otel_metric_view_builder_set_scope_schema_url(
 /*
  * Add a required exact scope-attribute matcher. Every configured key/value must be present
  * with the same value type for the view to match; extra scope attributes are allowed.
- * Duplicate matcher keys are rejected.
+ * Duplicate matcher keys are rejected. A view accepts at most 256 scope-attribute matchers.
  */
 otel_status_t otel_metric_view_builder_add_scope_attribute(
     otel_metric_view_builder_t* builder, const otel_key_value_t* attribute);
@@ -57,12 +57,15 @@ otel_status_t otel_metric_view_builder_set_output_description(
     otel_metric_view_builder_t* builder, otel_string_view_t description);
 otel_status_t otel_metric_view_builder_set_output_unit(
     otel_metric_view_builder_t* builder, otel_string_view_t unit);
+/* A view accepts at most 1024 allowed attribute keys. */
 otel_status_t otel_metric_view_builder_add_allowed_attribute(
     otel_metric_view_builder_t* builder, otel_string_view_t key);
 /* Enable filtering explicitly. When enabled with no allowed keys, all attributes are
  * dropped. Adding an allowed key also enables filtering. */
 otel_status_t otel_metric_view_builder_set_attribute_filter_enabled(
     otel_metric_view_builder_t* builder, otel_bool_t enabled);
+/* The pinned SDK default is 2000 data points per instrument stream. Set an explicit limit
+ * for intentionally high-cardinality streams; overflow is aggregated by the upstream SDK. */
 otel_status_t otel_metric_view_builder_set_cardinality_limit(
     otel_metric_view_builder_t* builder, uint64_t limit);
 otel_status_t otel_metric_view_builder_set_aggregation(
