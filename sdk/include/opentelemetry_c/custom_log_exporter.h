@@ -1,6 +1,8 @@
 #ifndef OPENTELEMETRY_C_CUSTOM_LOG_EXPORTER_H
 #define OPENTELEMETRY_C_CUSTOM_LOG_EXPORTER_H
 
+#include <stddef.h>
+
 #include <opentelemetry_c/log_exporter.h>
 #include <opentelemetry_c/logs.h>
 
@@ -52,8 +54,25 @@ extern "C" {
  * export_logs and shutdown should return OTEL_STATUS_OK, OTEL_STATUS_EXPORT_FAILED,
  * OTEL_STATUS_TIMEOUT, OTEL_STATUS_ALREADY_SHUTDOWN or OTEL_STATUS_INTERNAL_ERROR. Any other
  * status is treated as a callback contract violation and reported as an internal failure.
- * A non-zero status fails that export and surfaces as OTEL_STATUS_EXPORT_FAILED at the
- * provider force-flush/shutdown boundary.
+ * A non-zero status always fails that export, but whether it becomes visible to the C caller
+ * depends on the configured processor:
+ *
+ *   - batch processor: the failure is reported at the provider force-flush/shutdown boundary,
+ *     which surfaces as OTEL_STATUS_EXPORT_FAILED;
+ *   - simple processor: the failure is NOT observable through this C API. The processor
+ *     consumes and internally reports the export error at emit time, its force-flush always
+ *     succeeds, and a later shutdown reports only the result of the shutdown callback.
+ *
+ * A callback that needs to surface export failures to the application must therefore record
+ * them in its own state rather than relying on the return value alone.
+ *
+ * ---- Callbacks must not unwind ---------------------------------------------
+ *
+ * A callback must never let an exception or a Rust panic escape. This is a hard requirement,
+ * not a recoverable condition: an unwind out of an extern "C" frame terminates the process
+ * before the SDK can intercept it. The SDK's catch_unwind is defensive residue and is NOT a
+ * safety guarantee you may rely on. Catch everything at the callback boundary and return a
+ * failing status instead.
  *
  * There is deliberately no force-flush callback: the underlying Rust LogExporter trait has no
  * force-flush operation, so the SDK would never invoke one. Provider force-flush is handled
@@ -90,6 +109,11 @@ extern "C" {
  * is this scope's own pool. The pool obeys the same invariants as the emit path: children of
  * a node occupy a contiguous range at strictly greater indices, and every node belongs to
  * exactly one parent.
+ *
+ * When a count is 0 the matching pointer or child range carries no data and must not be used
+ * for pointer arithmetic or comparison at all: an empty array pointer may be any non-NULL
+ * sentinel rather than the address of a real array object, and an empty child range's `first`
+ * is not required to index a live node. Always test the count first and skip.
  */
 typedef struct otel_log_export_scope_view_t {
     uint64_t struct_size;
@@ -151,6 +175,24 @@ typedef struct otel_log_export_batch_view_t {
 /*
  * export_logs is required. shutdown is optional and is invoked at most once. state_destroy is
  * optional; when NULL the callback state is simply never released by the SDK.
+ *
+ * ---- Versioning -----------------------------------------------------------
+ *
+ * Set struct_size to sizeof(otel_custom_log_exporter_callbacks_t) as compiled by YOU, and
+ * zero-initialize the structure first.
+ *
+ * Only struct_size and export_logs are required, so the smallest accepted table ends at the
+ * end of export_logs (OTEL_CUSTOM_LOG_EXPORTER_CALLBACKS_REQUIRED_SIZE). The SDK reads a
+ * member only when struct_size proves that member is inside your object:
+ *
+ *   - a member your struct_size does not cover is never read and behaves exactly as if you
+ *     had set it to NULL, so a table compiled against an older release keeps working when
+ *     this structure grows;
+ *   - a struct_size larger than the SDK's own is accepted and the unknown tail is ignored,
+ *     so a newer application can drive an older SDK.
+ *
+ * Members will only ever be appended, never reordered or removed, and every future member is
+ * optional. A struct_size below the required size is rejected with OTEL_STATUS_INVALID_CONFIG.
  */
 typedef struct otel_custom_log_exporter_callbacks_t {
     size_t struct_size;
@@ -158,6 +200,14 @@ typedef struct otel_custom_log_exporter_callbacks_t {
     otel_status_t (*shutdown)(void* user_data, uint64_t timeout_millis);
     void (*state_destroy)(void* user_data);
 } otel_custom_log_exporter_callbacks_t;
+
+/*
+ * Smallest callback table the SDK accepts: struct_size plus the mandatory export_logs member.
+ * This value is frozen and will not change when the structure grows.
+ */
+#define OTEL_CUSTOM_LOG_EXPORTER_CALLBACKS_REQUIRED_SIZE \
+    (offsetof(otel_custom_log_exporter_callbacks_t, export_logs) + \
+     sizeof(otel_status_t (*)(void*, const otel_log_export_batch_view_t*)))
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
     defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
@@ -169,6 +219,8 @@ _Static_assert(sizeof(otel_log_export_batch_view_t) == 104,
                "otel_log_export_batch_view_t ABI mismatch");
 _Static_assert(sizeof(otel_custom_log_exporter_callbacks_t) == 32,
                "otel_custom_log_exporter_callbacks_t ABI mismatch");
+_Static_assert(OTEL_CUSTOM_LOG_EXPORTER_CALLBACKS_REQUIRED_SIZE == 16,
+               "otel_custom_log_exporter_callbacks_t required prefix ABI mismatch");
 #endif
 
 /*
@@ -176,7 +228,8 @@ _Static_assert(sizeof(otel_custom_log_exporter_callbacks_t) == 32,
  * sizeof(otel_custom_log_exporter_callbacks_t).
  *
  * On OTEL_STATUS_OK *out receives a new otel_log_exporter_t and the SDK owns user_data. On
- * failure *out is set to NULL and user_data remains caller-owned.
+ * failure *out is set to NULL and user_data remains caller-owned. Only the first struct_size
+ * bytes of *callbacks are read.
  */
 otel_status_t otel_custom_log_exporter_new(
     const otel_custom_log_exporter_callbacks_t* callbacks,

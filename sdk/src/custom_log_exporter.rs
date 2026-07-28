@@ -57,6 +57,13 @@ pub type OtelCustomLogStateDestroy = Option<extern "C" fn(*mut c_void)>;
 ///
 /// There is deliberately no force-flush member: the pinned `LogExporter` trait has no
 /// force-flush operation, so upstream would never invoke one.
+///
+/// ## Versioning
+///
+/// `struct_size` describes the table the *caller* compiled. Only `struct_size` and
+/// `export_logs` are required; every later member is optional, so a table compiled against an
+/// older release keeps working when this structure grows, and a longer table from a newer
+/// application is accepted with its unknown tail ignored. See [`REQUIRED_PREFIX_SIZE`].
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OtelCustomLogExporterCallbacks {
@@ -79,7 +86,67 @@ const _: () = {
     assert!(std::mem::offset_of!(OtelCustomLogExporterCallbacks, export_logs) == 8);
     assert!(std::mem::offset_of!(OtelCustomLogExporterCallbacks, shutdown) == 16);
     assert!(std::mem::offset_of!(OtelCustomLogExporterCallbacks, state_destroy) == 24);
+    assert!(REQUIRED_PREFIX_SIZE == 16);
 };
+
+/// End offset of a member, i.e. the smallest `struct_size` that fully contains it.
+macro_rules! member_end {
+    ($field:ident, $ty:ty) => {
+        std::mem::offset_of!(OtelCustomLogExporterCallbacks, $field) + std::mem::size_of::<$ty>()
+    };
+}
+
+/// Smallest callback table this SDK accepts: `struct_size` plus the mandatory `export_logs`.
+///
+/// Everything after this point is optional, so a table compiled against an older (shorter)
+/// release stays valid forever. Members beyond the caller's `struct_size` are never read and
+/// behave exactly as if the caller had passed NULL for them; members beyond *our* size are
+/// ignored, which is what lets a newer application drive an older SDK.
+const REQUIRED_PREFIX_SIZE: usize = member_end!(export_logs, OtelCustomLogExport);
+const SHUTDOWN_END: usize = member_end!(shutdown, OtelCustomLogShutdown);
+const STATE_DESTROY_END: usize = member_end!(state_destroy, OtelCustomLogStateDestroy);
+
+/// Copy a callback table out of caller memory, reading only the members `struct_size` covers.
+///
+/// # Safety
+///
+/// `callbacks` must address at least `struct_size` readable bytes and `struct_size` must be at
+/// least [`REQUIRED_PREFIX_SIZE`].
+unsafe fn read_callbacks(
+    callbacks: *const OtelCustomLogExporterCallbacks,
+    struct_size: usize,
+) -> OtelCustomLogExporterCallbacks {
+    let base = callbacks.cast::<u8>();
+    // SAFETY: each member is read only once `struct_size` proves it is inside the caller's
+    // object, and every read is unaligned so a packed or misaligned table stays sound.
+    unsafe {
+        let member = |offset: usize, end: usize| {
+            (struct_size >= end).then(|| base.add(offset).cast::<usize>())
+        };
+        OtelCustomLogExporterCallbacks {
+            struct_size,
+            export_logs: std::ptr::read_unaligned(
+                base.add(std::mem::offset_of!(
+                    OtelCustomLogExporterCallbacks,
+                    export_logs
+                ))
+                .cast::<OtelCustomLogExport>(),
+            ),
+            shutdown: member(
+                std::mem::offset_of!(OtelCustomLogExporterCallbacks, shutdown),
+                SHUTDOWN_END,
+            )
+            .and_then(|pointer| std::ptr::read_unaligned(pointer.cast::<OtelCustomLogShutdown>())),
+            state_destroy: member(
+                std::mem::offset_of!(OtelCustomLogExporterCallbacks, state_destroy),
+                STATE_DESTROY_END,
+            )
+            .and_then(|pointer| {
+                std::ptr::read_unaligned(pointer.cast::<OtelCustomLogStateDestroy>())
+            }),
+        }
+    }
+}
 
 pub(crate) struct CustomLogExporter {
     callbacks: OtelCustomLogExporterCallbacks,
@@ -103,7 +170,11 @@ impl std::fmt::Debug for CustomLogExporter {
 }
 
 impl CustomLogExporter {
-    /// Invoke one C callback with panic containment and map its status onto `OTelSdkResult`.
+    /// Invoke one C callback and map its status onto `OTelSdkResult`.
+    ///
+    /// The `catch_unwind` is defensive residue only, and is deliberately not advertised as a
+    /// safety guarantee: an `extern "C"` callback that unwinds aborts the process before this
+    /// frame can observe it. Callbacks are contractually required not to unwind.
     ///
     /// Statuses that cannot describe the outcome of an export or shutdown are rejected with a
     /// distinct diagnostic rather than being folded into one generic failure.
@@ -236,13 +307,13 @@ pub unsafe extern "C" fn otel_custom_log_exporter_new(
         }
         // Read only the leading `struct_size` word until it proves the rest is readable.
         let struct_size = unsafe { std::ptr::read_unaligned(callbacks.cast::<usize>()) };
-        if struct_size < std::mem::size_of::<OtelCustomLogExporterCallbacks>() {
+        if struct_size < REQUIRED_PREFIX_SIZE {
             return fail(
                 OtelStatus::InvalidConfig,
                 "custom log exporter callback structure is smaller than the required ABI size",
             );
         }
-        let callbacks = unsafe { &*callbacks };
+        let callbacks = unsafe { read_callbacks(callbacks, struct_size) };
         if callbacks.export_logs.is_none() {
             return fail(
                 OtelStatus::InvalidConfig,
@@ -250,7 +321,7 @@ pub unsafe extern "C" fn otel_custom_log_exporter_new(
             );
         }
         let exporter = CustomLogExporter {
-            callbacks: *callbacks,
+            callbacks,
             user_data,
             resource: Resource::builder_empty().build(),
             shutdown: RwLock::new(false),
@@ -399,6 +470,140 @@ mod tests {
         let mut exporter = std::ptr::null_mut();
         assert_eq!(
             unsafe { otel_custom_log_exporter_new(&short, raw.cast_mut().cast(), &mut exporter) },
+            OtelStatus::InvalidConfig
+        );
+        assert!(exporter.is_null());
+        assert_eq!(state.destroys.load(Ordering::SeqCst), 0);
+        drop(unsafe { Arc::from_raw(raw) });
+    }
+
+    /// Copy the callback table into an allocation of exactly `prefix_size` bytes, so a read
+    /// past the caller's declared size is a genuine out-of-bounds access that sanitizers and
+    /// Miri can see.
+    fn truncated_table(prefix_size: usize) -> Box<[usize]> {
+        let word = std::mem::size_of::<usize>();
+        assert_eq!(prefix_size % word, 0);
+        let full = callbacks();
+        let words = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(&full).cast::<usize>(),
+                std::mem::size_of::<OtelCustomLogExporterCallbacks>() / word,
+            )
+        };
+        let mut table = words[..prefix_size / word].to_vec();
+        table[0] = prefix_size;
+        table.into_boxed_slice()
+    }
+
+    #[test]
+    fn a_table_ending_after_the_export_callback_is_accepted_and_has_no_optional_members() {
+        let state = State::new();
+        let raw = Arc::into_raw(Arc::clone(&state));
+        let table = truncated_table(REQUIRED_PREFIX_SIZE);
+        let mut exporter = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_custom_log_exporter_new(
+                    table.as_ptr().cast(),
+                    raw.cast_mut().cast(),
+                    &mut exporter,
+                )
+            },
+            OtelStatus::Ok
+        );
+        assert!(!exporter.is_null());
+        unsafe { otel_log_exporter_destroy(exporter) };
+        // Neither optional member was inside the caller's table, so neither may be invoked and
+        // the callback state stays caller-owned for release.
+        assert_eq!(state.shutdowns.load(Ordering::SeqCst), 0);
+        assert_eq!(state.destroys.load(Ordering::SeqCst), 0);
+        drop(unsafe { Arc::from_raw(raw) });
+    }
+
+    #[test]
+    fn a_table_ending_after_shutdown_invokes_shutdown_but_not_state_destroy() {
+        let state = State::new();
+        let raw = Arc::into_raw(Arc::clone(&state));
+        let table = truncated_table(SHUTDOWN_END);
+        let mut exporter = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_custom_log_exporter_new(
+                    table.as_ptr().cast(),
+                    raw.cast_mut().cast(),
+                    &mut exporter,
+                )
+            },
+            OtelStatus::Ok
+        );
+        unsafe { otel_log_exporter_destroy(exporter) };
+        assert_eq!(state.shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(state.destroys.load(Ordering::SeqCst), 0);
+        drop(unsafe { Arc::from_raw(raw) });
+    }
+
+    #[test]
+    fn a_full_table_invokes_every_optional_member() {
+        let state = State::new();
+        let table = truncated_table(STATE_DESTROY_END);
+        assert_eq!(
+            STATE_DESTROY_END,
+            std::mem::size_of::<OtelCustomLogExporterCallbacks>()
+        );
+        let mut exporter = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_custom_log_exporter_new(
+                    table.as_ptr().cast(),
+                    Arc::into_raw(Arc::clone(&state)).cast_mut().cast(),
+                    &mut exporter,
+                )
+            },
+            OtelStatus::Ok
+        );
+        unsafe { otel_log_exporter_destroy(exporter) };
+        assert_eq!(state.shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(state.destroys.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_longer_table_from_a_newer_caller_is_accepted_with_its_tail_ignored() {
+        let state = State::new();
+        let mut table = truncated_table(STATE_DESTROY_END).into_vec();
+        // Members this SDK does not know about must never be read, let alone called.
+        table.push(0xdead_beef);
+        table.push(0xfeed_face);
+        table[0] = table.len() * std::mem::size_of::<usize>();
+        let mut exporter = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_custom_log_exporter_new(
+                    table.as_ptr().cast(),
+                    Arc::into_raw(Arc::clone(&state)).cast_mut().cast(),
+                    &mut exporter,
+                )
+            },
+            OtelStatus::Ok
+        );
+        unsafe { otel_log_exporter_destroy(exporter) };
+        assert_eq!(state.destroys.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_table_shorter_than_the_export_callback_is_rejected() {
+        let state = State::new();
+        let raw = Arc::into_raw(Arc::clone(&state));
+        let mut table = truncated_table(REQUIRED_PREFIX_SIZE);
+        table[0] = REQUIRED_PREFIX_SIZE - 1;
+        let mut exporter = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_custom_log_exporter_new(
+                    table.as_ptr().cast(),
+                    raw.cast_mut().cast(),
+                    &mut exporter,
+                )
+            },
             OtelStatus::InvalidConfig
         );
         assert!(exporter.is_null());
