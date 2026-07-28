@@ -36,6 +36,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "log_exporter_callbacks"
+path = "fuzz_targets/log_exporter_callbacks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "exporter_visitor"
 path = "fuzz_targets/exporter_visitor.rs"
 test = false

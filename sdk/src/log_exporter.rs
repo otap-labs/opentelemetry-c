@@ -13,6 +13,7 @@ use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::logs::{LogBatch, LogExporter};
 use opentelemetry_sdk::Resource;
 
+use crate::custom_log_exporter::CustomLogExporter;
 use crate::handle::{destroy, guard_unit, HasHandleHeader};
 
 #[derive(Debug)]
@@ -23,6 +24,8 @@ pub(crate) enum LogExporterImpl {
     OtlpGrpc(GrpcLogExporter),
     #[cfg(test)]
     InMemory(opentelemetry_sdk::logs::InMemoryLogExporter),
+    /// C callback-backed exporter; always available, so the enum is never uninhabited.
+    Custom(CustomLogExporter),
 }
 
 /// An OTLP/gRPC log exporter bound to the SDK-owned Tokio runtime that drives it.
@@ -77,10 +80,9 @@ impl Drop for GrpcLogExporter {
     }
 }
 
-// Mirrors `TraceExporterImpl`: with every exporter feature disabled the enum is uninhabited,
-// so the trait is implemented in a second, arm-free block instead of adding an unreachable
-// placeholder variant.
-#[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+// Unlike `TraceExporterImpl`, this enum is inhabited in every feature configuration because
+// the custom callback exporter needs no transport feature, so a single unconditional impl is
+// enough and no arm-free fallback block is required.
 impl LogExporter for LogExporterImpl {
     async fn export(&self, batch: LogBatch<'_>) -> OTelSdkResult {
         match self {
@@ -104,6 +106,7 @@ impl LogExporter for LogExporterImpl {
             }
             #[cfg(test)]
             Self::InMemory(exporter) => exporter.export(batch).await,
+            Self::Custom(exporter) => exporter.export(batch),
         }
     }
 
@@ -115,6 +118,7 @@ impl LogExporter for LogExporterImpl {
             Self::OtlpGrpc(exporter) => exporter.exporter().shutdown_with_timeout(timeout),
             #[cfg(test)]
             Self::InMemory(exporter) => exporter.shutdown_with_timeout(timeout),
+            Self::Custom(exporter) => exporter.shutdown(timeout),
         }
     }
 
@@ -126,6 +130,13 @@ impl LogExporter for LogExporterImpl {
             Self::OtlpGrpc(exporter) => exporter.exporter().event_enabled(level, target, name),
             #[cfg(test)]
             Self::InMemory(exporter) => exporter.event_enabled(level, target, name),
+            // No `event_enabled` callback is exposed: the pinned trait's default answer keeps
+            // the C contract to a single export entry point. The bindings keep the arguments
+            // live so the signature compiles with every transport feature disabled too.
+            Self::Custom(_) => {
+                let _ = (level, target, name);
+                true
+            }
         }
     }
 
@@ -141,24 +152,8 @@ impl LogExporter for LogExporterImpl {
             }
             #[cfg(test)]
             Self::InMemory(exporter) => exporter.set_resource(resource),
+            Self::Custom(exporter) => exporter.set_resource(resource),
         }
-    }
-}
-
-#[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc", test)))]
-impl LogExporter for LogExporterImpl {
-    async fn export(&self, _batch: LogBatch<'_>) -> OTelSdkResult {
-        // Uninhabited when no exporter feature is enabled: cannot be constructed or called.
-        match *self {}
-    }
-    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        match *self {}
-    }
-    fn event_enabled(&self, _level: Severity, _target: &str, _name: Option<&str>) -> bool {
-        match *self {}
-    }
-    fn set_resource(&mut self, _resource: &Resource) {
-        match *self {}
     }
 }
 
@@ -171,7 +166,6 @@ pub struct OtelLogExporter {
 }
 
 impl OtelLogExporter {
-    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
     pub(crate) fn new(exporter: LogExporterImpl) -> Self {
         Self {
             header: OtelHandleHeader::new(Self::KIND),

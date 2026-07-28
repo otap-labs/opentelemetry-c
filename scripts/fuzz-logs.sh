@@ -8,6 +8,9 @@ set -euo pipefail
 # within the depth and size budgets *before* any of it is converted. `handle_kinds` covers
 # cross-signal handle confusion, which Logs makes newly interesting because loggers and meters
 # come from entirely separate global slots and are distinguished only by their handle kind tag.
+# `log_exporter_callbacks` covers the opposite direction: the custom exporter hands SDK-owned
+# pointers *out* to C, so it fuzzes the callback table prefix and then asserts, from inside the
+# callback, that the exported view really satisfies its published pool invariants.
 #
 # No fuzz target ever dereferences a fuzzer-supplied address: only lengths, tags, indices, and
 # structure sizes are fuzzed, and every pointer is either NULL or points at a live buffer.
@@ -21,7 +24,7 @@ for value in "$seconds" "$long_seconds"; do
   fi
 done
 
-targets=(logs_records handle_kinds)
+targets=(logs_records handle_kinds log_exporter_callbacks)
 
 cargo +nightly fuzz build
 for target in "${targets[@]}"; do

@@ -15,6 +15,21 @@
   crate. `otel_sdk_logs_force_flush` takes no timeout and there is no batch export-timeout
   setter, because the pinned upstream APIs support neither; see `LOGS_COMPLIANCE.md`.
 
+- C callback-backed Logs exporters (`otel_custom_log_exporter_new`), usable with either the
+  simple or the batch log processor and requiring no OTLP transport feature. The export
+  callback receives a callback-scoped, read-only batch view that reuses `otel_log_value_t` and
+  the same flat node-pool invariants as the emit path, so one traversal routine serves both
+  directions. Conversion is breadth-first, allocation-checked, and enforces the existing
+  `OTEL_LOG_MAX_*` limits plus a record-count limit, failing the export rather than truncating
+  silently; map entries are sorted by key because the pinned map type has no stable iteration
+  order. Callback state transfers on `OTEL_STATUS_OK` only and `state_destroy` runs exactly
+  once, after the last in-flight export callback returns. The callback table is versioned by a
+  required prefix ending at `export_logs`, so tables compiled against older or newer releases
+  are both accepted and members outside the caller's `struct_size` are never read. There is
+  deliberately no force-flush callback, because the pinned `LogExporter` trait has no
+  force-flush operation, and a failing export callback is only observable to the C caller under
+  the batch processor; see `LOGS_COMPLIANCE.md`.
+
 ### Fixed
 
 - SDK builders now bound transferred processors, Metrics readers, views, resource attributes,

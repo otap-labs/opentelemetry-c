@@ -86,6 +86,11 @@ name = "logs_allocations"
 harness = false
 required-features = ["otlp-http"]
 
+# The custom exporter needs no transport feature, so this bench builds in every configuration.
+[[bench]]
+name = "logs_export_conversion"
+harness = false
+
 [features]
 # Default preserves today's experience: the OTLP HTTP/protobuf exporter with OS/platform TLS.
 default = ["native-tls"]

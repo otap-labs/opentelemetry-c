@@ -103,7 +103,8 @@ fn sdk_header_and_example_compile() {
     let tmp = unique_temp_c("sdk");
     std::fs::write(
         &tmp,
-        r#"#include <opentelemetry_c/sdk.h>
+        r#"#include <string.h>
+#include <opentelemetry_c/sdk.h>
 int main(void) {
     otel_sdk_builder_t* b = otel_sdk_builder_new();
     (void)b;
@@ -137,7 +138,8 @@ int main(void) {
     let pipeline = unique_temp_c("pipeline");
     std::fs::write(
         &pipeline,
-        r#"#include <opentelemetry_c/sdk.h>
+        r#"#include <string.h>
+#include <opentelemetry_c/sdk.h>
 #include <opentelemetry_c/trace_exporter.h>
 #include <opentelemetry_c/span_processor.h>
 #include <opentelemetry_c/otlp_trace_exporter.h>
@@ -148,6 +150,24 @@ int main(void) {
 #include <opentelemetry_c/log_exporter.h>
 #include <opentelemetry_c/log_processor.h>
 #include <opentelemetry_c/otlp_log_exporter.h>
+#include <opentelemetry_c/custom_log_exporter.h>
+
+static otel_status_t hdr_export_logs(void* user_data, const otel_log_export_batch_view_t* batch) {
+    (void)user_data;
+    if (batch == NULL || batch->record_count > OTEL_LOG_EXPORT_MAX_RECORDS) {
+        return OTEL_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t i = 0; i < batch->record_count; i++) {
+        const otel_log_export_record_view_t* record = &batch->records[i];
+        if ((record->present_fields & OTEL_LOG_EXPORT_FIELD_BODY) != 0) {
+            (void)record->body.value_type;
+        }
+        (void)record->scope->name;
+        (void)record->value_node_count;
+    }
+    return OTEL_STATUS_OK;
+}
+
 int main(void) {
     otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
     otel_otlp_trace_exporter_builder_set_endpoint(eb, otel_cstr("http://localhost:4318/v1/traces"));
@@ -190,6 +210,15 @@ int main(void) {
     otel_metric_view_builder_build(vb, &view);
     otel_metric_view_builder_destroy(vb);
     otel_sdk_builder_add_metric_view(sb, view);
+
+    /* Callback-backed Logs exporter: constructed and destroyed without being transferred. */
+    otel_custom_log_exporter_callbacks_t log_callbacks;
+    memset(&log_callbacks, 0, sizeof(log_callbacks));
+    log_callbacks.struct_size = sizeof(log_callbacks);
+    log_callbacks.export_logs = hdr_export_logs;
+    otel_log_exporter_t* custom_log_exporter = NULL;
+    otel_custom_log_exporter_new(&log_callbacks, NULL, &custom_log_exporter);
+    otel_log_exporter_destroy(custom_log_exporter);
 
     /* Logs pipeline: OTLP exporter -> batch processor -> SDK builder. */
     otel_otlp_log_exporter_builder_t* leb = otel_otlp_log_exporter_builder_new();
@@ -278,6 +307,10 @@ int main(void) {
             "opentelemetry_c/periodic_metric_reader.h",
         ),
         ("metric_view", "opentelemetry_c/metric_view.h"),
+        (
+            "custom_log_exporter",
+            "opentelemetry_c/custom_log_exporter.h",
+        ),
     ] {
         let standalone = unique_temp_c(label);
         std::fs::write(
@@ -344,6 +377,28 @@ int main(void) {
             "-I".as_ref(),
             sdk_inc.as_os_str(),
             logs_example.as_os_str(),
+        ],
+    );
+
+    let custom_log_exporter_example = manifest().join("examples/c-custom-log-exporter/main.c");
+    assert!(
+        custom_log_exporter_example.exists(),
+        "example missing: {}",
+        custom_log_exporter_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            custom_log_exporter_example.as_os_str(),
         ],
     );
 

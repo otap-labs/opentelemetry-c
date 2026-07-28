@@ -159,5 +159,12 @@ fuzz_target!(|input: Input| {
         let _ = otel_sdk_metrics_shutdown(sdk, 1_000);
         otel_sdk_destroy(sdk);
     }
-    assert_eq!(state.destroys.load(Ordering::Relaxed), 1);
+    let state_destroy_end =
+        std::mem::offset_of!(OtelCustomMetricExporterCallbacks, state_destroy)
+            + std::mem::size_of_val(&callbacks.state_destroy);
+    let expected_destroys = usize::from(callbacks.struct_size >= state_destroy_end);
+    assert_eq!(
+        state.destroys.load(Ordering::Relaxed),
+        expected_destroys
+    );
 });

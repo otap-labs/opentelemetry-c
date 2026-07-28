@@ -160,6 +160,11 @@ otel_status_t otel_metric_batch_visit(const otel_metric_batch_t* batch,
  * On successful construction the SDK owns user_data and invokes state_destroy exactly once,
  * after all exporter callbacks have stopped. On construction failure ownership remains with
  * the caller. force_flush and shutdown are optional; export_metrics is required.
+ *
+ * Set struct_size to sizeof(otel_custom_metric_exporter_callbacks_t) as compiled by the caller
+ * and zero-initialize the structure first. Only struct_size and export_metrics are required.
+ * Optional members are read only when struct_size covers them; absent members behave as NULL.
+ * Longer tables are accepted with their unknown tail ignored. Members are append-only.
  */
 typedef struct otel_custom_metric_exporter_callbacks_t {
     size_t struct_size;
@@ -168,6 +173,14 @@ typedef struct otel_custom_metric_exporter_callbacks_t {
     otel_status_t (*shutdown)(void* user_data, uint64_t timeout_millis);
     void (*state_destroy)(void* user_data);
 } otel_custom_metric_exporter_callbacks_t;
+
+/*
+ * Frozen required prefix: struct_size plus export_metrics. This does not grow when optional
+ * callbacks are appended.
+ */
+#define OTEL_CUSTOM_METRIC_EXPORTER_CALLBACKS_REQUIRED_SIZE \
+    (offsetof(otel_custom_metric_exporter_callbacks_t, export_metrics) + \
+     sizeof(otel_status_t (*)(void*, const otel_metric_batch_t*)))
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
     defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
@@ -185,6 +198,8 @@ _Static_assert(sizeof(otel_metric_visitor_t) == 48,
                "otel_metric_visitor_t ABI mismatch");
 _Static_assert(sizeof(otel_custom_metric_exporter_callbacks_t) == 40,
                "otel_custom_metric_exporter_callbacks_t ABI mismatch");
+_Static_assert(OTEL_CUSTOM_METRIC_EXPORTER_CALLBACKS_REQUIRED_SIZE == 16,
+               "custom metric exporter required-prefix ABI mismatch");
 #endif
 
 /*
