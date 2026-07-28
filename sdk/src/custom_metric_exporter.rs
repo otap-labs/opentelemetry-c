@@ -34,7 +34,78 @@ pub struct OtelCustomMetricExporterCallbacks {
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(std::mem::size_of::<OtelCustomMetricExporterCallbacks>() == 40);
+    assert!(std::mem::align_of::<OtelCustomMetricExporterCallbacks>() == 8);
+    assert!(std::mem::offset_of!(OtelCustomMetricExporterCallbacks, struct_size) == 0);
+    assert!(std::mem::offset_of!(OtelCustomMetricExporterCallbacks, export_metrics) == 8);
+    assert!(std::mem::offset_of!(OtelCustomMetricExporterCallbacks, force_flush) == 16);
+    assert!(std::mem::offset_of!(OtelCustomMetricExporterCallbacks, shutdown) == 24);
+    assert!(std::mem::offset_of!(OtelCustomMetricExporterCallbacks, state_destroy) == 32);
+    assert!(REQUIRED_PREFIX_SIZE == 16);
 };
+
+/// End offset of a member, i.e. the smallest `struct_size` that fully contains it.
+macro_rules! member_end {
+    ($field:ident, $ty:ty) => {
+        std::mem::offset_of!(OtelCustomMetricExporterCallbacks, $field) + std::mem::size_of::<$ty>()
+    };
+}
+
+/// Smallest accepted callback table: `struct_size` plus mandatory `export_metrics`.
+const REQUIRED_PREFIX_SIZE: usize = member_end!(export_metrics, OtelCustomMetricExport);
+const FORCE_FLUSH_END: usize = member_end!(force_flush, OtelCustomMetricForceFlush);
+const SHUTDOWN_END: usize = member_end!(shutdown, OtelCustomMetricShutdown);
+const STATE_DESTROY_END: usize = member_end!(state_destroy, OtelCustomMetricStateDestroy);
+
+/// Copy only callback members covered by the caller's `struct_size`.
+///
+/// # Safety
+///
+/// `callbacks` must address at least `struct_size` readable bytes and `struct_size` must be at
+/// least [`REQUIRED_PREFIX_SIZE`].
+unsafe fn read_callbacks(
+    callbacks: *const OtelCustomMetricExporterCallbacks,
+    struct_size: usize,
+) -> OtelCustomMetricExporterCallbacks {
+    let base = callbacks.cast::<u8>();
+    // SAFETY: every member is read only after `struct_size` proves it is present. Unaligned
+    // reads also support packed or otherwise misaligned caller storage.
+    unsafe {
+        let member = |offset: usize, end: usize| {
+            (struct_size >= end).then(|| base.add(offset).cast::<usize>())
+        };
+        OtelCustomMetricExporterCallbacks {
+            struct_size,
+            export_metrics: std::ptr::read_unaligned(
+                base.add(std::mem::offset_of!(
+                    OtelCustomMetricExporterCallbacks,
+                    export_metrics
+                ))
+                .cast::<OtelCustomMetricExport>(),
+            ),
+            force_flush: member(
+                std::mem::offset_of!(OtelCustomMetricExporterCallbacks, force_flush),
+                FORCE_FLUSH_END,
+            )
+            .and_then(|pointer| {
+                std::ptr::read_unaligned(pointer.cast::<OtelCustomMetricForceFlush>())
+            }),
+            shutdown: member(
+                std::mem::offset_of!(OtelCustomMetricExporterCallbacks, shutdown),
+                SHUTDOWN_END,
+            )
+            .and_then(|pointer| {
+                std::ptr::read_unaligned(pointer.cast::<OtelCustomMetricShutdown>())
+            }),
+            state_destroy: member(
+                std::mem::offset_of!(OtelCustomMetricExporterCallbacks, state_destroy),
+                STATE_DESTROY_END,
+            )
+            .and_then(|pointer| {
+                std::ptr::read_unaligned(pointer.cast::<OtelCustomMetricStateDestroy>())
+            }),
+        }
+    }
+}
 
 pub(crate) struct CustomMetricExporter {
     callbacks: OtelCustomMetricExporterCallbacks,
@@ -197,13 +268,13 @@ pub unsafe extern "C" fn otel_custom_metric_exporter_new(
             );
         }
         let struct_size = unsafe { std::ptr::read_unaligned(callbacks.cast::<usize>()) };
-        if struct_size < std::mem::size_of::<OtelCustomMetricExporterCallbacks>() {
+        if struct_size < REQUIRED_PREFIX_SIZE {
             return fail(
                 OtelStatus::InvalidConfig,
                 "custom metric exporter callback structure is smaller than the required ABI size",
             );
         }
-        let callbacks = unsafe { &*callbacks };
+        let callbacks = unsafe { read_callbacks(callbacks, struct_size) };
         if callbacks.export_metrics.is_none() {
             return fail(
                 OtelStatus::InvalidConfig,
@@ -220,7 +291,7 @@ pub unsafe extern "C" fn otel_custom_metric_exporter_new(
             }
         };
         let exporter = CustomMetricExporter {
-            callbacks: *callbacks,
+            callbacks,
             user_data,
             temporality,
             shutdown: RwLock::new(false),
@@ -258,6 +329,10 @@ mod tests {
         OtelStatus::Ok
     }
 
+    extern "C" fn force_flush_ok(_user_data: *mut c_void) -> OtelStatus {
+        OtelStatus::Ok
+    }
+
     extern "C" fn shutdown_state(user_data: *mut c_void, _timeout_millis: u64) -> OtelStatus {
         let state = unsafe { &*(user_data.cast::<LifecycleState>()) };
         state.shutdowns.fetch_add(1, Ordering::SeqCst);
@@ -277,6 +352,24 @@ mod tests {
             shutdown: Some(shutdown_state),
             state_destroy: Some(destroy_state),
         }
+    }
+
+    /// Copy the callback table into an allocation of exactly `prefix_size` bytes. Any read
+    /// beyond the declared table is therefore a real out-of-bounds access under ASan or Miri.
+    fn truncated_table(prefix_size: usize) -> Box<[usize]> {
+        let word = std::mem::size_of::<usize>();
+        assert_eq!(prefix_size % word, 0);
+        let mut full = callbacks();
+        full.force_flush = Some(force_flush_ok);
+        let words = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(&full).cast::<usize>(),
+                std::mem::size_of::<OtelCustomMetricExporterCallbacks>() / word,
+            )
+        };
+        let mut table = words[..prefix_size / word].to_vec();
+        table[0] = prefix_size;
+        table.into_boxed_slice()
     }
 
     fn wait_for_count(counter: &AtomicUsize, expected: usize) {
@@ -369,6 +462,108 @@ mod tests {
         assert_eq!(
             unsafe {
                 otel_custom_metric_exporter_new(&invalid, raw.cast_mut().cast(), 0, &mut exporter)
+            },
+            OtelStatus::InvalidConfig
+        );
+        assert!(exporter.is_null());
+        assert_eq!(state.destroys.load(Ordering::SeqCst), 0);
+        drop(unsafe { Arc::from_raw(raw) });
+    }
+
+    #[test]
+    fn callback_table_required_prefix_omits_every_optional_member() {
+        let table = truncated_table(REQUIRED_PREFIX_SIZE);
+        let parsed = unsafe { read_callbacks(table.as_ptr().cast(), REQUIRED_PREFIX_SIZE) };
+        assert!(parsed.export_metrics.is_some());
+        assert!(parsed.force_flush.is_none());
+        assert!(parsed.shutdown.is_none());
+        assert!(parsed.state_destroy.is_none());
+    }
+
+    #[test]
+    fn constructor_accepts_the_required_prefix_without_taking_optional_callbacks() {
+        let state = Arc::new(LifecycleState {
+            shutdowns: AtomicUsize::new(0),
+            destroys: AtomicUsize::new(0),
+            shutdown_status: OtelStatus::Ok,
+        });
+        let raw = Arc::into_raw(Arc::clone(&state));
+        let table = truncated_table(REQUIRED_PREFIX_SIZE);
+        let mut exporter = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_custom_metric_exporter_new(
+                    table.as_ptr().cast(),
+                    raw.cast_mut().cast(),
+                    0,
+                    &mut exporter,
+                )
+            },
+            OtelStatus::Ok
+        );
+        unsafe { otel_metric_exporter_destroy(exporter) };
+        assert_eq!(state.shutdowns.load(Ordering::SeqCst), 0);
+        assert_eq!(state.destroys.load(Ordering::SeqCst), 0);
+        drop(unsafe { Arc::from_raw(raw) });
+    }
+
+    #[test]
+    fn callback_table_force_flush_prefix_reads_only_force_flush() {
+        let table = truncated_table(FORCE_FLUSH_END);
+        let parsed = unsafe { read_callbacks(table.as_ptr().cast(), FORCE_FLUSH_END) };
+        assert!(parsed.export_metrics.is_some());
+        assert!(parsed.force_flush.is_some());
+        assert!(parsed.shutdown.is_none());
+        assert!(parsed.state_destroy.is_none());
+    }
+
+    #[test]
+    fn callback_table_shutdown_prefix_reads_through_shutdown() {
+        let table = truncated_table(SHUTDOWN_END);
+        let parsed = unsafe { read_callbacks(table.as_ptr().cast(), SHUTDOWN_END) };
+        assert!(parsed.export_metrics.is_some());
+        assert!(parsed.force_flush.is_some());
+        assert!(parsed.shutdown.is_some());
+        assert!(parsed.state_destroy.is_none());
+    }
+
+    #[test]
+    fn callback_table_full_and_longer_sizes_are_accepted() {
+        let full = truncated_table(STATE_DESTROY_END);
+        let parsed = unsafe { read_callbacks(full.as_ptr().cast(), STATE_DESTROY_END) };
+        assert!(parsed.state_destroy.is_some());
+
+        let mut longer = full.into_vec();
+        longer.push(0xdead_beef);
+        longer.push(0xfeed_face);
+        let longer_size = longer.len() * std::mem::size_of::<usize>();
+        longer[0] = longer_size;
+        let parsed = unsafe { read_callbacks(longer.as_ptr().cast(), longer_size) };
+        assert!(parsed.export_metrics.is_some());
+        assert!(parsed.force_flush.is_some());
+        assert!(parsed.shutdown.is_some());
+        assert!(parsed.state_destroy.is_some());
+    }
+
+    #[test]
+    fn constructor_rejects_a_table_shorter_than_the_required_prefix() {
+        let state = Arc::new(LifecycleState {
+            shutdowns: AtomicUsize::new(0),
+            destroys: AtomicUsize::new(0),
+            shutdown_status: OtelStatus::Ok,
+        });
+        let raw = Arc::into_raw(Arc::clone(&state));
+        let mut table = truncated_table(REQUIRED_PREFIX_SIZE);
+        table[0] = REQUIRED_PREFIX_SIZE - 1;
+        let mut exporter = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                otel_custom_metric_exporter_new(
+                    table.as_ptr().cast(),
+                    raw.cast_mut().cast(),
+                    0,
+                    &mut exporter,
+                )
             },
             OtelStatus::InvalidConfig
         );
