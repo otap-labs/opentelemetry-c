@@ -33,3 +33,25 @@ LOGS_FUZZ_SECONDS=10 scripts/fuzz-logs.sh
 For a longer VM session, set `METRICS_FUZZ_LONG_SECONDS` or `LOGS_FUZZ_LONG_SECONDS`; the
 highest-risk targets receive the additional run. Inputs are capped at 4096 bytes and RSS at 2 GiB.
 Preserve only minimized, reviewable regression inputs under version control.
+
+## Continuous fuzzing
+
+The ordinary `fuzz-build` CI job compiles every target but does not execute a
+fuzzing campaign. ClusterFuzzLite adds two bounded AddressSanitizer campaigns:
+
+- `clusterfuzzlite-pr.yml` runs five minutes of code-change fuzzing for each
+  pull request and reports a reproducible crash as a failed check with its
+  testcase attached.
+- `clusterfuzzlite-batch.yml` runs a 30-minute, parallel batch campaign once a
+  week and can also be started manually.
+
+Both workflows use standard public-repository GitHub-hosted runners and require
+no repository secret or external corpus store. They intentionally start without
+persistent corpus storage; once the workflows are proven stable, a dedicated
+storage repository can be added so batch discoveries seed later pull-request
+campaigns.
+
+The integration files under `.clusterfuzzlite/` also make the repository ready
+for the same containerized build model used by OSS-Fuzz. Full OSS-Fuzz
+enrollment is a separate request in the `google/oss-fuzz` repository and is not
+implied by these workflows.

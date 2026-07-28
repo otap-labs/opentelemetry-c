@@ -451,12 +451,22 @@ pub unsafe extern "C" fn otel_otlp_log_exporter_builder_build(
             Some(builder) => builder,
             None => return OtelStatus::InvalidArgument,
         };
-        let exporter = match build_exporter(&builder.config) {
-            Ok(exporter) => exporter,
-            Err(status) => return status,
-        };
-        unsafe { *out = into_raw(OtelLogExporter::new(exporter)) };
-        OtelStatus::Ok
+        #[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
+        {
+            let exporter = match build_exporter(&builder.config) {
+                Ok(exporter) => exporter,
+                Err(status) => return status,
+            };
+            unsafe { *out = into_raw(OtelLogExporter::new(exporter)) };
+            OtelStatus::Ok
+        }
+        #[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc", test)))]
+        {
+            match build_exporter(&builder.config) {
+                Err(status) => status,
+                Ok(exporter) => match exporter {},
+            }
+        }
     })
 }
 

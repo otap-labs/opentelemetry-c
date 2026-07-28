@@ -236,12 +236,22 @@ pub unsafe extern "C" fn otel_otlp_trace_exporter_builder_build(
             Some(b) => b,
             None => return OtelStatus::InvalidArgument,
         };
-        let exporter = match build_trace_exporter(&builder.config) {
-            Ok(e) => e,
-            Err(status) => return status,
-        };
-        unsafe { *out = into_raw(OtelTraceExporter::new(exporter)) };
-        OtelStatus::Ok
+        #[cfg(any(feature = "otlp-http", test))]
+        {
+            let exporter = match build_trace_exporter(&builder.config) {
+                Ok(e) => e,
+                Err(status) => return status,
+            };
+            unsafe { *out = into_raw(OtelTraceExporter::new(exporter)) };
+            OtelStatus::Ok
+        }
+        #[cfg(not(any(feature = "otlp-http", test)))]
+        {
+            match build_trace_exporter(&builder.config) {
+                Err(status) => status,
+                Ok(exporter) => match exporter {},
+            }
+        }
     })
 }
 
