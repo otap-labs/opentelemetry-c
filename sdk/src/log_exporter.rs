@@ -166,7 +166,6 @@ pub struct OtelLogExporter {
 }
 
 impl OtelLogExporter {
-    #[cfg(any(feature = "otlp-http", feature = "otlp-grpc", test))]
     pub(crate) fn new(exporter: LogExporterImpl) -> Self {
         Self {
             header: OtelHandleHeader::new(Self::KIND),

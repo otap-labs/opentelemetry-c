@@ -464,7 +464,10 @@ pub unsafe extern "C" fn otel_otlp_log_exporter_builder_build(
         {
             match build_exporter(&builder.config) {
                 Err(status) => status,
-                Ok(exporter) => match exporter {},
+                Ok(_) => fail(
+                    OtelStatus::InternalError,
+                    "OTLP Logs exporter was built without an enabled transport feature",
+                ),
             }
         }
     })
