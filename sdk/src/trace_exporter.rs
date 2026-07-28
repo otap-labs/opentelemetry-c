@@ -80,6 +80,7 @@ pub struct OtelTraceExporter {
 }
 
 impl OtelTraceExporter {
+    #[cfg(any(feature = "otlp-http", test))]
     pub(crate) fn new(exporter: TraceExporterImpl) -> Self {
         OtelTraceExporter {
             header: OtelHandleHeader::new(Self::KIND),
