@@ -58,6 +58,21 @@ general-purpose end-user logging API.
   substituted. With a batch processor the accompanying last-error diagnostic is recorded on
   the processor's worker thread, so it is not visible to the C caller.
 
+- **A failing custom export callback is not observable through the C API with the simple
+  processor.** `SimpleLogProcessor::emit` consumes and internally reports the export error, and
+  its force-flush always succeeds, so only the batch processor surfaces an export failure as
+  `OTEL_STATUS_EXPORT_FAILED` at the force-flush/shutdown boundary. A callback that must report
+  failures to the application has to record them in its own state.
+
+- **A custom exporter callback must not unwind.** An exception or panic escaping an
+  `extern "C"` callback terminates the process before the SDK can intercept it; the internal
+  `catch_unwind` is defensive residue, not a guarantee callers may rely on.
+
+- **The custom exporter callback table is versioned by a required prefix.** Only `struct_size`
+  and `export_logs` are required, so a table compiled against an older release stays valid when
+  the structure grows, and a longer table from a newer application is accepted with its unknown
+  tail ignored. Members outside the caller's `struct_size` are never read and behave as NULL.
+
 - **Exported map keys are reproduced verbatim.** Unlike the emit path, which rejects empty and
   duplicate map keys, the export path never rewrites legal upstream data. Map entries are
   sorted by key so exports are deterministic, since the pinned map type is a `HashMap`.

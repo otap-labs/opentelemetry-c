@@ -23,9 +23,12 @@
   `OTEL_LOG_MAX_*` limits plus a record-count limit, failing the export rather than truncating
   silently; map entries are sorted by key because the pinned map type has no stable iteration
   order. Callback state transfers on `OTEL_STATUS_OK` only and `state_destroy` runs exactly
-  once, after the last in-flight export callback returns. There is deliberately no force-flush
-  callback, because the pinned `LogExporter` trait has no force-flush operation; see
-  `LOGS_COMPLIANCE.md`.
+  once, after the last in-flight export callback returns. The callback table is versioned by a
+  required prefix ending at `export_logs`, so tables compiled against older or newer releases
+  are both accepted and members outside the caller's `struct_size` are never read. There is
+  deliberately no force-flush callback, because the pinned `LogExporter` trait has no
+  force-flush operation, and a failing export callback is only observable to the C caller under
+  the batch processor; see `LOGS_COMPLIANCE.md`.
 
 ### Fixed
 
