@@ -343,7 +343,13 @@ fuzz_target!(|input: Input| {
         let _ = otel_sdk_logs_shutdown(sdk, 1_000);
         otel_sdk_destroy(sdk);
     }
-    if input.include_destroy {
-        assert_eq!(state.destroys.load(Ordering::Relaxed), 1);
-    }
+    let state_destroy_end =
+        std::mem::offset_of!(OtelCustomLogExporterCallbacks, state_destroy)
+            + std::mem::size_of_val(&callbacks.state_destroy);
+    let expected_destroys =
+        usize::from(input.include_destroy && callbacks.struct_size >= state_destroy_end);
+    assert_eq!(
+        state.destroys.load(Ordering::Relaxed),
+        expected_destroys
+    );
 });
