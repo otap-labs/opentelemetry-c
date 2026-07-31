@@ -14,15 +14,16 @@ use std::os::raw::{c_char, c_void};
 
 use opentelemetry_c_abi::{
     OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelStatus, OtelStringView,
-    OTEL_IMPL_VTABLE_REQUIRED_SIZE,
+    OTEL_IMPL_VTABLE_REQUIRED_SIZE, OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE,
 };
 
 use opentelemetry_c_api::{
     otel_api_provider_new, otel_api_set_last_error, otel_global_tracer_provider,
     otel_last_error_message, otel_span_context_destroy, otel_span_destroy, otel_span_end,
     otel_span_get_context, otel_tracer_destroy, otel_tracer_provider_destroy,
-    otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_with_context,
-    OtelSpan, OtelSpanContext, OtelSpanStartOptions,
+    otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_ex,
+    otel_tracer_start_span_with_context, OtelSpan, OtelSpanContext, OtelSpanStartOptions,
+    OtelSpanStartOptionsEx,
 };
 
 // ---- A minimal backed vtable that validates the name like the real SDK ----
@@ -141,6 +142,16 @@ extern "C" fn vt_start_with_context(
 ) -> *mut c_void {
     std::ptr::null_mut()
 }
+extern "C" fn vt_start_span_ex(
+    _c: *mut c_void,
+    name: OtelStringView,
+    _cfg: *const opentelemetry_c_abi::OtelSpanStartConfig,
+) -> *mut c_void {
+    if !name_is_valid(name) {
+        return std::ptr::null_mut();
+    }
+    dummy()
+}
 extern "C" fn vt_span_context_skip(
     _c: *mut c_void,
     _visitor: opentelemetry_c_abi::OtelSpanContextVisitor,
@@ -168,6 +179,7 @@ static BACKED_VTABLE: OtelImplVtable = OtelImplVtable {
     span_free: vt_span_free,
     span_context_visit: vt_span_context_visit,
     tracer_start_span_with_context: vt_start_with_context,
+    tracer_start_span_ex: vt_start_span_ex,
 };
 
 fn good(s: &'static str) -> OtelStringView {
@@ -374,6 +386,104 @@ fn no_sdk_path_returns_noop_handles() {
         otel_span_destroy(child);
         otel_span_end(span);
         otel_span_destroy(span);
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+}
+
+fn opts_ex() -> OtelSpanStartOptionsEx {
+    OtelSpanStartOptionsEx {
+        struct_size: std::mem::size_of::<OtelSpanStartOptionsEx>(),
+        kind: 0,
+        reserved: 0,
+        parent: std::ptr::null(),
+        parent_context: std::ptr::null(),
+        start_time_unix_nanos: 0,
+        attributes: std::ptr::null(),
+        attribute_count: 0,
+        links: std::ptr::null(),
+        link_count: 0,
+    }
+}
+
+#[test]
+fn start_span_ex_noop_tracer_returns_noop_span() {
+    // An unbacked (no-SDK) tracer must yield a valid no-op span and set no error.
+    let provider = otel_global_tracer_provider();
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("instr"), empty(), empty()) };
+    let opts = opts_ex();
+    let span: *mut OtelSpan = unsafe { otel_tracer_start_span_ex(tracer, good("ex"), &opts) };
+    assert!(!span.is_null(), "no-op start_span_ex must return a span");
+    assert!(!last_error_is_set());
+    unsafe {
+        otel_span_end(span);
+        otel_span_destroy(span);
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+}
+
+#[test]
+fn start_span_ex_backed_success_and_validation() {
+    let provider = backed_provider();
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("instr"), empty(), empty()) };
+
+    // Success on a backed tracer that supports the extended entry.
+    let opts = opts_ex();
+    let span = unsafe { otel_tracer_start_span_ex(tracer, good("ex"), &opts) };
+    assert!(!span.is_null(), "backed start_span_ex must succeed");
+    unsafe {
+        otel_span_end(span);
+        otel_span_destroy(span);
+    }
+
+    // NULL options are rejected.
+    assert!(unsafe { otel_tracer_start_span_ex(tracer, good("ex"), std::ptr::null()) }.is_null());
+
+    // struct_size below the required minimum is rejected.
+    let mut small = opts_ex();
+    small.struct_size = 8;
+    assert!(unsafe { otel_tracer_start_span_ex(tracer, good("ex"), &small) }.is_null());
+
+    // Non-zero reserved is rejected.
+    let mut bad_reserved = opts_ex();
+    bad_reserved.reserved = 1;
+    assert!(unsafe { otel_tracer_start_span_ex(tracer, good("ex"), &bad_reserved) }.is_null());
+
+    // A live parent and a context parent are mutually exclusive.
+    let live = unsafe { otel_tracer_start_span(tracer, good("p"), std::ptr::null()) };
+    let mut ctx: *mut OtelSpanContext = std::ptr::null_mut();
+    let _ = unsafe { otel_span_get_context(live, &mut ctx) };
+    let mut both = opts_ex();
+    both.parent = live;
+    both.parent_context = ctx;
+    assert!(unsafe { otel_tracer_start_span_ex(tracer, good("ex"), &both) }.is_null());
+
+    unsafe {
+        otel_span_context_destroy(ctx);
+        otel_span_end(live);
+        otel_span_destroy(live);
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+}
+
+#[test]
+fn start_span_ex_requires_ex_support() {
+    // A backed vtable whose struct_size predates the extended entry must fail closed.
+    let legacy_vtable = OtelImplVtable {
+        struct_size: OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE,
+        ..BACKED_VTABLE
+    };
+    let provider = unsafe { otel_api_provider_new(&legacy_vtable, dummy()) };
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("legacy"), empty(), empty()) };
+    let opts = opts_ex();
+    assert!(unsafe { otel_tracer_start_span_ex(tracer, good("ex"), &opts) }.is_null());
+    assert!(last_error().contains("does not support extended span start"));
+    unsafe {
         otel_tracer_destroy(tracer);
         otel_tracer_provider_destroy(provider);
     }

@@ -4,6 +4,15 @@
 
 ### Added
 
+- Extended span start: `otel_tracer_start_span_ex` accepts a versioned
+  `otel_span_start_options_ex_t` (a `struct_size`-first descriptor) carrying span links
+  (`otel_span_link_t`: a borrowed `otel_span_context_t` plus optional link attributes), an
+  explicit start timestamp (`start_time_unix_nanos`, 0 = unset), initial span attributes, and a
+  single parenting source (`parent` or `parent_context`, mutually exclusive). Optional fields
+  are read only when `struct_size` covers them, so older and newer headers interoperate; unknown
+  tail fields are ignored. A backed implementation predating this entry fails closed with
+  `OTEL_STATUS_INVALID_CONFIG`; an unbacked tracer returns a valid no-op span. See
+  `TRACES_COMPLIANCE.md`.
 - W3C Trace Context propagation: a bounded, direct API operating on the immutable
   `otel_span_context_t` (no SDK, vtable, or global state). `otel_trace_propagation_extract`
   parses a `traceparent` plus optional `tracestate` into a new owned **remote** context;

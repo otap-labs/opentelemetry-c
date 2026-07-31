@@ -19,18 +19,19 @@ use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::str::FromStr;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::trace::{
-    Span, SpanContext, SpanId, SpanKind, Status, TraceContextExt, TraceFlags, TraceId, TraceState,
-    Tracer, TracerProvider,
+    Link, Span, SpanContext, SpanId, SpanKind, Status, TraceContextExt, TraceFlags, TraceId,
+    TraceState, Tracer, TracerProvider,
 };
 use opentelemetry::{Context, InstrumentationScope, Key, KeyValue, StringValue, Value};
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider, Span as SdkOtelSpan};
 
 use opentelemetry_c_abi::{
     OtelAttributeType, OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelSpanKind,
-    OtelSpanStatusCode, OtelStatus, OtelStringView, OTEL_TRACE_IMPL_ABI_VERSION,
+    OtelSpanStartConfig, OtelSpanStatusCode, OtelStatus, OtelStringView,
+    OTEL_TRACE_IMPL_ABI_VERSION,
 };
 
 use crate::error::{fail, fail_abi};
@@ -427,6 +428,179 @@ extern "C" fn vt_tracer_start_span_with_context(
     })
 }
 
+// ---- Extended span-start helpers ------------------------------------------
+
+fn span_kind_from_u32(kind: u32) -> SpanKind {
+    match OtelSpanKind::from_u32(kind).unwrap_or(OtelSpanKind::Internal) {
+        OtelSpanKind::Internal => SpanKind::Internal,
+        OtelSpanKind::Server => SpanKind::Server,
+        OtelSpanKind::Client => SpanKind::Client,
+        OtelSpanKind::Producer => SpanKind::Producer,
+        OtelSpanKind::Consumer => SpanKind::Consumer,
+    }
+}
+
+/// Reconstruct an SDK [`SpanContext`] from a borrowed view. Validates reserved bytes and
+/// tracestate grammar.
+///
+/// # Safety
+/// `view` must be a valid borrowed [`OtelSpanContextView`] for the call.
+unsafe fn span_context_from_view(view: &OtelSpanContextView) -> Result<SpanContext, OtelStatus> {
+    if view.reserved != [0; 3] {
+        return Err(fail(
+            OtelStatus::InvalidArgument,
+            "span context reserved bytes must be zero",
+        ));
+    }
+    let trace_state = match unsafe { view.trace_state.as_str() }
+        .ok()
+        .and_then(|value| TraceState::from_str(value).ok())
+    {
+        Some(value) => value,
+        None => {
+            return Err(fail(
+                OtelStatus::InvalidConfig,
+                "span context trace state is invalid",
+            ))
+        }
+    };
+    Ok(SpanContext::new(
+        TraceId::from_bytes(view.trace_id),
+        SpanId::from_bytes(view.span_id),
+        TraceFlags::new(view.trace_flags),
+        view.is_remote != 0,
+        trace_state,
+    ))
+}
+
+/// Start a span from a forward-only [`OtelSpanStartConfig`] descriptor: links, an explicit
+/// start timestamp, initial attributes, and a single parenting source.
+extern "C" fn vt_tracer_start_span_ex(
+    ctx: *mut c_void,
+    name: OtelStringView,
+    config: *const OtelSpanStartConfig,
+) -> *mut c_void {
+    guard_ptr(|| {
+        if ctx.is_null() || config.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "tracer context and config must not be NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        // SAFETY: the API supplies a borrowed descriptor valid for this call.
+        let config = unsafe { &*config };
+        if config.reserved != 0 {
+            fail(
+                OtelStatus::InvalidArgument,
+                "reserved field in span-start config must be zero",
+            );
+            return std::ptr::null_mut();
+        }
+        if !config.parent_span_ctx.is_null() && !config.parent_context.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "live parent and context parent are mutually exclusive",
+            );
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `ctx` is a live tracer context produced by this crate.
+        let tracer = unsafe { &*(ctx as *const SdkTracer) };
+        // SAFETY: string view satisfies the ABI contract.
+        let name = match unsafe { name.to_string_strict() } {
+            Ok(name) => name,
+            Err(error) => {
+                fail_abi(error);
+                return std::ptr::null_mut();
+            }
+        };
+
+        let attributes =
+            match unsafe { collect_key_values(config.attributes, config.attribute_count) } {
+                Ok(attrs) => attrs,
+                Err(_) => return std::ptr::null_mut(),
+            };
+
+        // Convert links.
+        let mut links: Vec<Link> = Vec::new();
+        if config.link_count != 0 {
+            if config.links.is_null() {
+                fail(
+                    OtelStatus::InvalidArgument,
+                    "link array is NULL with a non-zero count",
+                );
+                return std::ptr::null_mut();
+            }
+            if links.try_reserve(config.link_count).is_err() {
+                fail(
+                    OtelStatus::InternalError,
+                    "failed to allocate space for links",
+                );
+                return std::ptr::null_mut();
+            }
+            // SAFETY: non-NULL with `link_count` valid elements per the ABI contract.
+            let link_slice = unsafe { std::slice::from_raw_parts(config.links, config.link_count) };
+            for link in link_slice {
+                let span_context = match unsafe { span_context_from_view(&link.context) } {
+                    Ok(sc) if sc.is_valid() => sc,
+                    Ok(_) => {
+                        fail(OtelStatus::InvalidArgument, "link span context is invalid");
+                        return std::ptr::null_mut();
+                    }
+                    Err(_) => return std::ptr::null_mut(),
+                };
+                let link_attrs =
+                    match unsafe { collect_key_values(link.attributes, link.attribute_count) } {
+                        Ok(attrs) => attrs,
+                        Err(_) => return std::ptr::null_mut(),
+                    };
+                links.push(Link::new(span_context, link_attrs, 0));
+            }
+        }
+
+        let mut builder = tracer
+            .span_builder(name)
+            .with_kind(span_kind_from_u32(config.kind));
+        if !attributes.is_empty() {
+            builder = builder.with_attributes(attributes);
+        }
+        if !links.is_empty() {
+            builder = builder.with_links(links);
+        }
+        if config.start_time_unix_nanos != 0 {
+            let start = UNIX_EPOCH + Duration::from_nanos(config.start_time_unix_nanos);
+            builder = builder.with_start_time(start);
+        }
+
+        // Resolve the parenting source.
+        let cx = if !config.parent_span_ctx.is_null() {
+            // SAFETY: a live parent produced by THIS vtable.
+            let parent = unsafe { &*(config.parent_span_ctx as *const SdkSpan) };
+            Context::new().with_span(LocalParentSpan::new(parent.span.span_context()))
+        } else if !config.parent_context.is_null() {
+            // SAFETY: borrowed view valid for the call.
+            let view = unsafe { &*config.parent_context };
+            let parent = match unsafe { span_context_from_view(view) } {
+                Ok(sc) if sc.is_valid() => sc,
+                Ok(_) => {
+                    fail(
+                        OtelStatus::InvalidArgument,
+                        "parent span context is invalid",
+                    );
+                    return std::ptr::null_mut();
+                }
+                Err(_) => return std::ptr::null_mut(),
+            };
+            Context::new().with_span(LocalParentSpan::new(&parent))
+        } else {
+            Context::new()
+        };
+
+        let span = tracer.build_with_context(builder, &cx);
+        Box::into_raw(Box::new(SdkSpan { span })) as *mut c_void
+    })
+}
+
 extern "C" fn vt_tracer_free(ctx: *mut c_void) {
     guard_unit(|| {
         if !ctx.is_null() {
@@ -624,6 +798,7 @@ pub(crate) static SDK_VTABLE: OtelImplVtable = OtelImplVtable {
     span_free: vt_span_free,
     span_context_visit: vt_span_context_visit,
     tracer_start_span_with_context: vt_tracer_start_span_with_context,
+    tracer_start_span_ex: vt_tracer_start_span_ex,
 };
 
 /// Pointer to the SDK vtable (installed via the API registration ABI).
@@ -951,5 +1126,130 @@ mod tests {
             unsafe { collect_key_values(&invalid_string, 1) }.unwrap_err(),
             OtelStatus::InvalidUtf8
         );
+    }
+
+    /// `vt_tracer_start_span_ex` must forward links, an explicit start time, initial
+    /// attributes, and a context parent into the exported span data.
+    #[test]
+    fn vtable_start_span_ex_links_start_time_and_attributes() {
+        use opentelemetry_c_abi::{OtelAttributeValue, OtelSpanLinkView};
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let vt = &SDK_VTABLE;
+        let pctx = provider_ctx(provider);
+        let tctx = (vt.provider_get_tracer)(pctx, sv("scope"), empty(), empty());
+
+        // A remote parent context and a distinct linked context.
+        let parent_view = OtelSpanContextView {
+            trace_id: [0x11; 16],
+            span_id: [0x22; 8],
+            trace_flags: 0x01,
+            reserved: [0; 3],
+            is_remote: 1,
+            trace_state: sv("vendor=parent"),
+        };
+        let link_view = OtelSpanContextView {
+            trace_id: [0x33; 16],
+            span_id: [0x44; 8],
+            trace_flags: 0x01,
+            reserved: [0; 3],
+            is_remote: 1,
+            trace_state: sv("vendor=link"),
+        };
+        let link_attr = OtelKeyValue {
+            key: sv("link.attr"),
+            value_type: 0,
+            value: OtelAttributeValue {
+                string_value: sv("lv"),
+            },
+        };
+        let link = OtelSpanLinkView {
+            context: link_view,
+            attributes: &link_attr,
+            attribute_count: 1,
+        };
+        let span_attr = OtelKeyValue {
+            key: sv("span.attr"),
+            value_type: 2,
+            value: OtelAttributeValue { int64_value: 99 },
+        };
+        let start_nanos: u64 = 1_700_000_000_000_000_000;
+        let config = OtelSpanStartConfig {
+            kind: 2, // Client
+            reserved: 0,
+            parent_span_ctx: std::ptr::null_mut(),
+            parent_context: &parent_view,
+            start_time_unix_nanos: start_nanos,
+            attributes: &span_attr,
+            attribute_count: 1,
+            links: &link,
+            link_count: 1,
+        };
+
+        let span = (vt.tracer_start_span_ex)(tctx, sv("ex"), &config);
+        assert!(!span.is_null());
+        (vt.span_end)(span);
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let data = spans.iter().find(|s| s.name == "ex").expect("ex span");
+        // Parent context is honored (trace id + parent span id + remote).
+        assert_eq!(data.span_context.trace_id().to_bytes(), [0x11; 16]);
+        assert_eq!(data.parent_span_id.to_bytes(), [0x22; 8]);
+        assert!(data.parent_span_is_remote);
+        assert_eq!(data.span_kind, SpanKind::Client);
+        // Explicit start time forwarded exactly.
+        assert_eq!(
+            data.start_time,
+            UNIX_EPOCH + Duration::from_nanos(start_nanos)
+        );
+        // Initial attribute present.
+        assert!(data
+            .attributes
+            .iter()
+            .any(|kv| kv.key.as_str() == "span.attr"));
+        // Link present with its context and attribute.
+        assert_eq!(data.links.iter().count(), 1);
+        let exported_link = data.links.iter().next().unwrap();
+        assert_eq!(exported_link.span_context.trace_id().to_bytes(), [0x33; 16]);
+        assert_eq!(exported_link.span_context.span_id().to_bytes(), [0x44; 8]);
+        assert!(exported_link
+            .attributes
+            .iter()
+            .any(|kv| kv.key.as_str() == "link.attr"));
+
+        (vt.span_free)(span);
+        (vt.tracer_free)(tctx);
+        (vt.provider_free)(pctx);
+    }
+
+    /// A non-zero `reserved` field and dual parents must be rejected by the SDK entry.
+    #[test]
+    fn vtable_start_span_ex_rejects_invalid_config() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let vt = &SDK_VTABLE;
+        let pctx = provider_ctx(provider);
+        let tctx = (vt.provider_get_tracer)(pctx, sv("scope"), empty(), empty());
+
+        let bad_reserved = OtelSpanStartConfig {
+            kind: 0,
+            reserved: 1,
+            parent_span_ctx: std::ptr::null_mut(),
+            parent_context: std::ptr::null(),
+            start_time_unix_nanos: 0,
+            attributes: std::ptr::null(),
+            attribute_count: 0,
+            links: std::ptr::null(),
+            link_count: 0,
+        };
+        assert!((vt.tracer_start_span_ex)(tctx, sv("x"), &bad_reserved).is_null());
+
+        (vt.tracer_free)(tctx);
+        (vt.provider_free)(pctx);
     }
 }

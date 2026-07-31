@@ -58,3 +58,10 @@ bench = false
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "span_start_ex"
+path = "fuzz_targets/span_start_ex.rs"
+test = false
+doc = false
+bench = false

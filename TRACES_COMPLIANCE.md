@@ -24,9 +24,9 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Immutable SpanContext snapshot | Implemented | `otel_span_get_context` copies a live SDK-backed span's context into an API-owned handle; `clone`/`destroy` supported. Shared in-process by Traces and Logs. |
 | SpanContext value operations | Implemented | Validity, 16-byte trace ID, 8-byte span ID, opaque `uint8_t` trace flags, `is_remote`, borrowed tracestate view, and construction from raw parts. Reserved/unknown trace-flag bits are preserved opaque. See "SpanContext value API" below. |
 | W3C Trace Context propagation | Implemented | Bounded direct `traceparent`/`tracestate` extract and inject (`otel_trace_propagation_*`); remote=true preserved on extraction; malformed length/separators/IDs, version `ff`, uppercase hex, forbidden trailing data, and malformed tracestate rejected. Baggage deferred (see below). |
-| Span links | Planned | Links carrying an immutable `SpanContext` plus copied scalar attributes, via versioned span-start options. |
-| Explicit start timestamp | Planned | Explicit Unix-nanosecond span start where the pinned Rust `SpanBuilder` permits. |
-| Versioned span-start options | Planned | `struct_size`-gated span-start descriptor carrying kind, initial attributes, links, and start timestamp; older callers preserved. |
+| Span links | Implemented | `otel_span_link_t` (immutable `SpanContext` plus optional borrowed attributes) attached through the versioned `otel_tracer_start_span_ex` descriptor; links reach exported span data with their trace/span IDs, flags, tracestate, remoteness, and attributes. |
+| Explicit start timestamp | Implemented | `start_time_unix_nanos` on `otel_span_start_options_ex_t` forwarded to `SpanBuilder::with_start_time`; 0 = unset (SDK assigns the current time). |
+| Versioned span-start options | Implemented | `otel_span_start_options_ex_t` is a `struct_size`-first descriptor carrying kind, a single parenting source, initial attributes, links, and a start timestamp; optional fields read only when `struct_size` covers them, so older/newer callers interoperate. Gated on the appended `tracer_start_span_ex` vtable entry (`OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE`); pre-extension backed implementations fail closed with `INVALID_CONFIG`. |
 | Array-valued span attributes | Deferred | See "Deliberate limitations". |
 | Built-in samplers | Planned | `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased`, `ParentBased` with a configurable root sampler. Custom sampler callbacks deferred. |
 | Span limits | Planned | Max attributes/events/links per span and per-event/per-link attributes; spec defaults; overflow rejected. |
@@ -40,7 +40,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Hot path | Implemented | SDK-backed handles own concrete Rust objects; span operations dispatch through the per-handle vtable with no global lookup, lock, or pipeline allocation. |
 | ABI compatibility | Implemented | Append-only trace vtable with `abi_version` + `struct_size` prefix checks; each optional capability gated on the offset of its final required field; frozen size boundaries asserted at compile time. |
 | Status/error policy | Implemented | Signal-independent status classification and thread-local last-error diagnostics. |
-| Resource bounds | Implemented (partial) | SDK builders bound span-processor and resource-attribute counts. Link/attribute-per-span bounds land with Phases 4 and 6. |
+| Resource bounds | Implemented (partial) | SDK builders bound span-processor and resource-attribute counts; `otel_tracer_start_span_ex` bounds link and attribute counts before allocation. Per-span attribute/event/link limits configuration lands with Phase 6. |
 
 ## SpanContext value API
 
@@ -125,10 +125,10 @@ Trace context and propagation:
 - [x] First propagation API avoids long-lived borrowed C memory / unconstrained callbacks (bounded direct API).
 
 Span creation and data:
-- [ ] Span links with attributes (Phase 4).
+- [x] Span links with attributes (`otel_span_link_t` via `otel_tracer_start_span_ex`).
 - [x] Array-valued attributes: deferred with rationale + follow-up (above).
-- [ ] Explicit start timestamp and other stable `SpanBuilder` fields (Phase 4).
-- [ ] Ended-span/no-op consistency for every new operation (validated per phase).
+- [x] Explicit start timestamp and other stable `SpanBuilder` fields (`start_time_unix_nanos`; kind/attributes/links via the versioned descriptor).
+- [x] Ended-span/no-op consistency for the extended span-start path (no-op tracer returns a valid span; pre-extension backed SDKs fail closed).
 
 SDK configuration:
 - [ ] Built-in samplers (Phase 5).

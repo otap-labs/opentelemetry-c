@@ -10,8 +10,9 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use opentelemetry_c_abi::{
-    trace_vtable_supports_span_context, OtelAttributeType, OtelBool, OtelHandleHeader,
-    OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelSpanStatusCode, OtelStringView,
+    trace_vtable_supports_span_context, trace_vtable_supports_span_start_ex, OtelAttributeType,
+    OtelBool, OtelHandleHeader, OtelImplVtable, OtelKeyValue, OtelSpanContextView,
+    OtelSpanLinkView, OtelSpanStartConfig, OtelSpanStatusCode, OtelStringView,
     OTEL_HANDLE_KIND_SPAN, OTEL_HANDLE_KIND_SPAN_CONTEXT, OTEL_HANDLE_KIND_TRACER,
     OTEL_HANDLE_KIND_TRACER_PROVIDER,
 };
@@ -216,6 +217,65 @@ const _: () = {
     assert!(std::mem::align_of::<OtelSpanStartOptions>() == 8);
 };
 
+/// A span link: an immutable parent context plus optional link attributes.
+///
+/// All pointers are borrowed for the duration of the [`otel_tracer_start_span_ex`] call only.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSpanLink {
+    /// Linked span context. Must be a live [`OtelSpanContext`] handle; a link with a NULL or
+    /// invalid context is rejected.
+    pub context: *const OtelSpanContext,
+    /// Optional link attributes, or NULL when `attribute_count == 0`. Borrowed for the call.
+    pub attributes: *const OtelKeyValue,
+    pub attribute_count: usize,
+}
+
+/// Versioned options for [`otel_tracer_start_span_ex`].
+///
+/// The first field is `struct_size`, which the caller sets to `sizeof` of this struct as it
+/// was compiled. The API reads only the fields covered by `struct_size`, so a newer header may
+/// append fields without breaking an older implementation and vice versa.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSpanStartOptionsEx {
+    /// Size in bytes of this struct as seen by the caller. Must cover at least through
+    /// `start_time_unix_nanos`.
+    pub struct_size: usize,
+    /// Span kind, an [`opentelemetry_c_abi::OtelSpanKind`] value. Unknown => `Internal`.
+    pub kind: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+    /// Optional live local parent span; NULL => no live parent. Mutually exclusive with
+    /// `parent_context`.
+    pub parent: *const OtelSpan,
+    /// Optional immutable parent context; NULL => no context parent. Mutually exclusive with
+    /// `parent`.
+    pub parent_context: *const OtelSpanContext,
+    /// Explicit start time in Unix nanoseconds; 0 => unset (the implementation assigns now).
+    pub start_time_unix_nanos: u64,
+    /// Optional initial span attributes, or NULL when `attribute_count == 0`. Borrowed.
+    pub attributes: *const OtelKeyValue,
+    pub attribute_count: usize,
+    /// Optional span links, or NULL when `link_count == 0`. Borrowed for the call.
+    pub links: *const OtelSpanLink,
+    pub link_count: usize,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(std::mem::size_of::<OtelSpanStartOptionsEx>() == 72);
+    assert!(std::mem::align_of::<OtelSpanStartOptionsEx>() == 8);
+};
+
+/// Minimum `struct_size` accepted by [`otel_tracer_start_span_ex`]: through
+/// `start_time_unix_nanos`. Attributes and links are read only when `struct_size` covers them.
+const OTEL_SPAN_START_OPTIONS_EX_REQUIRED_SIZE: usize =
+    std::mem::offset_of!(OtelSpanStartOptionsEx, attributes);
+
+/// Upper bound on span links accepted in a single start-span call.
+const OTEL_SPAN_START_MAX_LINKS: usize = 1 << 16;
+
 fn new_tracer(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelTracer {
     into_raw(OtelTracer {
         header: OtelHandleHeader::new(OtelTracer::KIND),
@@ -236,6 +296,11 @@ fn new_span(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelSpan {
 fn vtable_has_span_context(vtable: *const OtelImplVtable) -> bool {
     // SAFETY: callers pass a live registered trace vtable, whose stable header is readable.
     unsafe { trace_vtable_supports_span_context(vtable) }
+}
+
+fn vtable_has_span_start_ex(vtable: *const OtelImplVtable) -> bool {
+    // SAFETY: callers pass a live registered trace vtable, whose stable header is readable.
+    unsafe { trace_vtable_supports_span_start_ex(vtable) }
 }
 
 struct SnapshotReceiver {
@@ -855,6 +920,231 @@ pub unsafe extern "C" fn otel_tracer_start_span_with_context(
             return std::ptr::null_mut();
         }
         new_span(tracer.vtable, span_ctx)
+    })
+}
+
+/// Start a span from a versioned [`OtelSpanStartOptionsEx`] descriptor supporting links, an
+/// explicit start timestamp, initial attributes, and a single parenting source.
+///
+/// `options` must be non-NULL. Its `struct_size` must be at least
+/// `OTEL_SPAN_START_OPTIONS_EX_REQUIRED_SIZE`; attributes and links are read only when
+/// `struct_size` covers those fields, so older/newer headers interoperate. `parent` and
+/// `parent_context` are mutually exclusive. A live parent from a *different* implementation is
+/// treated as no parent (root span), matching [`otel_tracer_start_span`].
+///
+/// A no-op (unbacked) tracer returns a valid no-op span. A backed tracer whose installed
+/// implementation predates extended span-start support returns NULL with
+/// [`OtelStatus::InvalidConfig`].
+///
+/// # Safety
+/// `tracer` must satisfy the handle contract. `options` must point to a valid
+/// [`OtelSpanStartOptionsEx`] with `struct_size` bytes readable; every borrowed pointer
+/// (parent, parent_context, attributes, links and each link's context/attributes) must be live
+/// for the duration of the call. `name` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn otel_tracer_start_span_ex(
+    tracer: *const OtelTracer,
+    name: OtelStringView,
+    options: *const OtelSpanStartOptionsEx,
+) -> *mut OtelSpan {
+    guard_ptr(|| {
+        clear_last_error();
+        let tracer = match unsafe { checked_ref(tracer) } {
+            Some(t) => t,
+            None => return std::ptr::null_mut(),
+        };
+        if options.is_null() {
+            fail(OtelStatus::InvalidArgument, "options must not be NULL");
+            return std::ptr::null_mut();
+        }
+        // SAFETY: caller guarantees a valid options pointer; we read only fields covered by
+        // `struct_size` after the minimum-size check below.
+        let options = unsafe { &*options };
+        if options.struct_size < OTEL_SPAN_START_OPTIONS_EX_REQUIRED_SIZE {
+            fail(
+                OtelStatus::InvalidConfig,
+                "options struct_size is smaller than the required minimum",
+            );
+            return std::ptr::null_mut();
+        }
+        if options.reserved != 0 {
+            fail(
+                OtelStatus::InvalidArgument,
+                "reserved field in span-start options must be zero",
+            );
+            return std::ptr::null_mut();
+        }
+        if !options.parent.is_null() && !options.parent_context.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "parent span handle and parent span context are mutually exclusive",
+            );
+            return std::ptr::null_mut();
+        }
+
+        // Fields present only when `struct_size` covers them fully (through the end of the
+        // field). Offsets are computed from the struct layout so newer/older headers agree.
+        let has_attributes =
+            options.struct_size >= std::mem::offset_of!(OtelSpanStartOptionsEx, links);
+        let has_links = options.struct_size >= std::mem::size_of::<OtelSpanStartOptionsEx>();
+        let attributes = if has_attributes {
+            options.attributes
+        } else {
+            std::ptr::null()
+        };
+        let attribute_count = if has_attributes {
+            options.attribute_count
+        } else {
+            0
+        };
+        let links = if has_links {
+            options.links
+        } else {
+            std::ptr::null()
+        };
+        let link_count = if has_links { options.link_count } else { 0 };
+
+        if attributes.is_null() && attribute_count != 0 {
+            fail(
+                OtelStatus::InvalidArgument,
+                "attribute array is NULL with a non-zero count",
+            );
+            return std::ptr::null_mut();
+        }
+        if links.is_null() && link_count != 0 {
+            fail(
+                OtelStatus::InvalidArgument,
+                "link array is NULL with a non-zero count",
+            );
+            return std::ptr::null_mut();
+        }
+        if link_count > OTEL_SPAN_START_MAX_LINKS {
+            fail(
+                OtelStatus::InvalidArgument,
+                "link count exceeds the maximum supported value",
+            );
+            return std::ptr::null_mut();
+        }
+
+        let vtable = tracer.vtable;
+        if vtable.is_null() {
+            // Unbacked (no-op) tracer: a valid no-op span.
+            return new_span(std::ptr::null(), std::ptr::null_mut());
+        }
+        if !vtable_has_span_start_ex(vtable) {
+            fail(
+                OtelStatus::InvalidConfig,
+                "installed trace implementation does not support extended span start",
+            );
+            return std::ptr::null_mut();
+        }
+
+        // Resolve the single parenting source.
+        let mut parent_span_ctx: *mut c_void = std::ptr::null_mut();
+        let mut parent_view_storage: Option<OtelSpanContextView> = None;
+        if !options.parent.is_null() {
+            // SAFETY: caller guarantees a live span handle when non-NULL.
+            match unsafe { checked_ref::<OtelSpan>(options.parent) } {
+                // Only a parent from the SAME implementation contributes a live context.
+                Some(parent) if parent.vtable == vtable => parent_span_ctx = parent.ctx,
+                Some(_) => {}
+                None => return std::ptr::null_mut(),
+            }
+        } else if !options.parent_context.is_null() {
+            // SAFETY: caller guarantees a live span-context handle when non-NULL.
+            match unsafe { checked_ref::<OtelSpanContext>(options.parent_context) } {
+                Some(parent) if parent.is_valid() => parent_view_storage = Some(parent.view()),
+                Some(_) => {
+                    fail(
+                        OtelStatus::InvalidArgument,
+                        "parent span context is invalid",
+                    );
+                    return std::ptr::null_mut();
+                }
+                None => return std::ptr::null_mut(),
+            }
+        }
+
+        // Build borrowed link views. Each link context handle is validated and its view borrows
+        // the handle's tracestate string, which stays live for the duration of this call.
+        let mut link_views: Vec<OtelSpanLinkView> = Vec::new();
+        if link_count != 0 {
+            if link_views.try_reserve(link_count).is_err() {
+                fail(
+                    OtelStatus::InternalError,
+                    "failed to allocate space for span links",
+                );
+                return std::ptr::null_mut();
+            }
+            // SAFETY: `links` is non-NULL with `link_count` valid elements (checked above).
+            let link_slice = unsafe { std::slice::from_raw_parts(links, link_count) };
+            for link in link_slice {
+                // SAFETY: each link context must be a live span-context handle.
+                let ctx = match unsafe { checked_ref::<OtelSpanContext>(link.context) } {
+                    Some(ctx) if ctx.is_valid() => ctx,
+                    Some(_) => {
+                        fail(OtelStatus::InvalidArgument, "link span context is invalid");
+                        return std::ptr::null_mut();
+                    }
+                    None => {
+                        fail(
+                            OtelStatus::InvalidArgument,
+                            "link span context is NULL or not a span-context handle",
+                        );
+                        return std::ptr::null_mut();
+                    }
+                };
+                if link.attributes.is_null() && link.attribute_count != 0 {
+                    fail(
+                        OtelStatus::InvalidArgument,
+                        "link attribute array is NULL with a non-zero count",
+                    );
+                    return std::ptr::null_mut();
+                }
+                link_views.push(OtelSpanLinkView {
+                    context: ctx.view(),
+                    attributes: link.attributes,
+                    attribute_count: link.attribute_count,
+                });
+            }
+        }
+
+        let parent_context_ptr = parent_view_storage
+            .as_ref()
+            .map_or(std::ptr::null(), |v| v as *const OtelSpanContextView);
+        let links_ptr = if link_views.is_empty() {
+            std::ptr::null()
+        } else {
+            link_views.as_ptr()
+        };
+
+        let config = OtelSpanStartConfig {
+            kind: options.kind,
+            reserved: 0,
+            parent_span_ctx,
+            parent_context: parent_context_ptr,
+            start_time_unix_nanos: options.start_time_unix_nanos,
+            attributes,
+            attribute_count,
+            links: links_ptr,
+            link_count: link_views.len(),
+        };
+
+        // SAFETY: the feature-size check above proves the extended entry is readable.
+        let Some(vtable_ref) = (unsafe { vtable.as_ref() }) else {
+            fail(
+                OtelStatus::InvalidConfig,
+                "trace implementation vtable is NULL",
+            );
+            return std::ptr::null_mut();
+        };
+        let span_ctx = (vtable_ref.tracer_start_span_ex)(tracer.ctx, name, &config);
+        // `link_views` and `parent_view_storage` are owned locals borrowed by `config` through
+        // raw pointers; they remain live until the end of this scope, i.e. across the call.
+        if span_ctx.is_null() {
+            return std::ptr::null_mut();
+        }
+        new_span(vtable, span_ctx)
     })
 }
 

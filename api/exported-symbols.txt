@@ -103,6 +103,7 @@ otel_tracer_destroy
 otel_tracer_provider_destroy
 otel_tracer_provider_get_tracer
 otel_tracer_start_span
+otel_tracer_start_span_ex
 otel_tracer_start_span_with_context
 otel_up_down_counter_f64_add
 otel_up_down_counter_f64_destroy

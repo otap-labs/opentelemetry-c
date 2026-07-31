@@ -148,6 +148,69 @@ otel_span_t* otel_tracer_start_span_with_context(
     const otel_span_start_options_t* options,
     const otel_span_context_t* parent);
 
+/* ---- Extended span start (links, explicit start time, attributes) --------- */
+
+/*
+ * A span link: an immutable parent context plus optional link attributes. All pointers are
+ * borrowed for the duration of the otel_tracer_start_span_ex() call only.
+ */
+typedef struct otel_span_link_t {
+    const otel_span_context_t* context;  /* Linked context; must be a live, valid handle. */
+    const otel_key_value_t* attributes;  /* Optional; NULL when attribute_count == 0. */
+    size_t attribute_count;
+} otel_span_link_t;
+
+/*
+ * Versioned options for otel_tracer_start_span_ex().
+ *
+ * The first field, struct_size, MUST be set to sizeof(otel_span_start_options_ex_t) as the
+ * caller compiled it. The implementation reads only the fields covered by struct_size, so an
+ * older caller and a newer library (or vice versa) interoperate: fields beyond a caller's
+ * struct_size are ignored, and struct_size must cover at least through start_time_unix_nanos.
+ *
+ * parent and parent_context are mutually exclusive (at most one may be non-NULL). A live parent
+ * produced by a DIFFERENT implementation is treated as NO parent (root span), matching
+ * otel_tracer_start_span().
+ */
+typedef struct otel_span_start_options_ex_t {
+    size_t struct_size;                        /* = sizeof(otel_span_start_options_ex_t). */
+    otel_span_kind_t kind;                     /* Span kind; unknown => INTERNAL. */
+    uint32_t reserved;                         /* Must be 0. */
+    const otel_span_t* parent;                 /* Optional live parent; NULL => none. */
+    const otel_span_context_t* parent_context; /* Optional context parent; NULL => none. */
+    uint64_t start_time_unix_nanos;            /* 0 => unset (implementation assigns now). */
+    const otel_key_value_t* attributes;        /* Optional initial attributes; NULL if count 0. */
+    size_t attribute_count;
+    const otel_span_link_t* links;             /* Optional links; NULL when link_count == 0. */
+    size_t link_count;
+} otel_span_start_options_ex_t;
+
+/* Initializer setting struct_size and zeroing every other field. */
+#define OTEL_SPAN_START_OPTIONS_EX_INIT \
+    { sizeof(otel_span_start_options_ex_t), OTEL_SPAN_KIND_INTERNAL, 0, NULL, NULL, 0, NULL, 0, NULL, 0 }
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
+    defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
+_Static_assert(sizeof(otel_span_start_options_ex_t) == 72,
+               "otel_span_start_options_ex_t ABI mismatch");
+#endif
+
+/*
+ * Start a span from a versioned descriptor supporting links, an explicit start timestamp, and
+ * initial attributes. `options` must be non-NULL with struct_size set as described above.
+ *
+ * Return value:
+ *   - Invalid tracer, NULL options, struct_size too small, non-zero reserved, both parents set,
+ *     or an invalid parent/link context: NULL, with the last-error set.
+ *   - Unbacked (no-op) tracer: a valid no-op span.
+ *   - A backed tracer whose installed SDK predates this operation: NULL with
+ *     OTEL_STATUS_INVALID_CONFIG.
+ * The returned span must be ended with otel_span_end() and released with otel_span_destroy().
+ */
+otel_span_t* otel_tracer_start_span_ex(const otel_tracer_t* tracer,
+                                       otel_string_view_t name,
+                                       const otel_span_start_options_ex_t* options);
+
 /* Destroy a tracer handle (no-op on NULL). */
 void otel_tracer_destroy(otel_tracer_t* tracer);
 

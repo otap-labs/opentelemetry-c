@@ -4,6 +4,11 @@
 
 ### Added
 
+- Trace vtable support for the extended span-start entry (`tracer_start_span_ex`): the SDK
+  reconstructs span contexts and links from a borrowed forward-only descriptor and forwards
+  span links, an explicit start timestamp, initial attributes, and a single parenting source
+  into the OTel `SpanBuilder`. The entry is appended after the SpanContext prefix and gated by a
+  new frozen `OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE` capability boundary.
 - Trace vtable support for copying complete `SpanContext` snapshots (including trace state and
   remote state) and starting children from implementation-neutral snapshots used by the C API
   and Logs correlation path.

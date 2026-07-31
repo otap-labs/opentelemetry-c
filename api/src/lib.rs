@@ -72,8 +72,9 @@ pub use trace::{
     otel_span_set_attribute, otel_span_set_bool_attribute, otel_span_set_double_attribute,
     otel_span_set_int64_attribute, otel_span_set_status, otel_span_set_string_attribute,
     otel_span_update_name, otel_tracer_destroy, otel_tracer_provider_destroy,
-    otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_with_context,
-    OtelSpan, OtelSpanContext, OtelSpanStartOptions, OtelTracer, OtelTracerProvider,
+    otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_ex,
+    otel_tracer_start_span_with_context, OtelSpan, OtelSpanContext, OtelSpanLink,
+    OtelSpanStartOptions, OtelSpanStartOptionsEx, OtelTracer, OtelTracerProvider,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");

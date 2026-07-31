@@ -46,7 +46,12 @@ fuzz_target!(|data: &[u8]| {
         let mut buf = vec![0u8; len];
         // SAFETY: `buf` holds exactly `len` writable bytes.
         let w = unsafe {
-            otel_trace_propagation_inject_traceparent(out, buf.as_mut_ptr().cast(), buf.len(), &mut len)
+            otel_trace_propagation_inject_traceparent(
+                out,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut len,
+            )
         };
         assert_eq!(w, OtelStatus::Ok);
         assert_eq!(len, 55);

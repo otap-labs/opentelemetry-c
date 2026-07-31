@@ -479,6 +479,41 @@ pub type OtelSpanContextVisitor = Option<
     extern "C" fn(user_data: *mut c_void, context: *const OtelSpanContextView) -> OtelStatus,
 >;
 
+/// A borrowed span link crossing the internal vtable: a parent context view plus borrowed
+/// attributes. Every pointer is valid only for the duration of the start-span call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSpanLinkView {
+    pub context: OtelSpanContextView,
+    pub attributes: *const OtelKeyValue,
+    pub attribute_count: usize,
+}
+
+/// Borrowed, forward-only span-start descriptor passed across the internal vtable for the
+/// extended start-span entry. All pointers are valid only for the call; the SDK copies any
+/// data it retains. The API supplies at most one parenting source (`parent_span_ctx` XOR
+/// `parent_context`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSpanStartConfig {
+    /// Span kind (an [`OtelSpanKind`] value; unknown => `Internal`).
+    pub kind: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+    /// Optional live local parent span context produced by *this* vtable, or NULL.
+    pub parent_span_ctx: *mut c_void,
+    /// Optional implementation-neutral parent context, or NULL.
+    pub parent_context: *const OtelSpanContextView,
+    /// Explicit start time in Unix nanoseconds; 0 = unset (the SDK assigns the current time).
+    pub start_time_unix_nanos: u64,
+    /// Initial span attributes, or NULL when `attribute_count == 0`.
+    pub attributes: *const OtelKeyValue,
+    pub attribute_count: usize,
+    /// Span links, or NULL when `link_count == 0`.
+    pub links: *const OtelSpanLinkView,
+    pub link_count: usize,
+}
+
 /// Internal implementation vtable registered by the SDK into the API-owned global slot
 /// (and returned from `otel_sdk_get_tracer_provider`).
 ///
@@ -580,6 +615,13 @@ pub struct OtelImplVtable {
         kind: u32,
         parent: *const OtelSpanContextView,
     ) -> *mut c_void,
+    /// Start a span from a forward-only descriptor (links, explicit start time, initial
+    /// attributes, and a single parenting source). Optional appended entry.
+    pub tracer_start_span_ex: extern "C" fn(
+        tracer_ctx: *mut c_void,
+        name: OtelStringView,
+        config: *const OtelSpanStartConfig,
+    ) -> *mut c_void,
 }
 
 /// Current trace implementation ABI kind/version identifier.
@@ -604,6 +646,16 @@ pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = 64;
 pub const OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE: usize = 144;
 #[cfg(target_pointer_width = "32")]
 pub const OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE: usize = 72;
+
+/// Trace vtable prefix size through extended span-start support.
+///
+/// Equals [`OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE`] plus one function pointer. Future entries may
+/// be appended after this prefix without making an SDK that implements the extended start-span
+/// entry appear to lose that support.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE: usize = 152;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE: usize = 76;
 
 /// Internal Metrics implementation vtable. Metrics uses a distinct ABI identifier,
 /// provider context, and API-owned global slot from traces.
@@ -781,6 +833,19 @@ pub unsafe fn trace_vtable_supports_span_context(vtable: *const OtelImplVtable) 
         && header.struct_size >= OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE
 }
 
+/// Whether a compatible trace vtable includes the extended span-start entry.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+pub unsafe fn trace_vtable_supports_span_start_ex(vtable: *const OtelImplVtable) -> bool {
+    let Some(header) = (unsafe { vtable.cast::<OtelVtableHeader>().as_ref() }) else {
+        return false;
+    };
+    header.abi_version == OTEL_TRACE_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE
+}
+
 /// Validate the stable prefix of a Metrics implementation vtable.
 ///
 /// The ABI identifier selects both the Metrics signal kind and its compatible version.
@@ -837,7 +902,16 @@ const _: () = {
     assert!(
         OTEL_IMPL_VTABLE_REQUIRED_SIZE == std::mem::offset_of!(OtelImplVtable, span_context_visit)
     );
-    assert!(OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE == std::mem::size_of::<OtelImplVtable>());
+    assert!(
+        OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE
+            == std::mem::offset_of!(OtelImplVtable, tracer_start_span_ex)
+    );
+    assert!(OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE == std::mem::size_of::<OtelImplVtable>());
+    assert!(
+        OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE
+            == OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE
+                + std::mem::size_of::<extern "C" fn() -> *mut c_void>()
+    );
 };
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
 const _: () = assert!(

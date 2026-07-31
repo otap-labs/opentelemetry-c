@@ -4,10 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use opentelemetry_c_abi::{
     metrics_vtable_compatible, metrics_vtable_supports_bound_instruments,
     metrics_vtable_supports_creation_status, metrics_vtable_supports_scope_config,
-    trace_vtable_compatible, trace_vtable_supports_span_context, OtelImplVtable, OtelKeyValue,
-    OtelMetricInstrumentConfig, OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus,
-    OtelStringView, OtelVtableHeader, OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE,
-    OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE, OTEL_METRICS_IMPL_ABI_VERSION,
+    trace_vtable_compatible, trace_vtable_supports_span_context,
+    trace_vtable_supports_span_start_ex, OtelImplVtable, OtelKeyValue, OtelMetricInstrumentConfig,
+    OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus, OtelStringView, OtelVtableHeader,
+    OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE, OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE,
+    OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE, OTEL_METRICS_IMPL_ABI_VERSION,
     OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE, OTEL_METRICS_VTABLE_REQUIRED_SIZE,
     OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE, OTEL_TRACE_IMPL_ABI_VERSION,
 };
@@ -171,6 +172,14 @@ extern "C" fn start_span_with_context(
     std::ptr::null_mut()
 }
 
+extern "C" fn start_span_ex(
+    _: *mut c_void,
+    _: OtelStringView,
+    _: *const opentelemetry_c_abi::OtelSpanStartConfig,
+) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
 const VALID_TRACE: OtelImplVtable = OtelImplVtable {
     abi_version: OTEL_TRACE_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelImplVtable>(),
@@ -190,6 +199,7 @@ const VALID_TRACE: OtelImplVtable = OtelImplVtable {
     span_free: free,
     span_context_visit: visit_span_context,
     tracer_start_span_with_context: start_span_with_context,
+    tracer_start_span_ex: start_span_ex,
 };
 
 static TOKEN_FREES: AtomicUsize = AtomicUsize::new(0);
@@ -241,8 +251,18 @@ fn vtable_kind_and_size_validation_is_signal_specific() {
     };
     assert!(unsafe { trace_vtable_compatible(&original_trace_prefix) });
     assert!(!unsafe { trace_vtable_supports_span_context(&original_trace_prefix) });
+    assert!(!unsafe { trace_vtable_supports_span_start_ex(&original_trace_prefix) });
+    // A vtable that stops at the SpanContext prefix advertises snapshot support but not the
+    // later extended span-start entry.
+    let span_context_prefix = OtelImplVtable {
+        struct_size: OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE,
+        ..VALID_TRACE
+    };
+    assert!(unsafe { trace_vtable_supports_span_context(&span_context_prefix) });
+    assert!(!unsafe { trace_vtable_supports_span_start_ex(&span_context_prefix) });
+    assert!(unsafe { trace_vtable_supports_span_start_ex(&VALID_TRACE) });
     assert_eq!(
-        OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE,
+        OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE,
         std::mem::size_of::<OtelImplVtable>()
     );
     assert!(unsafe { metrics_vtable_compatible(&original_metrics_prefix) });

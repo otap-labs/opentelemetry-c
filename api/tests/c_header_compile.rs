@@ -149,6 +149,24 @@ int main(void) {
                 otel_string_view_empty(), &extracted);
             otel_span_context_destroy(extracted);
         }
+        {
+            otel_span_start_options_ex_t opts = OTEL_SPAN_START_OPTIONS_EX_INIT;
+            otel_span_link_t links[1];
+            otel_key_value_t link_attrs[] = {
+                otel_kv_string(otel_cstr("k"), otel_cstr("v"))
+            };
+            links[0].context = built;
+            links[0].attributes = link_attrs;
+            links[0].attribute_count = sizeof(link_attrs) / sizeof(link_attrs[0]);
+            opts.kind = OTEL_SPAN_KIND_CLIENT;
+            opts.parent_context = built;
+            opts.start_time_unix_nanos = 1700000000000000000ull;
+            opts.attributes = link_attrs;
+            opts.attribute_count = sizeof(link_attrs) / sizeof(link_attrs[0]);
+            opts.links = links;
+            opts.link_count = sizeof(links) / sizeof(links[0]);
+            (void)otel_tracer_start_span_ex(NULL, otel_cstr("ex"), &opts);
+        }
         otel_span_context_destroy(built);
     }
     otel_span_context_destroy(otel_span_context_clone(context));
