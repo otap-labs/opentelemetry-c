@@ -1,0 +1,23 @@
+# Safe uninstall: removes only files listed in install_manifest.txt.
+# Never recursively deletes directories.
+# Prefer package-manager uninstall when installed through a package manager.
+
+if(NOT EXISTS "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+    message(WARNING "No install_manifest.txt found; nothing to uninstall.")
+    return()
+endif()
+
+file(READ "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt" _manifest)
+string(REGEX REPLACE "\n" ";" _files "${_manifest}")
+
+foreach(_file ${_files})
+    message(STATUS "Uninstalling: ${_file}")
+    if(EXISTS "${_file}" OR IS_SYMLINK "${_file}")
+        file(REMOVE "${_file}")
+        if(EXISTS "${_file}")
+            message(SEND_ERROR "Failed to remove: ${_file}")
+        endif()
+    else()
+        message(STATUS "File not found (already removed?): ${_file}")
+    endif()
+endforeach()
