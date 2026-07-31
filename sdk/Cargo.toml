@@ -57,7 +57,7 @@ opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", 
 # slot, span/tracer ops). Linking the API rlib here also resolves this crate's `api_ffi`
 # extern `otel_api_*` imports for the bench binary. Benchmark/test only — never a runtime dep.
 opentelemetry-c-api = { path = "../api" }
-opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic", "metrics", "logs"] }
+opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic", "trace", "metrics", "logs"] }
 # Pin the prost family to the 1.77-compatible 0.14.1 release. Newer 0.14.x (0.14.2+) require
 # Rust 1.82+ (0.14.4 requires 1.85). Because dev and production dependencies share one locked
 # `prost`, this also keeps the OTLP gRPC production transport graph on the 1.77 product MSRV.

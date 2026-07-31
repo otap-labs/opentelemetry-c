@@ -319,8 +319,14 @@ pub unsafe extern "C" fn otel_span_get_context(
             );
         }
         let mut receiver = SnapshotReceiver { context: None };
-        // SAFETY: the feature-size check above proves this appended slot is readable.
-        let visit = unsafe { (*vtable).span_context_visit };
+        // SAFETY: the feature-size check above proves the complete current vtable is readable.
+        let Some(vtable) = (unsafe { vtable.as_ref() }) else {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "trace implementation vtable is NULL",
+            );
+        };
+        let visit = vtable.span_context_visit;
         let status = visit(
             span.ctx,
             Some(receive_span_context),
@@ -601,8 +607,15 @@ pub unsafe extern "C" fn otel_tracer_start_span_with_context(
             return std::ptr::null_mut();
         }
         let view = parent.view();
-        // SAFETY: the feature-size check above proves this appended slot is readable.
-        let start_span = unsafe { (*vtable).tracer_start_span_with_context };
+        // SAFETY: the feature-size check above proves the complete current vtable is readable.
+        let Some(vtable) = (unsafe { vtable.as_ref() }) else {
+            fail(
+                OtelStatus::InvalidConfig,
+                "trace implementation vtable is NULL",
+            );
+            return std::ptr::null_mut();
+        };
+        let start_span = vtable.tracer_start_span_with_context;
         let span_ctx = start_span(tracer.ctx, name, kind, &view);
         if span_ctx.is_null() {
             return std::ptr::null_mut();

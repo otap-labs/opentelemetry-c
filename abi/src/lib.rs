@@ -774,7 +774,9 @@ pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
 ///
 /// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
 pub unsafe fn trace_vtable_supports_span_context(vtable: *const OtelImplVtable) -> bool {
-    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    let Some(header) = (unsafe { vtable.cast::<OtelVtableHeader>().as_ref() }) else {
+        return false;
+    };
     header.abi_version == OTEL_TRACE_IMPL_ABI_VERSION
         && header.struct_size >= OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE
 }
