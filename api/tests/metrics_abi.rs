@@ -4,9 +4,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use opentelemetry_c_abi::{
     metrics_vtable_compatible, metrics_vtable_supports_bound_instruments,
     metrics_vtable_supports_creation_status, metrics_vtable_supports_scope_config,
-    trace_vtable_compatible, OtelImplVtable, OtelKeyValue, OtelMetricInstrumentConfig,
-    OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus, OtelStringView, OtelVtableHeader,
-    OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE, OTEL_METRICS_IMPL_ABI_VERSION,
+    trace_vtable_compatible, trace_vtable_supports_span_context, OtelImplVtable, OtelKeyValue,
+    OtelMetricInstrumentConfig, OtelMetricScopeConfig, OtelMetricsVtable, OtelStatus,
+    OtelStringView, OtelVtableHeader, OTEL_IMPL_ABI_VERSION, OTEL_IMPL_VTABLE_REQUIRED_SIZE,
+    OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE, OTEL_METRICS_IMPL_ABI_VERSION,
     OTEL_METRICS_VTABLE_CREATION_STATUS_SIZE, OTEL_METRICS_VTABLE_REQUIRED_SIZE,
     OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE, OTEL_TRACE_IMPL_ABI_VERSION,
 };
@@ -225,6 +226,7 @@ fn vtable_kind_and_size_validation_is_signal_specific() {
     assert_eq!(OTEL_METRICS_IMPL_ABI_VERSION & 0x00FF_FFFF, 1);
 
     assert!(unsafe { trace_vtable_compatible(&VALID_TRACE) });
+    assert!(unsafe { trace_vtable_supports_span_context(&VALID_TRACE) });
     assert!(unsafe { metrics_vtable_compatible(&VALID) });
     assert!(unsafe { metrics_vtable_supports_scope_config(&VALID) });
     assert!(unsafe { metrics_vtable_supports_creation_status(&VALID) });
@@ -233,6 +235,16 @@ fn vtable_kind_and_size_validation_is_signal_specific() {
         struct_size: OTEL_METRICS_VTABLE_REQUIRED_SIZE,
         ..VALID
     };
+    let original_trace_prefix = OtelImplVtable {
+        struct_size: OTEL_IMPL_VTABLE_REQUIRED_SIZE,
+        ..VALID_TRACE
+    };
+    assert!(unsafe { trace_vtable_compatible(&original_trace_prefix) });
+    assert!(!unsafe { trace_vtable_supports_span_context(&original_trace_prefix) });
+    assert_eq!(
+        OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE,
+        std::mem::size_of::<OtelImplVtable>()
+    );
     assert!(unsafe { metrics_vtable_compatible(&original_metrics_prefix) });
     assert!(!unsafe { metrics_vtable_supports_scope_config(&original_metrics_prefix) });
     assert!(!unsafe { metrics_vtable_supports_creation_status(&original_metrics_prefix) });

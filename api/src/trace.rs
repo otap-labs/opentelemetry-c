@@ -11,9 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use opentelemetry_c_abi::{
-    OtelAttributeType, OtelBool, OtelHandleHeader, OtelImplVtable, OtelKeyValue,
-    OtelSpanContextView, OtelSpanStatusCode, OtelStringView, OTEL_HANDLE_KIND_SPAN,
-    OTEL_HANDLE_KIND_SPAN_CONTEXT, OTEL_HANDLE_KIND_TRACER, OTEL_HANDLE_KIND_TRACER_PROVIDER,
+    trace_vtable_supports_span_context, OtelAttributeType, OtelBool, OtelHandleHeader,
+    OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelSpanStatusCode, OtelStringView,
+    OTEL_HANDLE_KIND_SPAN, OTEL_HANDLE_KIND_SPAN_CONTEXT, OTEL_HANDLE_KIND_TRACER,
+    OTEL_HANDLE_KIND_TRACER_PROVIDER,
 };
 
 use crate::error::{clear_last_error, fail, set_last_error, OtelStatus};
@@ -230,8 +231,9 @@ fn new_span(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelSpan {
     })
 }
 
-fn vtable_has_span_context(vtable: &OtelImplVtable) -> bool {
-    vtable.struct_size >= std::mem::size_of::<OtelImplVtable>()
+fn vtable_has_span_context(vtable: *const OtelImplVtable) -> bool {
+    // SAFETY: callers pass a live registered trace vtable, whose stable header is readable.
+    unsafe { trace_vtable_supports_span_context(vtable) }
 }
 
 struct SnapshotReceiver {
@@ -302,7 +304,7 @@ pub unsafe extern "C" fn otel_span_get_context(
                 "a no-op span has no valid span context",
             );
         }
-        let vtable = unsafe { &*span.vtable };
+        let vtable = span.vtable;
         if !vtable_has_span_context(vtable) {
             return fail(
                 OtelStatus::InvalidConfig,
@@ -310,7 +312,9 @@ pub unsafe extern "C" fn otel_span_get_context(
             );
         }
         let mut receiver = SnapshotReceiver { context: None };
-        let status = (vtable.span_context_visit)(
+        // SAFETY: the feature-size check above proves this appended slot is readable.
+        let visit = unsafe { (*vtable).span_context_visit };
+        let status = visit(
             span.ctx,
             Some(receive_span_context),
             (&mut receiver as *mut SnapshotReceiver).cast(),
@@ -569,7 +573,7 @@ pub unsafe extern "C" fn otel_tracer_start_span_with_context(
         if tracer.vtable.is_null() {
             return new_span(std::ptr::null(), std::ptr::null_mut());
         }
-        let vtable = unsafe { &*tracer.vtable };
+        let vtable = tracer.vtable;
         if !vtable_has_span_context(vtable) {
             fail(
                 OtelStatus::InvalidConfig,
@@ -578,7 +582,9 @@ pub unsafe extern "C" fn otel_tracer_start_span_with_context(
             return std::ptr::null_mut();
         }
         let view = parent.view();
-        let span_ctx = (vtable.tracer_start_span_with_context)(tracer.ctx, name, kind, &view);
+        // SAFETY: the feature-size check above proves this appended slot is readable.
+        let start_span = unsafe { (*vtable).tracer_start_span_with_context };
+        let span_ctx = start_span(tracer.ctx, name, kind, &view);
         if span_ctx.is_null() {
             return std::ptr::null_mut();
         }

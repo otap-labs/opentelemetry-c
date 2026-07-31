@@ -594,6 +594,21 @@ pub const OTEL_IMPL_ABI_VERSION: u32 = OTEL_TRACE_IMPL_ABI_VERSION;
 pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize =
     std::mem::offset_of!(OtelImplVtable, span_context_visit);
 
+/// Trace vtable prefix size through immutable SpanContext snapshot support.
+///
+/// Future entries may be appended after this prefix without making an SDK that implements
+/// these two entries appear to lose SpanContext support.
+pub const OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE: usize =
+    std::mem::offset_of!(OtelImplVtable, tracer_start_span_with_context)
+        + std::mem::size_of::<
+            extern "C" fn(
+                tracer_ctx: *mut c_void,
+                name: OtelStringView,
+                kind: u32,
+                parent: *const OtelSpanContextView,
+            ) -> *mut c_void,
+        >();
+
 /// Internal Metrics implementation vtable. Metrics uses a distinct ABI identifier,
 /// provider context, and API-owned global slot from traces.
 ///
@@ -747,13 +762,25 @@ pub struct OtelVtableHeader {
 /// # Safety
 ///
 /// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
-/// If the header is compatible, it must also be readable as a complete [`OtelImplVtable`]
-/// and remain live wherever the caller subsequently stores or uses it. No bytes beyond the
+/// If the header is compatible, it must also be readable through
+/// [`OTEL_IMPL_VTABLE_REQUIRED_SIZE`] and remain live wherever the caller stores or uses it.
+/// Append-only fields may be accessed only after their own size check. No bytes beyond the
 /// header are read by this function.
 pub unsafe fn trace_vtable_compatible(vtable: *const OtelImplVtable) -> bool {
     let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
     header.abi_version == OTEL_TRACE_IMPL_ABI_VERSION
         && header.struct_size >= OTEL_IMPL_VTABLE_REQUIRED_SIZE
+}
+
+/// Whether a compatible trace vtable includes immutable SpanContext snapshot support.
+///
+/// # Safety
+///
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+pub unsafe fn trace_vtable_supports_span_context(vtable: *const OtelImplVtable) -> bool {
+    let header = unsafe { &*vtable.cast::<OtelVtableHeader>() };
+    header.abi_version == OTEL_TRACE_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE
 }
 
 /// Validate the stable prefix of a Metrics implementation vtable.
@@ -808,6 +835,7 @@ pub unsafe fn metrics_vtable_supports_bound_instruments(vtable: *const OtelMetri
 }
 
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
+const _: () = assert!(OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE == std::mem::size_of::<OtelImplVtable>());
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
 const _: () = assert!(
     OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE

@@ -12,13 +12,17 @@
 
 use std::os::raw::{c_char, c_void};
 
-use opentelemetry_c_abi::{OtelImplVtable, OtelKeyValue, OtelStatus, OtelStringView};
+use opentelemetry_c_abi::{
+    OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelStatus, OtelStringView,
+    OTEL_IMPL_VTABLE_REQUIRED_SIZE,
+};
 
 use opentelemetry_c_api::{
     otel_api_provider_new, otel_api_set_last_error, otel_global_tracer_provider,
-    otel_last_error_message, otel_span_destroy, otel_span_end, otel_tracer_destroy,
-    otel_tracer_provider_destroy, otel_tracer_provider_get_tracer, otel_tracer_start_span,
-    OtelSpan, OtelSpanStartOptions,
+    otel_last_error_message, otel_span_context_destroy, otel_span_destroy, otel_span_end,
+    otel_span_get_context, otel_tracer_destroy, otel_tracer_provider_destroy,
+    otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_with_context,
+    OtelSpan, OtelSpanContext, OtelSpanStartOptions,
 };
 
 // ---- A minimal backed vtable that validates the name like the real SDK ----
@@ -113,10 +117,21 @@ extern "C" fn vt_span_free(c: *mut c_void) {
 }
 extern "C" fn vt_span_context_visit(
     _c: *mut c_void,
-    _v: opentelemetry_c_abi::OtelSpanContextVisitor,
-    _u: *mut c_void,
+    visitor: opentelemetry_c_abi::OtelSpanContextVisitor,
+    user_data: *mut c_void,
 ) -> OtelStatus {
-    OtelStatus::InvalidConfig
+    let Some(visitor) = visitor else {
+        return OtelStatus::InvalidArgument;
+    };
+    let context = OtelSpanContextView {
+        trace_id: [1; 16],
+        span_id: [2; 8],
+        trace_flags: 1,
+        reserved: [0; 3],
+        is_remote: 0,
+        trace_state: OtelStringView::empty(),
+    };
+    visitor(user_data, &context)
 }
 extern "C" fn vt_start_with_context(
     _c: *mut c_void,
@@ -169,6 +184,15 @@ fn malformed() -> OtelStringView {
 }
 fn last_error_is_set() -> bool {
     !otel_last_error_message().ptr.is_null()
+}
+
+fn last_error() -> String {
+    let error = otel_last_error_message();
+    assert!(!error.ptr.is_null());
+    String::from_utf8(
+        unsafe { std::slice::from_raw_parts(error.ptr.cast::<u8>(), error.len) }.to_vec(),
+    )
+    .unwrap()
 }
 
 fn backed_provider() -> *mut opentelemetry_c_api::OtelTracerProvider {
@@ -230,6 +254,55 @@ fn backed_tracer_start_span_malformed_name_returns_null() {
     unsafe {
         otel_span_end(ok);
         otel_span_destroy(ok);
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+}
+
+#[test]
+fn span_context_apis_fail_closed_with_original_vtable_prefix() {
+    let provider = backed_provider();
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("instr"), empty(), empty()) };
+    let span = unsafe { otel_tracer_start_span(tracer, good("parent"), std::ptr::null()) };
+    let mut context: *mut OtelSpanContext = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { otel_span_get_context(span, &mut context) },
+        OtelStatus::Ok
+    );
+    assert!(!context.is_null());
+
+    let legacy_vtable = OtelImplVtable {
+        struct_size: OTEL_IMPL_VTABLE_REQUIRED_SIZE,
+        ..BACKED_VTABLE
+    };
+    let legacy_provider = unsafe { otel_api_provider_new(&legacy_vtable, dummy()) };
+    let legacy_tracer = unsafe {
+        otel_tracer_provider_get_tracer(legacy_provider, good("legacy"), empty(), empty())
+    };
+    let legacy_span =
+        unsafe { otel_tracer_start_span(legacy_tracer, good("legacy-span"), std::ptr::null()) };
+
+    let mut unavailable: *mut OtelSpanContext = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { otel_span_get_context(legacy_span, &mut unavailable) },
+        OtelStatus::InvalidConfig
+    );
+    assert!(unavailable.is_null());
+    assert!(last_error().contains("does not support span-context snapshots"));
+
+    assert!(unsafe {
+        otel_tracer_start_span_with_context(legacy_tracer, good("child"), std::ptr::null(), context)
+    }
+    .is_null());
+    assert!(last_error().contains("does not support context parenting"));
+
+    unsafe {
+        otel_span_destroy(legacy_span);
+        otel_tracer_destroy(legacy_tracer);
+        otel_tracer_provider_destroy(legacy_provider);
+        otel_span_context_destroy(context);
+        otel_span_destroy(span);
         otel_tracer_destroy(tracer);
         otel_tracer_provider_destroy(provider);
     }

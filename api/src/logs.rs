@@ -405,6 +405,9 @@ pub unsafe extern "C" fn otel_logger_emit_with_context(
             );
         }
         let mut correlated = unsafe { *record };
+        // `correlated` contains only the V1 prefix even when a newer caller supplied a larger
+        // record. Do not advertise unreadable trailing bytes to a newer SDK implementation.
+        correlated.struct_size = OTEL_LOG_RECORD_VIEW_V1_SIZE;
         if correlated.present_fields & OTEL_LOG_FIELD_TRACE_CONTEXT != 0 {
             return fail(
                 OtelStatus::InvalidArgument,
@@ -444,6 +447,7 @@ mod tests {
     }
     extern "C" fn capture_emit(_: *mut c_void, record: *const OtelLogRecordView) -> OtelStatus {
         let record = unsafe { &*record };
+        assert_eq!(record.struct_size, OTEL_LOG_RECORD_VIEW_V1_SIZE);
         assert_ne!(record.present_fields & OTEL_LOG_FIELD_TRACE_CONTEXT, 0);
         assert_eq!(record.trace_context.trace_id, [1; 16]);
         assert_eq!(record.trace_context.span_id, [2; 8]);
@@ -506,6 +510,7 @@ mod tests {
             Arc::from(""),
         ));
         let mut record = record();
+        record.struct_size = OTEL_LOG_RECORD_VIEW_V1_SIZE + 64;
         assert_eq!(
             unsafe { otel_logger_emit_with_context(logger, &record, context) },
             OtelStatus::Ok
