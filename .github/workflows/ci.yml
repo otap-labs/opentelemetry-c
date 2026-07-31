@@ -21,34 +21,41 @@ jobs:
         run: scripts/check-release-metadata.sh
 
   msrv:
-    # Set this repository variable only after maintainers validate the locked workspace and
-    # update all three manifests to the chosen product MSRV.
+    # OPENTELEMETRY_C_VALIDATED_MSRV is the single source of truth for the product MSRV.
+    # Maintainers set it only after validating the locked product graph on that exact
+    # toolchain and setting the rust-version in all three manifests to the same value.
+    # Until it is set this job FAILS CLOSED on every event (push, pull_request, merge_group,
+    # tag) so a green pipeline never implies the MSRV is enforced. See VERSIONING.md and #3.
     env:
       VALIDATED_MSRV: ${{ vars.OPENTELEMETRY_C_VALIDATED_MSRV }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Report unresolved MSRV policy
-        if: env.VALIDATED_MSRV == '' && github.ref_type != 'tag'
+      - name: Require a validated MSRV
+        if: env.VALIDATED_MSRV == ''
         run: |
-          echo "::warning::MSRV validation is gated until OPENTELEMETRY_C_VALIDATED_MSRV is configured"
-      - name: Block release tags without a validated MSRV
-        if: env.VALIDATED_MSRV == '' && github.ref_type == 'tag'
-        run: |
-          echo "::error::Release tags require OPENTELEMETRY_C_VALIDATED_MSRV"
+          echo "::error title=MSRV unresolved::OPENTELEMETRY_C_VALIDATED_MSRV is not set, so the" \
+            "product MSRV is not enforced and the source release is blocked (see issue #3 and" \
+            "VERSIONING.md). A maintainer must validate the committed --locked product graph on" \
+            "the chosen toolchain, set the rust-version in abi/, api/, and sdk/ Cargo.toml to that" \
+            "value, and set the OPENTELEMETRY_C_VALIDATED_MSRV repository variable to the same" \
+            "version. This check is not skipped when the variable is absent."
           exit 1
       - name: Check validated MSRV metadata
-        if: env.VALIDATED_MSRV != ''
+        # Fails if the validated value drifts from the manifest rust-version fields, if the
+        # manifests disagree, or if Cargo.lock is inconsistent.
         run: scripts/check-release-metadata.sh
-      - name: Install validated MSRV
-        if: env.VALIDATED_MSRV != ''
-        # Pin the action because this job gates source-release tags.
+      - name: Install the exact validated MSRV toolchain
+        # Pinned because this job gates the source release; installs the exact validated
+        # toolchain with the default minimal profile instead of latest stable.
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: ${{ env.VALIDATED_MSRV }}
-      - name: Check product libraries at validated MSRV
-        if: env.VALIDATED_MSRV != ''
+      - name: Check product libraries at the validated MSRV
+        # Library-only (no --all-targets) so test/benchmark/fuzz-only dependencies never
+        # define the product MSRV. Covers the documented production feature configurations.
         run: |
+          cargo check --locked -p opentelemetry-c-abi --lib
           cargo check --locked -p opentelemetry-c-api --lib
           cargo check --locked -p opentelemetry-c-sdk --lib
           cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features

@@ -139,17 +139,46 @@ is unsupported. The child does not retain those worker threads or runtime in a u
 The Rust OpenTelemetry dependencies are implementation details. Updating them may change
 behavior or require public C API changes, which follow the release rules above.
 
-All three project manifests must declare the same validated minimum supported Rust version
-(MSRV), and release CI must check the product libraries and documented feature combinations
-with it. Test, integration-test, and benchmark-only dependencies do not define the product
-MSRV. The committed dependency set used by the product libraries is part of that claim.
+The minimum supported Rust version (MSRV) is a single workspace-wide product value shared by
+all three project manifests (`opentelemetry-c-abi`, `opentelemetry-c-api`,
+`opentelemetry-c-sdk`). The product MSRV covers only the shipped libraries built with the
+committed `Cargo.lock`:
 
-The current `rust-version = "1.75.0"` declarations are not yet a verified release promise:
-the committed lockfile contains dependencies that require newer Cargo/Rust language
-support. The first source release is blocked until maintainers either pin a dependency set
-that builds on Rust 1.75 and enforce it in CI, or choose and validate a higher product MSRV.
-Until then, the MSRV CI build is gated rather than running a known-incompatible toolchain.
-See [RELEASING.md](RELEASING.md).
+- the three crates built as libraries (`--lib`);
+- the documented SDK production feature configurations — the transport-free core
+  (`--no-default-features`), the default OTLP HTTP/protobuf build, the OTLP gRPC build, and
+  the combined all-transports/all-TLS build enforced by the MSRV CI job.
+
+The product MSRV explicitly does **not** cover unit or integration tests, benchmarks, fuzz
+targets, examples, developer tooling, or `rustfmt`/Clippy, nor the dependencies that only
+those targets pull in. The committed `Cargo.lock` is part of the MSRV contract: the claim
+holds for the locked dependency graph only, so consumers must build with `--locked` to obtain
+the validated versions. Resolving dependencies afresh can select newer transitive crates that
+require a newer compiler.
+
+The MSRV is enforced by the dedicated `msrv` CI job, which is the authoritative proof of the
+claim. That job reads the `OPENTELEMETRY_C_VALIDATED_MSRV` repository variable as the single
+source of truth, verifies it equals the `rust-version` in all three manifests, installs that
+exact toolchain (not latest stable), and runs the `--locked` library checks above. The job
+**fails closed** on every event while the variable is unset, so a green pipeline never implies
+an unenforced MSRV. The MSRV may be raised only by validating the new toolchain against this
+same locked matrix, updating all three manifests, and setting the repository variable to the
+identical version in the same change.
+
+The product MSRV is **Rust 1.77.0**. This is the first Rust release that provides
+`core::mem::offset_of!`, which the SDK's forward-compatible custom-exporter code uses in
+`const` layout assertions and unsafe, size-gated member reads. Retaining the standard
+`offset_of!` implementation avoids replacing audited ABI code merely to support two older
+compiler releases.
+
+The committed lockfile pins production transitive dependencies to releases that build with
+Rust 1.77.0. In particular, an unconstrained resolution may select newer `indexmap`,
+`hashbrown`, protocol, URL, or randomness dependencies whose own MSRVs are higher. These
+pins are part of the locked source-release contract, not independent public compatibility
+promises for those implementation dependencies.
+
+Before the first release, set `OPENTELEMETRY_C_VALIDATED_MSRV` to `1.77.0`. See
+[RELEASING.md](RELEASING.md).
 
 ## Stable compatibility
 
