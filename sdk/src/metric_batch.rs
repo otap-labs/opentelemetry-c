@@ -678,7 +678,7 @@ impl Visitor<'_> {
 
     fn visit_metric(&self, metric: &Metric) -> Result<(), OtelStatus> {
         macro_rules! visit_data {
-            ($number:expr_2021, $data:expr_2021) => {{
+            ($number:expr, $data:expr) => {{
                 match $data {
                     MetricData::Gauge(data) => {
                         self.announce_metric(metric, OTEL_METRIC_DATA_GAUGE, $number)?;

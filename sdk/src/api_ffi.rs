@@ -13,7 +13,7 @@ use opentelemetry_c_abi::{OtelImplVtable, OtelLogsVtable, OtelMetricsVtable, Ote
 #[cfg(not(test))]
 mod imp {
     use super::*;
-    // MSRV is 1.75; `unsafe extern` blocks require 1.82. Keep a plain extern block and
+    // MSRV is 1.77; `unsafe extern` blocks require 1.82. Keep a plain extern block and
     // allow the Rust-2024-compat lint. These import the API cdylib's internal symbols.
     #[allow(unknown_lints)]
     #[allow(missing_unsafe_on_extern)]

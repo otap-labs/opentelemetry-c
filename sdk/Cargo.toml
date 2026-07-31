@@ -3,7 +3,7 @@ name = "opentelemetry-c-sdk"
 description = "Rust-backed C SDK for OpenTelemetry traces and Metrics that installs into the C API's global providers"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75.0"
+rust-version = "1.77.0"
 homepage = "https://github.com/otap-labs/opentelemetry-c/tree/main/sdk"
 repository = "https://github.com/otap-labs/opentelemetry-c/tree/main/sdk"
 keywords = ["opentelemetry", "tracing", "ffi", "c", "otlp"]
@@ -58,7 +58,10 @@ opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", 
 # extern `otel_api_*` imports for the bench binary. Benchmark/test only — never a runtime dep.
 opentelemetry-c-api = { path = "../api" }
 opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic", "metrics", "logs"] }
-prost = "=0.14.4"
+# Pin the prost family to the 1.77-compatible 0.14.1 release. Newer 0.14.x (0.14.2+) require
+# Rust 1.82+ (0.14.4 requires 1.85). Because dev and production dependencies share one locked
+# `prost`, this also keeps the OTLP gRPC production transport graph on the 1.77 product MSRV.
+prost = "=0.14.1"
 criterion = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }

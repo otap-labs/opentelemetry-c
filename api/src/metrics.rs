@@ -775,7 +775,7 @@ define_sync_instrument!(
 
 macro_rules! define_bound_instrument {
     (
-        $source:ident, $handle:ident, $handle_kind:expr_2021, $bind:ident, $record:ident,
+        $source:ident, $handle:ident, $handle_kind:expr, $bind:ident, $record:ident,
         $destroy_fn:ident, $value:ty, $vtable_record:ident
     ) => {
         #[repr(C)]

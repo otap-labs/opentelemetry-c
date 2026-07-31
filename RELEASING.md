@@ -33,8 +33,12 @@ Releases are coordinated, experimental, and source-only. Follow
 14. Verify the tagged source contains `Cargo.lock`, API and SDK headers, `LICENSE`,
     `README.md`, `VERSIONING.md`, `RELEASING.md`, both changelogs, and examples.
 
-The first release remains blocked until the MSRV is resolved and enforced. After choosing and
-validating the MSRV, update all three manifests and set the
-`OPENTELEMETRY_C_VALIDATED_MSRV` repository variable to the exact same version; the dedicated
-CI job then checks the product libraries with that toolchain. The product MSRV does not cover
-test, integration-test, or benchmark-only dependencies.
+The product MSRV is Rust 1.77.0. Before the first release, validate the committed `--locked`
+product graph and set the `OPENTELEMETRY_C_VALIDATED_MSRV` repository variable to `1.77.0`.
+The dedicated `msrv` CI job installs that exact toolchain and checks the product libraries on
+both supported platforms (Linux and macOS) across every documented production feature
+configuration; until the variable is set — or while it disagrees with the manifests — the job
+fails closed on every event, so it is never silently skipped. Setting the manifests and
+setting the repository variable are separate GitHub operations, so the release is enforced
+only once both agree. The product MSRV does not cover test, integration-test, benchmark,
+fuzz, example, or developer-tooling dependencies, nor `rustfmt`/Clippy.
