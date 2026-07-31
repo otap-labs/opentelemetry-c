@@ -49,5 +49,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "trace_propagation"
+path = "fuzz_targets/trace_propagation.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

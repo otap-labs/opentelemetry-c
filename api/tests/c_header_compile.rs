@@ -138,6 +138,17 @@ int main(void) {
         (void)otel_span_context_span_id(built, span_id);
         (void)otel_span_context_trace_flags(built, &flags);
         (void)otel_span_context_tracestate(built);
+        {
+            char tp[64];
+            size_t need = 0;
+            otel_span_context_t* extracted = NULL;
+            (void)otel_trace_propagation_inject_traceparent(built, tp, sizeof(tp), &need);
+            (void)otel_trace_propagation_inject_tracestate(built, tp, sizeof(tp), &need);
+            (void)otel_trace_propagation_extract(
+                otel_cstr("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+                otel_string_view_empty(), &extracted);
+            otel_span_context_destroy(extracted);
+        }
         otel_span_context_destroy(built);
     }
     otel_span_context_destroy(otel_span_context_clone(context));

@@ -4,6 +4,13 @@
 
 ### Added
 
+- W3C Trace Context propagation: a bounded, direct API operating on the immutable
+  `otel_span_context_t` (no SDK, vtable, or global state). `otel_trace_propagation_extract`
+  parses a `traceparent` plus optional `tracestate` into a new owned **remote** context;
+  `otel_trace_propagation_inject_traceparent` / `_inject_tracestate` format an existing context
+  into caller-provided buffers with a length-query/undersized contract. Strict lowercase-hex,
+  version/flag/separator/all-zero-ID validation; unknown trace-flag bits preserved; input sizes
+  bounded before allocation. Baggage remains deferred. See `TRACES_COMPLIANCE.md`.
 - SpanContext value operations over the immutable `otel_span_context_t`:
   `otel_span_context_is_valid`, `otel_span_context_is_remote`, `otel_span_context_trace_id`
   (16-byte big-endian), `otel_span_context_span_id` (8-byte big-endian),

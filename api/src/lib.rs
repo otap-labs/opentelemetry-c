@@ -28,6 +28,7 @@ mod logs;
 mod logs_global;
 mod metrics;
 mod metrics_global;
+mod propagation;
 mod trace;
 
 // Re-export the shared ABI value types so Rust consumers (and this crate's tests) can use
@@ -58,6 +59,10 @@ pub use metrics_global::{
     otel_api_meter_provider_new, otel_api_register_global_meter_provider,
     otel_api_register_global_meter_provider_with_token, otel_api_unregister_global_meter_provider,
     otel_global_meter_provider,
+};
+pub use propagation::{
+    otel_trace_propagation_extract, otel_trace_propagation_inject_traceparent,
+    otel_trace_propagation_inject_tracestate,
 };
 pub use trace::{
     otel_span_add_event, otel_span_context_clone, otel_span_context_create,

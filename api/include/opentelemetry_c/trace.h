@@ -274,6 +274,57 @@ otel_span_context_t* otel_span_context_create(const uint8_t trace_id[16],
                                               otel_bool_t is_remote,
                                               otel_string_view_t trace_state);
 
+/* ---- W3C Trace Context propagation ---------------------------------------- */
+
+/*
+ * A bounded, direct traceparent/tracestate propagation API. See TRACES_COMPLIANCE.md
+ * ("W3C Trace Context propagation"). No borrowed pointer or callback state is retained past
+ * a call; all input sizes are bounded before allocation. Baggage is out of scope.
+ */
+
+/*
+ * Extract a remote span context from a W3C `traceparent` and optional `tracestate`.
+ *
+ *   traceparent - required header value (e.g. "00-<32hex>-<16hex>-<2hex>").
+ *   tracestate  - optional; pass an empty view for none.
+ *   out         - receives a new owned context with is_remote == true, or NULL on failure.
+ *
+ * Malformed length/separators/IDs, an all-zero trace or span ID, version "ff", forbidden
+ * trailing data, or an invalid tracestate are rejected with OTEL_STATUS_INVALID_ARGUMENT and
+ * *out == NULL. Unknown/reserved trace-flag bits are preserved. Release *out with
+ * otel_span_context_destroy().
+ */
+otel_status_t otel_trace_propagation_extract(otel_string_view_t traceparent,
+                                             otel_string_view_t tracestate,
+                                             otel_span_context_t** out);
+
+/*
+ * Format the `traceparent` for `context` into `buffer` (not NUL-terminated).
+ *
+ * Length/query contract shared by both injectors:
+ *   - If `out_len` is non-NULL it always receives the exact required byte length.
+ *   - If `buffer` is NULL the call is a pure length query and returns OTEL_STATUS_OK.
+ *   - If `buffer` is non-NULL and `capacity` >= required, the bytes are written and OK is
+ *     returned; otherwise OTEL_STATUS_INVALID_ARGUMENT is returned with `out_len` still set,
+ *     so the caller can resize and retry.
+ * An invalid context returns OTEL_STATUS_INVALID_ARGUMENT. A version-00 traceparent is 55
+ * bytes.
+ */
+otel_status_t otel_trace_propagation_inject_traceparent(const otel_span_context_t* context,
+                                                        char* buffer,
+                                                        size_t capacity,
+                                                        size_t* out_len);
+
+/*
+ * Format the `tracestate` for `context` into `buffer` (not NUL-terminated). Uses the same
+ * length/query contract as otel_trace_propagation_inject_traceparent(). An empty tracestate
+ * yields *out_len == 0 and writes nothing.
+ */
+otel_status_t otel_trace_propagation_inject_tracestate(const otel_span_context_t* context,
+                                                       char* buffer,
+                                                       size_t capacity,
+                                                       size_t* out_len);
+
 /* ---- Convenience helpers -------------------------------------------------- */
 
 #if defined(__cplusplus) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)

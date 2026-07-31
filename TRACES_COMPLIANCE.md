@@ -23,7 +23,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Context parent | Implemented | `otel_tracer_start_span_with_context` starts a span from an immutable, implementation-neutral `otel_span_context_t`. Mutually exclusive with a live parent handle. |
 | Immutable SpanContext snapshot | Implemented | `otel_span_get_context` copies a live SDK-backed span's context into an API-owned handle; `clone`/`destroy` supported. Shared in-process by Traces and Logs. |
 | SpanContext value operations | Implemented | Validity, 16-byte trace ID, 8-byte span ID, opaque `uint8_t` trace flags, `is_remote`, borrowed tracestate view, and construction from raw parts. Reserved/unknown trace-flag bits are preserved opaque. See "SpanContext value API" below. |
-| W3C Trace Context propagation | Planned | Bounded direct `traceparent`/`tracestate` extract and inject; remote=true preserved; malformed input rejected. Baggage deferred (see below). |
+| W3C Trace Context propagation | Implemented | Bounded direct `traceparent`/`tracestate` extract and inject (`otel_trace_propagation_*`); remote=true preserved on extraction; malformed length/separators/IDs, version `ff`, uppercase hex, forbidden trailing data, and malformed tracestate rejected. Baggage deferred (see below). |
 | Span links | Planned | Links carrying an immutable `SpanContext` plus copied scalar attributes, via versioned span-start options. |
 | Explicit start timestamp | Planned | Explicit Unix-nanosecond span start where the pinned Rust `SpanBuilder` permits. |
 | Versioned span-start options | Planned | `struct_size`-gated span-start descriptor carrying kind, initial attributes, links, and start timestamp; older callers preserved. |
@@ -120,7 +120,7 @@ criteria that this surface claims to satisfy.
 Trace context and propagation:
 - [x] Stable C representation/opaque handle for SpanContext (IDs, flags, remote, validity, tracestate).
 - [x] Start spans from an extracted/explicit context (`otel_tracer_start_span_with_context`).
-- [ ] W3C Trace Context inject/extract (Phase 3).
+- [x] W3C Trace Context inject/extract (`otel_trace_propagation_*`).
 - [x] Baggage decision recorded: deferred to a separate cross-signal epic.
 - [x] First propagation API avoids long-lived borrowed C memory / unconstrained callbacks (bounded direct API).
 
