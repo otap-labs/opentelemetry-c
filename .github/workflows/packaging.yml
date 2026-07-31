@@ -8,6 +8,9 @@ on:
   merge_group:
     types: [checks_requested]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -358,4 +361,4 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run source archive test
-        run: bash packaging/tests/source_archive/run_source_archive_test.sh
+        run: bash packaging/tests/source_archive/run_source_archive_test.sh /tmp/otelc-archive-test

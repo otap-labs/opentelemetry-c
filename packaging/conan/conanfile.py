@@ -17,6 +17,7 @@ import os
 import shutil
 
 from conan import ConanFile
+from conan.errors import ConanInvalidConfiguration
 from conan.tools.cmake import CMake, CMakeToolchain, cmake_layout
 from conan.tools.files import copy
 
@@ -48,24 +49,22 @@ class OpenTelemetryCConan(ConanFile):
         "no_default_features": False,
     }
 
-    # Source is the repository itself; export the whole tree.
-    exports_sources = (
-        "CMakeLists.txt",
-        "cmake/*",
-        "api/**",
-        "sdk/**",
-        "abi/**",
-        "Cargo.toml",
-        "Cargo.lock",
-        "README.md",
-        "LICENSE",
-        "VERSIONING.md",
-        "RELEASING.md",
-        "SECURITY.md",
-        "docs/**",
-        "scripts/**",
-        "*_COMPLIANCE.md",
-    )
+    # No exports_sources class attribute: we override export_sources() below to
+    # copy from the repository root (two levels up from packaging/conan/).
+
+    def export_sources(self):
+        # The recipe lives at packaging/conan/conanfile.py; the source tree is
+        # the repository root two levels up.
+        repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        dst = self.export_sources_folder
+        for pattern in [
+            "CMakeLists.txt", "Cargo.toml", "Cargo.lock",
+            "LICENSE", "README.md", "VERSIONING.md", "RELEASING.md",
+            "SECURITY.md", "*_COMPLIANCE.md",
+        ]:
+            copy(self, pattern, src=repo_root, dst=dst)
+        for subdir in ["cmake", "api", "sdk", "abi", "docs", "scripts"]:
+            copy(self, f"{subdir}/*", src=repo_root, dst=dst)
 
     def validate(self):
         if self.settings.os == "Windows":

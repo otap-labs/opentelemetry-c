@@ -30,14 +30,20 @@ if(NOT EXISTS "${OTELC_SOURCE_PATH}/CMakeLists.txt")
         "repository tree.")
 endif()
 
+vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
+    FEATURES
+        "otlp-http"   OTEL_SDK_OTLP_HTTP
+        "otlp-grpc"   OTEL_SDK_OTLP_GRPC
+        "native-tls"  OTEL_SDK_NATIVE_TLS
+        "rustls-tls"  OTEL_SDK_RUSTLS_TLS
+        "grpc-tls"    OTEL_SDK_GRPC_TLS_RING
+)
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${OTELC_SOURCE_PATH}"
     OPTIONS
         -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
-        # Individual feature options can be set via vcpkg feature mappings below
-        "-DOTEL_SDK_OTLP_HTTP=${OTELC_OTLP_HTTP}"
-        "-DOTEL_SDK_OTLP_GRPC=${OTELC_OTLP_GRPC}"
-        "-DOTEL_SDK_NATIVE_TLS=${OTELC_NATIVE_TLS}"
+        ${FEATURE_OPTIONS}
 )
 
 vcpkg_cmake_install()

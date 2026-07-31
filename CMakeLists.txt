@@ -201,27 +201,29 @@ set(_cargo_build_cmd
 set(OTEL_C_API_LIB_PATH "${OTEL_C_CARGO_LIB_DIR}/${OTEL_C_API_LIB}")
 set(OTEL_C_SDK_LIB_PATH "${OTEL_C_CARGO_LIB_DIR}/${OTEL_C_SDK_LIB}")
 
-add_custom_command(
-    OUTPUT
-        "${OTEL_C_API_LIB_PATH}"
-        "${OTEL_C_SDK_LIB_PATH}"
+# Always-run target: Cargo decides whether recompilation is needed based on
+# Rust source files, Cargo.toml manifests, Cargo.lock, and build scripts.
+# Do NOT use add_custom_command(OUTPUT ...) here — that causes CMake to skip
+# the Cargo invocation whenever the output files already exist, leaving stale
+# libraries after any Rust source change.
+add_custom_target(opentelemetry_c_cargo ALL
     COMMAND ${CMAKE_COMMAND} -E env ${_cargo_build_env}
             ${_cargo_build_cmd}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Building opentelemetry-c API and SDK with Cargo"
+    COMMENT "Building opentelemetry-c API and SDK with Cargo (incremental)"
+    BYPRODUCTS
+        "${OTEL_C_API_LIB_PATH}"
+        "${OTEL_C_SDK_LIB_PATH}"
     VERBATIM
 )
 
-add_custom_target(opentelemetry_c_cargo ALL
-    DEPENDS "${OTEL_C_API_LIB_PATH}" "${OTEL_C_SDK_LIB_PATH}"
-)
-
+# Verify the expected artifacts exist after Cargo runs.
 add_custom_command(TARGET opentelemetry_c_cargo POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E echo "Verifying library artifacts..."
     COMMAND ${CMAKE_COMMAND} -DPATH=${OTEL_C_API_LIB_PATH} -P
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyFile.cmake
     COMMAND ${CMAKE_COMMAND} -DPATH=${OTEL_C_SDK_LIB_PATH} -P
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyFile.cmake
+    VERBATIM
 )
 
 # ── IMPORTED targets for consumers within this build ─────────────────────────
@@ -306,14 +308,19 @@ configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenTelemetryCConfig.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/OpenTelemetryCConfig.cmake"
     INSTALL_DESTINATION "${OTEL_C_CMAKE_CONFIG_DIR}"
-    NO_SET_AND_CHECK_MACRO
+    # PATH_VARS bakes the configured lib/include dir names (e.g. lib64, include)
+    # into the installed config and relocates them relative to the install prefix,
+    # so the package works correctly after installation or prefix relocation.
+    PATH_VARS CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_INCLUDEDIR
     NO_CHECK_REQUIRED_COMPONENTS_MACRO
 )
 
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/OpenTelemetryCConfigVersion.cmake"
     VERSION "${OTEL_C_VERSION}"
-    COMPATIBILITY SameMajorVersion
+    # Pre-1.0 policy (VERSIONING.md): different 0.x minor versions are incompatible.
+    # SameMinorVersion requires the same major.minor — patch upgrades are compatible.
+    COMPATIBILITY SameMinorVersion
 )
 
 install(

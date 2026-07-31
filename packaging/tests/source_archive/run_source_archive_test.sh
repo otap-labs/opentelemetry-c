@@ -17,7 +17,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-WORK_DIR="${1:-${REPO_ROOT}/archive-test-work}"
+# IMPORTANT: the work directory MUST be outside the repository checkout so that
+# git rev-parse does not discover the parent .git directory. Use /tmp by default.
+if [[ -n "${1:-}" ]]; then
+    WORK_DIR="$1"
+else
+    WORK_DIR="$(mktemp -d /tmp/otelc-archive-test-XXXXXX)"
+fi
+# If the caller explicitly chose a path inside the repo, warn and abort.
+if [[ "${WORK_DIR}" == "${REPO_ROOT}"* ]]; then
+    echo "ERROR: WORK_DIR '${WORK_DIR}' is inside the repository checkout." >&2
+    echo "       Choose a path under /tmp or another directory outside the repo." >&2
+    exit 1
+fi
+
 rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_DIR}"
 
@@ -70,8 +83,8 @@ do
     fi
 done
 
-echo "==> Building api_consumer against installed prefix"
-cmake -S "${REPO_ROOT}/packaging/tests/api_consumer" \
+echo "==> Building api_consumer from extracted archive (not original checkout)"
+cmake -S "${EXTRACT_DIR}/packaging/tests/api_consumer" \
       -B "${CONSUMER_BUILD}" \
       -DCMAKE_PREFIX_PATH="${INSTALL_DIR}" \
       -DCMAKE_BUILD_TYPE=Release

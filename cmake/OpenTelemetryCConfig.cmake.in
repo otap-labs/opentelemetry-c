@@ -13,14 +13,65 @@
 
 set(_OTEL_C_VERSION "@OTEL_C_VERSION@")
 
-# Locate shared libraries relative to this config file (relocatable).
-get_filename_component(_otelc_config_dir "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-# Config is installed at: <prefix>/lib/cmake/OpenTelemetryC/
-# Libraries are at:       <prefix>/lib/
-# Headers are at:         <prefix>/include/
-get_filename_component(_otelc_prefix     "${_otelc_config_dir}/../../.." ABSOLUTE)
-set(_otelc_lib_dir     "${_otelc_prefix}/lib")
-set(_otelc_include_dir "${_otelc_prefix}/include")
+# Locate libraries and headers using PATH_VARS-generated variables.
+# These paths are relative to the actual install prefix at find_package time,
+# so the package remains functional after prefix relocation.
+set_and_check(_otelc_lib_dir     "@PACKAGE_CMAKE_INSTALL_LIBDIR@")
+set_and_check(_otelc_include_dir "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+
+# Determine platform suffix
+if(APPLE)
+    set(_otelc_lib_suffix ".dylib")
+elseif(UNIX)
+    set(_otelc_lib_suffix ".so")
+else()
+    message(FATAL_ERROR "OpenTelemetryC: Windows is not supported.")
+endif()
+
+set(_otelc_api_lib "${_otelc_lib_dir}/libopentelemetry_c_api${_otelc_lib_suffix}")
+set(_otelc_sdk_lib "${_otelc_lib_dir}/libopentelemetry_c_sdk${_otelc_lib_suffix}")
+
+# Validate that the libraries exist at the resolved location
+if(NOT EXISTS "${_otelc_api_lib}")
+    set(OpenTelemetryC_FOUND FALSE)
+    set(OpenTelemetryC_NOT_FOUND_MESSAGE
+        "OpenTelemetryC: API library not found at '${_otelc_api_lib}'")
+    return()
+endif()
+if(NOT EXISTS "${_otelc_sdk_lib}")
+    set(OpenTelemetryC_FOUND FALSE)
+    set(OpenTelemetryC_NOT_FOUND_MESSAGE
+        "OpenTelemetryC: SDK library not found at '${_otelc_sdk_lib}'")
+    return()
+endif()
+if(NOT EXISTS "${_otelc_include_dir}")
+    set(OpenTelemetryC_FOUND FALSE)
+    set(OpenTelemetryC_NOT_FOUND_MESSAGE
+        "OpenTelemetryC: include directory not found at '${_otelc_include_dir}'")
+    return()
+endif()
+
+# ── OpenTelemetryC::api ───────────────────────────────────────────────────────
+if(NOT TARGET OpenTelemetryC::api)
+    add_library(OpenTelemetryC::api SHARED IMPORTED)
+    set_target_properties(OpenTelemetryC::api PROPERTIES
+        IMPORTED_LOCATION "${_otelc_api_lib}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_otelc_include_dir}"
+    )
+endif()
+
+# ── OpenTelemetryC::sdk ───────────────────────────────────────────────────────
+if(NOT TARGET OpenTelemetryC::sdk)
+    add_library(OpenTelemetryC::sdk SHARED IMPORTED)
+    set_target_properties(OpenTelemetryC::sdk PROPERTIES
+        IMPORTED_LOCATION "${_otelc_sdk_lib}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_otelc_include_dir}"
+        INTERFACE_LINK_LIBRARIES "OpenTelemetryC::api"
+    )
+endif()
+
+set(OpenTelemetryC_FOUND TRUE)
+set(OpenTelemetryC_VERSION "${_OTEL_C_VERSION}")
 
 # Determine platform suffix
 if(APPLE)

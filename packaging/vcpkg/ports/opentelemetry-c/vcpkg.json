@@ -24,6 +24,12 @@
     },
     "native-tls": {
       "description": "Use platform TLS for OTLP HTTP"
+    },
+    "rustls-tls": {
+      "description": "Use rustls for OTLP HTTP (mutually exclusive with native-tls)"
+    },
+    "grpc-tls": {
+      "description": "Enable gRPC TLS using ring and platform roots (implies otlp-grpc)"
     }
   }
 }
