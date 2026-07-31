@@ -35,7 +35,10 @@ Releases are coordinated, experimental, and source-only. Follow
 
 The product MSRV is Rust 1.77.0. Before the first release, validate the committed `--locked`
 product graph and set the `OPENTELEMETRY_C_VALIDATED_MSRV` repository variable to `1.77.0`.
-The dedicated `msrv` CI job installs that exact toolchain and checks the product libraries;
-until the variable is set the job fails closed on every event, so it is never silently
-skipped. The product MSRV does not cover test, integration-test, benchmark, fuzz, example,
-or developer-tooling dependencies.
+The dedicated `msrv` CI job installs that exact toolchain and checks the product libraries on
+both supported platforms (Linux and macOS) across every documented production feature
+configuration; until the variable is set — or while it disagrees with the manifests — the job
+fails closed on every event, so it is never silently skipped. Setting the manifests and
+setting the repository variable are separate GitHub operations, so the release is enforced
+only once both agree. The product MSRV does not cover test, integration-test, benchmark,
+fuzz, example, or developer-tooling dependencies, nor `rustfmt`/Clippy.

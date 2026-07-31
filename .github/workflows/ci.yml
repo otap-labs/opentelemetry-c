@@ -26,9 +26,19 @@ jobs:
     # toolchain and setting the rust-version in all three manifests to the same value.
     # Until it is set this job FAILS CLOSED on every event (push, pull_request, merge_group,
     # tag) so a green pipeline never implies the MSRV is enforced. See VERSIONING.md and #3.
+    #
+    # Runs on both supported shared-library platforms (Linux and macOS) so target-specific
+    # production dependencies (e.g. openssl on Linux, security-framework on macOS for the
+    # default native-TLS build) are proven to build with the exact validated toolchain.
     env:
       VALIDATED_MSRV: ${{ vars.OPENTELEMETRY_C_VALIDATED_MSRV }}
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Require a validated MSRV
@@ -53,7 +63,10 @@ jobs:
           toolchain: ${{ env.VALIDATED_MSRV }}
       - name: Check product libraries at the validated MSRV
         # Library-only (no --all-targets) so test/benchmark/fuzz-only dependencies never
-        # define the product MSRV. Covers the documented production feature configurations.
+        # define the product MSRV. Covers every documented production feature configuration:
+        # the default OTLP HTTP/native-TLS build, the transport-free core, OTLP gRPC, the
+        # combined OTLP HTTP+gRPC build over Rustls (native-TLS off), and the all-features
+        # superset that enables every transport and both HTTP TLS backends together.
         run: |
           cargo check --locked -p opentelemetry-c-abi --lib
           cargo check --locked -p opentelemetry-c-api --lib
@@ -62,6 +75,7 @@ jobs:
           cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features --features otlp-grpc
           cargo check --locked -p opentelemetry-c-sdk --lib --no-default-features \
             --features otlp-http,rustls-tls,otlp-grpc,grpc-tls-ring,otlp-http-gzip,otlp-http-zstd,otlp-grpc-gzip,otlp-grpc-zstd
+          cargo check --locked -p opentelemetry-c-sdk --lib --all-features
 
   dependency-audit:
     runs-on: ubuntu-latest

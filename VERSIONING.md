@@ -145,9 +145,21 @@ all three project manifests (`opentelemetry-c-abi`, `opentelemetry-c-api`,
 committed `Cargo.lock`:
 
 - the three crates built as libraries (`--lib`);
-- the documented SDK production feature configurations — the transport-free core
-  (`--no-default-features`), the default OTLP HTTP/protobuf build, the OTLP gRPC build, and
-  the combined all-transports/all-TLS build enforced by the MSRV CI job.
+- the documented SDK production feature configurations, each checked with `--lib` and
+  `--locked`: the default OTLP HTTP/protobuf build over the platform's native TLS
+  (`--features` default, i.e. `native-tls`); the transport-free core
+  (`--no-default-features`); the OTLP gRPC build (`--features otlp-grpc`); the combined OTLP
+  HTTP and gRPC build over Rustls with native TLS disabled (`--features otlp-http,rustls-tls,
+  otlp-grpc,grpc-tls-ring` plus the HTTP and gRPC compression features); and the all-features
+  superset (`--all-features`), which enables every transport together with **both** HTTP TLS
+  backends (`native-tls` and `rustls-tls`), all compression features, and the experimental
+  async-runtime metrics reader.
+
+The MSRV job runs this same locked, library-only matrix on both supported shared-library
+platforms — Linux (`ubuntu-latest`) and macOS (`macos-latest`) — so target-specific
+production dependencies (for example `openssl` on Linux and `security-framework` on macOS in
+the native-TLS build) are proven to compile with the exact validated toolchain. Windows and
+statically linked deployments are not supported and are not covered.
 
 The product MSRV explicitly does **not** cover unit or integration tests, benchmarks, fuzz
 targets, examples, developer tooling, or `rustfmt`/Clippy, nor the dependencies that only
@@ -159,11 +171,14 @@ require a newer compiler.
 The MSRV is enforced by the dedicated `msrv` CI job, which is the authoritative proof of the
 claim. That job reads the `OPENTELEMETRY_C_VALIDATED_MSRV` repository variable as the single
 source of truth, verifies it equals the `rust-version` in all three manifests, installs that
-exact toolchain (not latest stable), and runs the `--locked` library checks above. The job
-**fails closed** on every event while the variable is unset, so a green pipeline never implies
-an unenforced MSRV. The MSRV may be raised only by validating the new toolchain against this
-same locked matrix, updating all three manifests, and setting the repository variable to the
-identical version in the same change.
+exact toolchain (not latest stable), and runs the `--locked` library checks above on both
+supported platforms. The job **fails closed** on every event while the variable is unset or
+while it disagrees with the manifests, so a green pipeline never implies an unenforced MSRV.
+Raising the MSRV requires two separate GitHub operations that must be kept consistent: a
+commit that revalidates the new toolchain against this same locked matrix and updates the
+`rust-version` in all three manifests, and a repository-variable update that sets
+`OPENTELEMETRY_C_VALIDATED_MSRV` to the identical version. These are not a single atomic
+change; until both agree the `msrv` job fails closed.
 
 The product MSRV is **Rust 1.77.0**. This is the first Rust release that provides
 `core::mem::offset_of!`, which the SDK's forward-compatible custom-exporter code uses in
