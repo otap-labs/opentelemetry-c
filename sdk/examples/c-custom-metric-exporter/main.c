@@ -325,6 +325,7 @@ static void exporter_state_destroy(void* user_data) {
 
 int main(void) {
     int result = 1;
+    int mutex_initialized = 0;
     exporter_state_t* state = NULL;
     otel_custom_metric_exporter_callbacks_t callbacks;
     otel_metric_exporter_t* exporter = NULL;
@@ -347,6 +348,7 @@ int main(void) {
         fprintf(stderr, "failed to initialize exporter state mutex\n");
         goto cleanup;
     }
+    mutex_initialized = 1;
 
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.struct_size = sizeof(callbacks);
@@ -479,7 +481,9 @@ cleanup:
     otel_manual_metric_reader_destroy(reader);
     otel_metric_exporter_destroy(exporter);
     if (state != NULL) {
-        pthread_mutex_destroy(&state->lock);
+        if (mutex_initialized) {
+            pthread_mutex_destroy(&state->lock);
+        }
         free(state);
     }
     return result;

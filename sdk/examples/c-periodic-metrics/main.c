@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <opentelemetry_c/metric_exporter.h>
 #include <opentelemetry_c/metrics.h>
 #include <opentelemetry_c/periodic_metric_reader.h>

@@ -275,31 +275,31 @@ int main(void) {
     status = otel_meter_create_u64_observable_counter(
         meter, otel_cstr("items.waiting"), &options, observe_u64, observable_counter_state,
         destroy_observable_u64_state, &observable_counter);
-    observable_counter_state = NULL;
     if (status != OTEL_STATUS_OK || observable_counter == NULL) {
         print_status_error("otel_meter_create_u64_observable_counter", status);
         goto cleanup;
     }
+    observable_counter_state = NULL;
 
     options.description = otel_cstr("Background workers in use (observable up-down counter)");
     status = otel_meter_create_i64_observable_up_down_counter(
         meter, otel_cstr("workers.in_use"), &options, observe_i64, observable_up_down_state,
         destroy_observable_i64_state, &observable_up_down);
-    observable_up_down_state = NULL;
     if (status != OTEL_STATUS_OK || observable_up_down == NULL) {
         print_status_error("otel_meter_create_i64_observable_up_down_counter", status);
         goto cleanup;
     }
+    observable_up_down_state = NULL;
 
     options.description = otel_cstr("Memory pressure (observable gauge)");
     status = otel_meter_create_f64_observable_gauge(
         meter, otel_cstr("memory.pressure"), &options, observe_f64, observable_gauge_state,
         destroy_observable_f64_state, &observable_gauge);
-    observable_gauge_state = NULL;
     if (status != OTEL_STATUS_OK || observable_gauge == NULL) {
         print_status_error("otel_meter_create_f64_observable_gauge", status);
         goto cleanup;
     }
+    observable_gauge_state = NULL;
 
     status = otel_sdk_metrics_force_flush(sdk, 0);
     if (status != OTEL_STATUS_OK) {
