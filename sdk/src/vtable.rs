@@ -1252,4 +1252,39 @@ mod tests {
         (vt.tracer_free)(tctx);
         (vt.provider_free)(pctx);
     }
+
+    /// The configured sampler governs whether spans are recorded and exported: `AlwaysOff`
+    /// drops every root span while `AlwaysOn` keeps them (verified end-to-end through the
+    /// SDK vtable against an in-memory exporter).
+    #[test]
+    fn vtable_sampler_governs_recording() {
+        for (sampler, expect_recorded) in [
+            (opentelemetry_sdk::trace::Sampler::AlwaysOff, false),
+            (opentelemetry_sdk::trace::Sampler::AlwaysOn, true),
+        ] {
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+                .with_sampler(sampler)
+                .build();
+            let vt = &SDK_VTABLE;
+            let pctx = provider_ctx(provider);
+            let tctx = (vt.provider_get_tracer)(pctx, sv("scope"), empty(), empty());
+
+            let span = (vt.tracer_start_span)(tctx, sv("root"), 0, std::ptr::null_mut());
+            assert!(!span.is_null());
+            (vt.span_end)(span);
+
+            let spans = exporter.get_finished_spans().unwrap();
+            assert_eq!(
+                spans.iter().any(|s| s.name == "root"),
+                expect_recorded,
+                "sampler recording mismatch"
+            );
+
+            (vt.span_free)(span);
+            (vt.tracer_free)(tctx);
+            (vt.provider_free)(pctx);
+        }
+    }
 }

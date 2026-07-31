@@ -108,6 +108,11 @@ fn sdk_header_and_example_compile() {
 int main(void) {
     otel_sdk_builder_t* b = otel_sdk_builder_new();
     (void)b;
+    otel_sampler_config_t sampler = OTEL_SAMPLER_CONFIG_INIT;
+    sampler.sampler_type = OTEL_SAMPLER_TRACE_ID_RATIO_BASED;
+    sampler.ratio = 0.5;
+    (void)otel_sdk_builder_set_sampler(b, &sampler);
+    (void)otel_sdk_builder_set_sampler(b, (const otel_sampler_config_t*)0);
     otel_span_t* span = (void*)0;
     (void)otel_span_set_attribute(span, otel_kv_double(otel_cstr("d"), 2.5));
     (void)otel_span_set_ok(span);

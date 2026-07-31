@@ -4,6 +4,13 @@
 
 ### Added
 
+- Built-in trace sampler configuration: `otel_sdk_builder_set_sampler` selects the tracer
+  provider's root sampler from a versioned `otel_sampler_config_t` (`struct_size`-gated).
+  Supported kinds are `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased` (probability in `[0, 1]`),
+  and `ParentBased` wrapping a configurable non-parent-based root sampler. Passing a NULL
+  config restores the SDK default (`ParentBased(AlwaysOn)`); invalid ratios, reserved bytes,
+  and a parent-based root that is itself parent-based are rejected. Custom sampler callbacks
+  remain deferred; see `TRACES_COMPLIANCE.md`.
 - Trace vtable support for the extended span-start entry (`tracer_start_span_ex`): the SDK
   reconstructs span contexts and links from a borrowed forward-only descriptor and forwards
   span links, an explicit start timestamp, initial attributes, and a single parenting source

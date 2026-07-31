@@ -28,7 +28,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Explicit start timestamp | Implemented | `start_time_unix_nanos` on `otel_span_start_options_ex_t` forwarded to `SpanBuilder::with_start_time`; 0 = unset (SDK assigns the current time). |
 | Versioned span-start options | Implemented | `otel_span_start_options_ex_t` is a `struct_size`-first descriptor carrying kind, a single parenting source, initial attributes, links, and a start timestamp; optional fields read only when `struct_size` covers them, so older/newer callers interoperate. Gated on the appended `tracer_start_span_ex` vtable entry (`OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE`); pre-extension backed implementations fail closed with `INVALID_CONFIG`. |
 | Array-valued span attributes | Deferred | See "Deliberate limitations". |
-| Built-in samplers | Planned | `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased`, `ParentBased` with a configurable root sampler. Custom sampler callbacks deferred. |
+| Built-in samplers | Implemented | `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased`, `ParentBased` with a configurable root sampler, via `otel_sdk_builder_set_sampler`. Custom sampler callbacks deferred. |
 | Span limits | Planned | Max attributes/events/links per span and per-event/per-link attributes; spec defaults; overflow rejected. |
 | Batch span processor | Implemented | Dedicated OS worker thread, spec-schedule export; SDK core. |
 | Simple span processor | Planned | Synchronous export on the ending thread; suitable for tests and low-volume diagnostics. |
@@ -131,7 +131,7 @@ Span creation and data:
 - [x] Ended-span/no-op consistency for the extended span-start path (no-op tracer returns a valid span; pre-extension backed SDKs fail closed).
 
 SDK configuration:
-- [ ] Built-in samplers (Phase 5).
+- [x] Built-in samplers (Phase 5).
 - [ ] Span limits (Phase 6).
 - [x] ID-generator/user-callback decision: custom sampler/ID callbacks deferred; built-in only.
 - [ ] Simple span processor (Phase 7).

@@ -141,6 +141,62 @@ otel_status_t otel_sdk_builder_set_service_name(otel_sdk_builder_t* builder,
 otel_status_t otel_sdk_builder_add_resource_attribute(otel_sdk_builder_t* builder,
                                                       otel_key_value_t attribute);
 
+/* ---- Sampler -------------------------------------------------------------- */
+
+/* Built-in sampler kinds for otel_sampler_config_t::sampler_type. */
+typedef enum otel_sampler_type_t {
+  /* Sample every span. */
+  OTEL_SAMPLER_ALWAYS_ON = 0,
+  /* Drop every span. */
+  OTEL_SAMPLER_ALWAYS_OFF = 1,
+  /* Sample a deterministic fraction of traces based on the trace id (see `ratio`). */
+  OTEL_SAMPLER_TRACE_ID_RATIO_BASED = 2,
+  /* Respect the parent's sampled flag; for root spans, fall back to `parent_based_root_type`. */
+  OTEL_SAMPLER_PARENT_BASED = 3
+} otel_sampler_type_t;
+
+/*
+ * Versioned built-in sampler configuration. Set `struct_size` to sizeof(otel_sampler_config_t)
+ * so the SDK reads only the fields your build knows about; the struct may grow in future
+ * revisions without breaking existing callers.
+ */
+typedef struct otel_sampler_config_t {
+  /* Size in bytes of this struct as compiled by the caller. Use OTEL_SAMPLER_CONFIG_INIT. */
+  size_t struct_size;
+  /* One of otel_sampler_type_t. */
+  uint32_t sampler_type;
+  /* Reserved; must be zero. */
+  uint32_t reserved;
+  /* Sampling probability in [0, 1]; used when the (root) sampler is ratio-based. */
+  double ratio;
+  /* For OTEL_SAMPLER_PARENT_BASED, the root sampler kind used when a span has no parent.
+   * Must be a non-parent-based kind. Ignored for other sampler types. */
+  uint32_t parent_based_root_type;
+  /* Reserved; must be zero. */
+  uint32_t reserved2;
+} otel_sampler_config_t;
+
+/* Zero-initializer that stamps struct_size and defaults to AlwaysOn. */
+#define OTEL_SAMPLER_CONFIG_INIT \
+  { sizeof(otel_sampler_config_t), OTEL_SAMPLER_ALWAYS_ON, 0u, 0.0, OTEL_SAMPLER_ALWAYS_ON, 0u }
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
+    defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
+_Static_assert(sizeof(otel_sampler_config_t) == 32, "otel_sampler_config_t ABI mismatch");
+#endif
+
+/*
+ * Configure the root sampler used by the tracer provider. Passing a NULL `config` clears any
+ * override and restores the SDK default (ParentBased(AlwaysOn)). Calling this repeatedly
+ * replaces the previously configured sampler.
+ *
+ * Validation: `struct_size` must be at least offsetof(parent_based_root_type); reserved fields
+ * must be zero; `ratio` must be within [0, 1] for ratio-based (root) samplers; the parent-based
+ * root type must itself be a non-parent-based kind.
+ */
+otel_status_t otel_sdk_builder_set_sampler(otel_sdk_builder_t* builder,
+                                           const otel_sampler_config_t* config);
+
 /* ---- Span processors ------------------------------------------------------ */
 
 /*

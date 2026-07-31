@@ -65,3 +65,10 @@ path = "fuzz_targets/span_start_ex.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sampler_config"
+path = "fuzz_targets/sampler_config.rs"
+test = false
+doc = false
+bench = false
