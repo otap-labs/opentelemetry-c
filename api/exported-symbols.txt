@@ -41,6 +41,7 @@ otel_histogram_u64_record
 otel_last_error_message
 otel_logger_destroy
 otel_logger_emit
+otel_logger_emit_with_context
 otel_logger_enabled
 otel_logger_provider_destroy
 otel_logger_provider_get_logger
@@ -76,8 +77,11 @@ otel_observer_f64_observe
 otel_observer_i64_observe
 otel_observer_u64_observe
 otel_span_add_event
+otel_span_context_clone
+otel_span_context_destroy
 otel_span_destroy
 otel_span_end
+otel_span_get_context
 otel_span_set_attribute
 otel_span_set_bool_attribute
 otel_span_set_double_attribute
@@ -89,6 +93,7 @@ otel_tracer_destroy
 otel_tracer_provider_destroy
 otel_tracer_provider_get_tracer
 otel_tracer_start_span
+otel_tracer_start_span_with_context
 otel_up_down_counter_f64_add
 otel_up_down_counter_f64_destroy
 otel_up_down_counter_i64_add

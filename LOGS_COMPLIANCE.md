@@ -17,7 +17,7 @@ general-purpose end-user logging API.
 | Structured values | Implemented | Strings, bools, `int64`, doubles, raw bytes, arrays, and maps, expressed through a flat borrowed node pool addressed by index range. |
 | Node pool safety | Implemented | A node may reference children only at a strictly greater index, so cycles are structurally unrepresentable and validation needs no visited set. Every node must be referenced exactly once. |
 | Limits | Implemented | 256 attributes, 1024 value nodes, depth 16, 1 MiB strings, 1 MiB byte payloads, 256 map entries, 256 array elements — all enforced before any conversion work. |
-| Trace correlation | Implemented | Explicit trace id, span id, and the `SAMPLED` flag. Trace context is always set before the upstream emit, so the ambient Rust `Context` can never leak into a C caller's record. |
+| Trace correlation | Implemented | Explicit trace id, span id, and the `SAMPLED` flag, plus `otel_logger_emit_with_context()` for an immutable API-owned `otel_span_context_t` snapshot extracted from a live span. Trace context is always set before the upstream emit, so the ambient Rust `Context` can never leak into a C caller's record. |
 | Timestamps | Implemented | Optional `timestamp`; an omitted `observed_timestamp` is defaulted by the upstream SDK rather than by this bridge. |
 | Level check | Implemented | `otel_logger_enabled()` maps to the upstream `event_enabled`. Severity `0` and values above 24 return false without entering Rust, since the upstream signature takes a non-optional `Severity`. |
 | SDK pipeline | Implemented | Independent `SdkLoggerProvider`, simple and batch log processors, resource/scope propagation, force flush, and one-shot shutdown. |

@@ -18,9 +18,9 @@ coverage, and an experimental Logs bridge.
 
 | Signal | C API | Native ABI | C SDK | OTLP exporter | Current scope |
 | --- | --- | --- | --- | --- | --- |
-| **Traces** | Alpha, partial | Alpha | Alpha, partial | Alpha: HTTP/protobuf | Spans, events, scalar attributes, status, batch processing, and lifecycle are implemented. Sampling configuration, propagation, links, limits, and other items remain in the [traces epic](https://github.com/otap-labs/opentelemetry-c/issues/4). |
+| **Traces** | Alpha, partial | Alpha | Alpha, partial | Alpha: HTTP/protobuf | Spans, events, scalar attributes, status, reusable SpanContext snapshots, batch processing, and lifecycle are implemented. Sampling configuration, propagation, links, limits, and other items remain in the [traces epic](https://github.com/otap-labs/opentelemetry-c/issues/4). |
 | **Metrics** | Alpha | Alpha | Alpha | Alpha: HTTP/protobuf and optional gRPC | Synchronous and observable instruments, periodic readers, views, temporality, and lifecycle are implemented. See the [compliance ledger](METRICS_COMPLIANCE.md) and [Metrics epic](https://github.com/otap-labs/opentelemetry-c/issues/5) for constraints and remaining extensions. |
-| **Logs** | Experimental | Experimental | Experimental | Experimental: HTTP/protobuf and optional gRPC | A **log bridge**: logger acquisition, severity, body, structured attributes, explicit trace correlation, simple/batch processors, and lifecycle are implemented. `event_name`, `target`, and unsigned 64-bit values are deliberately not exposed. See the [compliance ledger](LOGS_COMPLIANCE.md) and [logs epic](https://github.com/otap-labs/opentelemetry-c/issues/6). |
+| **Logs** | Experimental | Experimental | Experimental | Experimental: HTTP/protobuf and optional gRPC | A **log bridge**: logger acquisition, severity, body, structured attributes, raw or shared-SpanContext trace correlation, simple/batch processors, and lifecycle are implemented. `event_name`, `target`, and unsigned 64-bit values are deliberately not exposed. See the [compliance ledger](LOGS_COMPLIANCE.md) and [logs epic](https://github.com/otap-labs/opentelemetry-c/issues/6). |
 
 Component stability is also explicit:
 

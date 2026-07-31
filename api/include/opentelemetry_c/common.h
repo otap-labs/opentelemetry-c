@@ -41,6 +41,9 @@
 extern "C" {
 #endif
 
+/* Immutable, opaque trace-context snapshot shared in-process by Traces and Logs. */
+typedef struct otel_span_context_t otel_span_context_t;
+
 /*
  * Status code returned by fallible functions. OTEL_STATUS_OK (0) means success.
  * Any non-zero value indicates failure; call otel_last_error_message() for detail.

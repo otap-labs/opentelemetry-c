@@ -136,6 +136,18 @@ otel_span_t* otel_tracer_start_span(const otel_tracer_t* tracer,
                                     otel_string_view_t name,
                                     const otel_span_start_options_t* options);
 
+/*
+ * Start a span from an immutable, implementation-neutral parent context. `parent` is borrowed
+ * for the call. If options->parent is non-NULL the call fails: a live parent span and a context
+ * snapshot are mutually exclusive. An older installed SDK that lacks this operation returns
+ * NULL. With no SDK installed, the call returns a valid no-op span.
+ */
+otel_span_t* otel_tracer_start_span_with_context(
+    const otel_tracer_t* tracer,
+    otel_string_view_t name,
+    const otel_span_start_options_t* options,
+    const otel_span_context_t* parent);
+
 /* Destroy a tracer handle (no-op on NULL). */
 void otel_tracer_destroy(otel_tracer_t* tracer);
 
@@ -197,6 +209,22 @@ otel_status_t otel_span_end(otel_span_t* span);
  * performs a best-effort end first.
  */
 void otel_span_destroy(otel_span_t* span);
+
+/* ---- Immutable SpanContext snapshots ------------------------------------- */
+
+/*
+ * Copy the immutable context of a live SDK-backed span into an API-owned handle. A no-op span
+ * has no valid context and returns OTEL_STATUS_INVALID_CONFIG. The snapshot remains valid after
+ * the source span ends or is destroyed and is safe to share across threads. This release keeps
+ * snapshots opaque and in-process; propagation import/export APIs are not yet provided.
+ */
+otel_status_t otel_span_get_context(const otel_span_t* span, otel_span_context_t** out);
+
+/* Return a new independent handle with the same immutable contents, or NULL on failure. */
+otel_span_context_t* otel_span_context_clone(const otel_span_context_t* context);
+
+/* Release one owned snapshot handle. NULL is accepted. */
+void otel_span_context_destroy(otel_span_context_t* context);
 
 /* ---- Convenience helpers -------------------------------------------------- */
 

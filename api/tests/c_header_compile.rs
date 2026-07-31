@@ -116,10 +116,15 @@ int main(void) {
         otel_kv_double(otel_cstr("ratio"), 1.5)
     };
     otel_span_t* span = (void*)0;
+    otel_span_context_t* context = NULL;
     (void)otel_span_add_event(span, otel_cstr("event"), attrs, sizeof(attrs) / sizeof(attrs[0]));
     (void)otel_span_set_attribute(span, otel_kv_int64(otel_cstr("x"), 1));
     (void)otel_span_set_ok(span);
     (void)otel_span_set_error(span, otel_cstr("boom"));
+    (void)otel_span_get_context(span, &context);
+    (void)otel_tracer_start_span_with_context(NULL, otel_cstr("child"), NULL, context);
+    otel_span_context_destroy(otel_span_context_clone(context));
+    otel_span_context_destroy(context);
     return 0;
 }
 "#,
@@ -140,6 +145,7 @@ int main(void) {
     otel_logger_provider_t* provider = otel_global_logger_provider();
     otel_logger_options_t scope = OTEL_LOGGER_OPTIONS_INIT;
     otel_logger_t* logger = NULL;
+    otel_span_context_t* context = NULL;
     otel_log_record_view_t record = OTEL_LOG_RECORD_VIEW_INIT;
     /* body = ["one", {"k": 2}] laid out in the flat node pool. */
     static const uint8_t raw[] = {0xDE, 0xAD};
@@ -171,6 +177,8 @@ int main(void) {
     if (otel_logger_enabled(logger, OTEL_LOG_SEVERITY_ERROR)) {
         (void)otel_logger_emit(logger, &record);
     }
+    record.present_fields &= ~OTEL_LOG_FIELD_TRACE_CONTEXT;
+    (void)otel_logger_emit_with_context(logger, &record, context);
     (void)otel_log_value_double(1.5);
     (void)otel_log_value_empty();
     otel_logger_destroy(logger);

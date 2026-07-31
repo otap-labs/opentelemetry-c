@@ -159,9 +159,10 @@ pub unsafe extern "C" fn otel_api_register_global_provider(
 ///
 /// # Safety
 /// `vtable` must be correctly aligned and readable for `OtelVtableHeader`. If its trace
-/// kind/version and size are compatible, it must point to a complete [`OtelImplVtable`] that
-/// remains live for the returned handle's lifetime. `provider_ctx` must be caller-owned and
-/// accepted by that vtable. Its ownership transfers only when a non-NULL handle is returned.
+/// kind/version and size are compatible, it must be readable through its advertised
+/// `struct_size` and remain live for the returned handle's lifetime. `provider_ctx` must be
+/// caller-owned and accepted by that vtable. Its ownership transfers only when a non-NULL
+/// handle is returned.
 #[no_mangle]
 pub unsafe extern "C" fn otel_api_provider_new(
     vtable: *const OtelImplVtable,

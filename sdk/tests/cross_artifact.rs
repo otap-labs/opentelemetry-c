@@ -30,6 +30,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     metrics_service_server::{MetricsService, MetricsServiceServer},
     ExportMetricsServiceResponse,
 };
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{any_value, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point, AggregationTemporality};
 use prost::Message;
@@ -197,6 +198,7 @@ typedef struct otel_sdk_t otel_sdk_t;
 typedef struct otel_tracer_provider_t otel_tracer_provider_t;
 typedef struct otel_tracer_t otel_tracer_t;
 typedef struct otel_span_t otel_span_t;
+typedef struct otel_span_context_t otel_span_context_t;
 typedef struct otel_meter_provider_t otel_meter_provider_t;
 typedef struct otel_meter_t otel_meter_t;
 typedef struct otel_counter_u64_t otel_counter_u64_t;
@@ -213,6 +215,11 @@ typedef struct { uint32_t kind; const otel_span_t* parent; } otel_span_start_opt
 extern otel_tracer_provider_t* otel_global_tracer_provider(void);
 extern otel_tracer_t* otel_tracer_provider_get_tracer(const otel_tracer_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
 extern otel_span_t* otel_tracer_start_span(const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*);
+extern int otel_span_get_context(const otel_span_t*, otel_span_context_t**);
+extern void otel_span_context_destroy(otel_span_context_t*);
+extern otel_span_t* otel_tracer_start_span_with_context(
+    const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*,
+    const otel_span_context_t*);
 extern int otel_span_set_string_attribute(otel_span_t*, otel_string_view_t, otel_string_view_t);
 extern int otel_span_end(otel_span_t*);
 extern void otel_span_destroy(otel_span_t*);
@@ -340,10 +347,21 @@ static void work(void){
     otel_tracer_t* t = otel_tracer_provider_get_tracer(p, cs("instr"), cs("1.0"), emp());
     otel_span_t* parent = otel_tracer_start_span(t, cs("parent"), (void*)0);
     otel_span_set_string_attribute(parent, cs("k"), cs("v"));
-    otel_span_start_options_t o; o.kind=2; o.parent=parent;
-    otel_span_t* child = otel_tracer_start_span(t, cs("child"), &o);
+    otel_span_context_t* parent_context = (void*)0;
+    otel_span_start_options_t o; o.kind=2; o.parent=(void*)0;
+    otel_span_t* child = (void*)0;
+    if (otel_span_get_context(parent, &parent_context) == 0 && parent_context != (void*)0) {
+        otel_span_end(parent); otel_span_destroy(parent);
+        parent=(void*)0;
+        child=otel_tracer_start_span_with_context(t, cs("child"), &o, parent_context);
+        if (child == (void*)0) abort();
+    } else {
+        o.parent=parent;
+        child=otel_tracer_start_span(t, cs("child"), &o);
+    }
     otel_span_end(child); otel_span_destroy(child);
-    otel_span_end(parent); otel_span_destroy(parent);
+    if (parent) { otel_span_end(parent); otel_span_destroy(parent); }
+    if (parent_context) otel_span_context_destroy(parent_context);
     otel_tracer_destroy(t); otel_tracer_provider_destroy(p);
 }
 static int metrics_work(void){
@@ -697,6 +715,7 @@ struct MockCollector {
     port: u16,
     bytes: Arc<AtomicUsize>,
     metric_bodies: Arc<Mutex<Vec<Vec<u8>>>>,
+    trace_bodies: Arc<Mutex<Vec<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<()>,
 }
@@ -708,10 +727,12 @@ fn start_mock() -> MockCollector {
     listener.set_nonblocking(true).unwrap();
     let bytes = Arc::new(AtomicUsize::new(0));
     let metric_bodies = Arc::new(Mutex::new(Vec::new()));
+    let trace_bodies = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(AtomicBool::new(false));
-    let (b2, bodies2, s2) = (
+    let (b2, metric_bodies2, trace_bodies2, s2) = (
         Arc::clone(&bytes),
         Arc::clone(&metric_bodies),
+        Arc::clone(&trace_bodies),
         Arc::clone(&stop),
     );
     let thread = std::thread::spawn(move || {
@@ -755,7 +776,14 @@ fn start_mock() -> MockCollector {
                         if buf.len().saturating_sub(he) >= content_len {
                             b2.fetch_add(content_len, Ordering::Relaxed);
                             if String::from_utf8_lossy(&buf[..he]).contains("POST /v1/metrics") {
-                                bodies2
+                                metric_bodies2
+                                    .lock()
+                                    .unwrap()
+                                    .push(buf[he..he + content_len].to_vec());
+                            } else if String::from_utf8_lossy(&buf[..he])
+                                .contains("POST /v1/traces")
+                            {
+                                trace_bodies2
                                     .lock()
                                     .unwrap()
                                     .push(buf[he..he + content_len].to_vec());
@@ -777,6 +805,7 @@ fn start_mock() -> MockCollector {
         port,
         bytes,
         metric_bodies,
+        trace_bodies,
         stop,
         thread,
     }
@@ -888,6 +917,31 @@ fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
         .map(|body| ExportMetricsServiceRequest::decode(body.as_slice()).expect("decode OTLP"))
         .collect::<Vec<_>>();
     assert_metric_requests(&requests);
+}
+
+fn assert_snapshot_child_trace_relationship(bodies: &[Vec<u8>]) {
+    let requests = bodies
+        .iter()
+        .map(|body| ExportTraceServiceRequest::decode(body.as_slice()).expect("decode OTLP traces"))
+        .collect::<Vec<_>>();
+    let spans = requests
+        .iter()
+        .flat_map(|request| &request.resource_spans)
+        .flat_map(|resource| &resource.scope_spans)
+        .flat_map(|scope| &scope.spans)
+        .collect::<Vec<_>>();
+    let correlated = spans.iter().any(|child| {
+        child.name == "child"
+            && spans.iter().any(|parent| {
+                parent.name == "parent"
+                    && child.trace_id == parent.trace_id
+                    && child.parent_span_id == parent.span_id
+            })
+    });
+    assert!(
+        correlated,
+        "no exported child preserved the snapshot parent's trace ID and span ID"
+    );
 }
 
 #[derive(Default)]
@@ -1219,7 +1273,8 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     // Wait (bounded) for the collector to receive the export. This avoids a fixed sleep that can
     // stop the mock too early under slow CI while still failing promptly if no POST arrives.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while collector.metric_bodies.lock().unwrap().len() < runs.len()
+    while (collector.metric_bodies.lock().unwrap().len() < runs.len()
+        || collector.trace_bodies.lock().unwrap().len() < runs.len())
         && std::time::Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(20));
@@ -1251,6 +1306,12 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         "the mock collector received no OTLP metric requests through the API-owned Metrics slot"
     );
     assert_decoded_metrics(&metric_bodies);
+    let trace_bodies = collector.trace_bodies.lock().unwrap();
+    assert!(
+        !trace_bodies.is_empty(),
+        "the mock collector received no OTLP trace requests through the API-owned trace slot"
+    );
+    assert_snapshot_child_trace_relationship(&trace_bodies);
     eprintln!("cross-artifact export OK: {received} protobuf bytes via API-only path");
 }
 
