@@ -97,7 +97,12 @@ OpenTelemetry handles. `dlclose` after use is unsupported.
 The trace, Metrics, and Logs examples provide working Makefiles:
 
 - [`sdk/examples/c-basic-traces`](../sdk/examples/c-basic-traces)
-- [`sdk/examples/c-metrics`](../sdk/examples/c-metrics)
+- [`sdk/examples/c-metrics-basic`](../sdk/examples/c-metrics-basic)
+- [`sdk/examples/c-metrics-instruments`](../sdk/examples/c-metrics-instruments)
+- [`sdk/examples/c-manual-metrics`](../sdk/examples/c-manual-metrics)
+- [`sdk/examples/c-custom-metric-exporter`](../sdk/examples/c-custom-metric-exporter)
+- [`sdk/examples/c-periodic-metrics`](../sdk/examples/c-periodic-metrics)
+- [`sdk/examples/c-metrics`](../sdk/examples/c-metrics) (combined OTLP reference)
 - [`sdk/examples/c-logs`](../sdk/examples/c-logs)
 - [`sdk/examples/c-custom-log-exporter`](../sdk/examples/c-custom-log-exporter)
 
