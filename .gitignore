@@ -4,3 +4,7 @@ fuzz/corpus
 fuzz/target
 **/*.rs.bk
 .DS_Store
+# CMake build directories and install prefixes
+/build*/
+/install*/
+/archive-test-work/
