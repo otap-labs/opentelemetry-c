@@ -8,7 +8,6 @@
 
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use opentelemetry_c_abi::{
     trace_vtable_supports_span_context, OtelAttributeType, OtelBool, OtelHandleHeader,
@@ -95,7 +94,7 @@ pub struct OtelSpanContext {
     span_id: [u8; 8],
     trace_flags: u8,
     is_remote: bool,
-    trace_state: Arc<str>,
+    trace_state: String,
 }
 
 impl HasHandleHeader for OtelSpanContext {
@@ -108,8 +107,10 @@ impl HasHandleHeader for OtelSpanContext {
     }
 }
 
-unsafe impl Send for OtelSpanContext {}
-unsafe impl Sync for OtelSpanContext {}
+const _: () = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    let _ = assert_send_sync::<OtelSpanContext>;
+};
 
 impl OtelSpanContext {
     pub(crate) fn from_parts(
@@ -117,7 +118,7 @@ impl OtelSpanContext {
         span_id: [u8; 8],
         trace_flags: u8,
         is_remote: bool,
-        trace_state: Arc<str>,
+        trace_state: String,
     ) -> Self {
         Self {
             header: OtelHandleHeader::new(Self::KIND),
@@ -130,7 +131,7 @@ impl OtelSpanContext {
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        self.trace_id != [0; 16] && self.span_id != [0; 8] && self.trace_flags & !1 == 0
+        self.trace_id != [0; 16] && self.span_id != [0; 8]
     }
 
     pub(crate) fn view(&self) -> OtelSpanContextView {
@@ -244,36 +245,42 @@ extern "C" fn receive_span_context(
     user_data: *mut c_void,
     view: *const OtelSpanContextView,
 ) -> OtelStatus {
-    if user_data.is_null() || view.is_null() {
-        set_last_error("span context visitor received a NULL pointer");
-        return OtelStatus::InternalError;
-    }
-    // SAFETY: both pointers are supplied by the synchronous vtable call below.
-    let receiver = unsafe { &mut *(user_data as *mut SnapshotReceiver) };
-    let view = unsafe { &*view };
-    if view.reserved != [0; 3]
-        || view.trace_id == [0; 16]
-        || view.span_id == [0; 8]
-        || view.trace_flags & !1 != 0
-    {
-        set_last_error("SDK returned an invalid span context");
-        return OtelStatus::InternalError;
-    }
-    let trace_state = match unsafe { view.trace_state.as_str() } {
-        Ok(value) => Arc::<str>::from(value),
-        Err(error) => {
-            set_last_error(error.message);
-            return error.status;
+    guard_status(|| {
+        if user_data.is_null() || view.is_null() {
+            set_last_error("span context visitor received a NULL pointer");
+            return OtelStatus::InternalError;
         }
-    };
-    receiver.context = Some(OtelSpanContext::from_parts(
-        view.trace_id,
-        view.span_id,
-        view.trace_flags,
-        view.is_remote != 0,
-        trace_state,
-    ));
-    OtelStatus::Ok
+        // SAFETY: both pointers are supplied by the synchronous vtable call below.
+        let receiver = unsafe { &mut *(user_data as *mut SnapshotReceiver) };
+        let view = unsafe { &*view };
+        if view.reserved != [0; 3] || view.trace_id == [0; 16] || view.span_id == [0; 8] {
+            set_last_error("SDK returned an invalid span context");
+            return OtelStatus::InternalError;
+        }
+        let value = match unsafe { view.trace_state.as_str() } {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(error.message);
+                return error.status;
+            }
+        };
+        let mut trace_state = String::new();
+        if trace_state.try_reserve_exact(value.len()).is_err() {
+            return fail(
+                OtelStatus::InternalError,
+                "failed to allocate span context trace state",
+            );
+        }
+        trace_state.push_str(value);
+        receiver.context = Some(OtelSpanContext::from_parts(
+            view.trace_id,
+            view.span_id,
+            view.trace_flags,
+            view.is_remote != 0,
+            trace_state,
+        ));
+        OtelStatus::Ok
+    })
 }
 
 /// Copy the immutable context of a live SDK-backed span into an API-owned handle.
@@ -347,13 +354,25 @@ pub unsafe extern "C" fn otel_span_context_clone(
             Some(context) => context,
             None => return std::ptr::null_mut(),
         };
+        let mut trace_state = String::new();
+        if trace_state
+            .try_reserve_exact(context.trace_state.len())
+            .is_err()
+        {
+            fail(
+                OtelStatus::InternalError,
+                "failed to allocate cloned span context trace state",
+            );
+            return std::ptr::null_mut();
+        }
+        trace_state.push_str(&context.trace_state);
         into_raw(OtelSpanContext {
             header: OtelHandleHeader::new(OtelSpanContext::KIND),
             trace_id: context.trace_id,
             span_id: context.span_id,
             trace_flags: context.trace_flags,
             is_remote: context.is_remote,
-            trace_state: Arc::clone(&context.trace_state),
+            trace_state,
         })
     })
 }

@@ -141,6 +141,13 @@ extern "C" fn vt_start_with_context(
 ) -> *mut c_void {
     std::ptr::null_mut()
 }
+extern "C" fn vt_span_context_skip(
+    _c: *mut c_void,
+    _visitor: opentelemetry_c_abi::OtelSpanContextVisitor,
+    _user_data: *mut c_void,
+) -> OtelStatus {
+    OtelStatus::Ok
+}
 
 static BACKED_VTABLE: OtelImplVtable = OtelImplVtable {
     abi_version: opentelemetry_c_abi::OTEL_TRACE_IMPL_ABI_VERSION,
@@ -302,6 +309,31 @@ fn span_context_apis_fail_closed_with_original_vtable_prefix() {
         otel_tracer_destroy(legacy_tracer);
         otel_tracer_provider_destroy(legacy_provider);
         otel_span_context_destroy(context);
+        otel_span_destroy(span);
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+}
+
+#[test]
+fn span_context_snapshot_requires_the_sdk_to_invoke_the_visitor() {
+    let vtable = OtelImplVtable {
+        span_context_visit: vt_span_context_skip,
+        ..BACKED_VTABLE
+    };
+    let provider = unsafe { otel_api_provider_new(&vtable, dummy()) };
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("instr"), empty(), empty()) };
+    let span = unsafe { otel_tracer_start_span(tracer, good("parent"), std::ptr::null()) };
+    let mut context: *mut OtelSpanContext = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { otel_span_get_context(span, &mut context) },
+        OtelStatus::InternalError
+    );
+    assert!(context.is_null());
+    assert!(last_error().contains("did not return a span context"));
+
+    unsafe {
         otel_span_destroy(span);
         otel_tracer_destroy(tracer);
         otel_tracer_provider_destroy(provider);

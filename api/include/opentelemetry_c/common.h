@@ -41,7 +41,7 @@
 extern "C" {
 #endif
 
-/* Immutable trace-context snapshot shared by Traces, Logs, and propagation APIs. */
+/* Immutable, opaque trace-context snapshot shared in-process by Traces and Logs. */
 typedef struct otel_span_context_t otel_span_context_t;
 
 /*

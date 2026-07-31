@@ -63,7 +63,7 @@ fn guard_unit<F: FnOnce()>(f: F) {
     let _ = catch_unwind(AssertUnwindSafe(f));
 }
 
-// ---- A minimal local-parent span (preserves local, non-remote parenting) ---
+// ---- A minimal parent span (preserves the supplied SpanContext, including remoteness) ---
 
 struct LocalParentSpan {
     span_context: SpanContext,
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn context_snapshot_can_parent_after_source_span_ends() {
+    fn context_snapshot_preserves_remote_flags_and_trace_state_after_source_span_ends() {
         #[derive(Default)]
         struct Snapshot {
             trace_id: [u8; 16],
@@ -771,13 +771,14 @@ mod tests {
         (vt.span_free)(parent);
 
         let trace_state = sv(&snapshot.trace_state);
+        let remote_trace_state = sv("vendor=value");
         let parent_view = OtelSpanContextView {
             trace_id: snapshot.trace_id,
             span_id: snapshot.span_id,
-            trace_flags: snapshot.flags,
+            trace_flags: snapshot.flags | 0x02,
             reserved: [0; 3],
-            is_remote: snapshot.remote,
-            trace_state,
+            is_remote: 1,
+            trace_state: remote_trace_state,
         };
         let child = (vt.tracer_start_span_with_context)(tctx, sv("child"), 0, &parent_view);
         assert!(!child.is_null());
@@ -795,7 +796,16 @@ mod tests {
             child_data.parent_span_id,
             parent_data.span_context.span_id()
         );
-        assert!(!child_data.parent_span_is_remote);
+        assert!(child_data.parent_span_is_remote);
+        assert_eq!(child_data.span_context.trace_flags().to_u8() & 0x02, 0x02);
+        assert_eq!(
+            child_data.span_context.trace_state().header(),
+            "vendor=value"
+        );
+        assert_eq!(
+            unsafe { trace_state.as_str() }.unwrap(),
+            snapshot.trace_state
+        );
 
         (vt.tracer_free)(tctx);
         (vt.provider_free)(pctx);

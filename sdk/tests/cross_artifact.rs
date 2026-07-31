@@ -30,6 +30,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     metrics_service_server::{MetricsService, MetricsServiceServer},
     ExportMetricsServiceResponse,
 };
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{any_value, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point, AggregationTemporality};
 use prost::Message;
@@ -714,6 +715,7 @@ struct MockCollector {
     port: u16,
     bytes: Arc<AtomicUsize>,
     metric_bodies: Arc<Mutex<Vec<Vec<u8>>>>,
+    trace_bodies: Arc<Mutex<Vec<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<()>,
 }
@@ -725,10 +727,12 @@ fn start_mock() -> MockCollector {
     listener.set_nonblocking(true).unwrap();
     let bytes = Arc::new(AtomicUsize::new(0));
     let metric_bodies = Arc::new(Mutex::new(Vec::new()));
+    let trace_bodies = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(AtomicBool::new(false));
-    let (b2, bodies2, s2) = (
+    let (b2, metric_bodies2, trace_bodies2, s2) = (
         Arc::clone(&bytes),
         Arc::clone(&metric_bodies),
+        Arc::clone(&trace_bodies),
         Arc::clone(&stop),
     );
     let thread = std::thread::spawn(move || {
@@ -772,7 +776,14 @@ fn start_mock() -> MockCollector {
                         if buf.len().saturating_sub(he) >= content_len {
                             b2.fetch_add(content_len, Ordering::Relaxed);
                             if String::from_utf8_lossy(&buf[..he]).contains("POST /v1/metrics") {
-                                bodies2
+                                metric_bodies2
+                                    .lock()
+                                    .unwrap()
+                                    .push(buf[he..he + content_len].to_vec());
+                            } else if String::from_utf8_lossy(&buf[..he])
+                                .contains("POST /v1/traces")
+                            {
+                                trace_bodies2
                                     .lock()
                                     .unwrap()
                                     .push(buf[he..he + content_len].to_vec());
@@ -794,6 +805,7 @@ fn start_mock() -> MockCollector {
         port,
         bytes,
         metric_bodies,
+        trace_bodies,
         stop,
         thread,
     }
@@ -905,6 +917,31 @@ fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
         .map(|body| ExportMetricsServiceRequest::decode(body.as_slice()).expect("decode OTLP"))
         .collect::<Vec<_>>();
     assert_metric_requests(&requests);
+}
+
+fn assert_snapshot_child_trace_relationship(bodies: &[Vec<u8>]) {
+    let requests = bodies
+        .iter()
+        .map(|body| ExportTraceServiceRequest::decode(body.as_slice()).expect("decode OTLP traces"))
+        .collect::<Vec<_>>();
+    let spans = requests
+        .iter()
+        .flat_map(|request| &request.resource_spans)
+        .flat_map(|resource| &resource.scope_spans)
+        .flat_map(|scope| &scope.spans)
+        .collect::<Vec<_>>();
+    let correlated = spans.iter().any(|child| {
+        child.name == "child"
+            && spans.iter().any(|parent| {
+                parent.name == "parent"
+                    && child.trace_id == parent.trace_id
+                    && child.parent_span_id == parent.span_id
+            })
+    });
+    assert!(
+        correlated,
+        "no exported child preserved the snapshot parent's trace ID and span ID"
+    );
 }
 
 #[derive(Default)]
@@ -1236,7 +1273,8 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     // Wait (bounded) for the collector to receive the export. This avoids a fixed sleep that can
     // stop the mock too early under slow CI while still failing promptly if no POST arrives.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while collector.metric_bodies.lock().unwrap().len() < runs.len()
+    while (collector.metric_bodies.lock().unwrap().len() < runs.len()
+        || collector.trace_bodies.lock().unwrap().len() < runs.len())
         && std::time::Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(20));
@@ -1268,6 +1306,12 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         "the mock collector received no OTLP metric requests through the API-owned Metrics slot"
     );
     assert_decoded_metrics(&metric_bodies);
+    let trace_bodies = collector.trace_bodies.lock().unwrap();
+    assert!(
+        !trace_bodies.is_empty(),
+        "the mock collector received no OTLP trace requests through the API-owned trace slot"
+    );
+    assert_snapshot_child_trace_relationship(&trace_bodies);
     eprintln!("cross-artifact export OK: {received} protobuf bytes via API-only path");
 }
 

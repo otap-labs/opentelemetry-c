@@ -160,6 +160,7 @@ typedef struct otel_log_key_value_t {
 
 /* The only trace flag defined by W3C Trace Context. Other bits are rejected. */
 #define OTEL_LOG_TRACE_FLAGS_SAMPLED ((uint8_t)0x01)
+#define OTEL_LOG_TRACE_FLAGS_RANDOM ((uint8_t)0x02)
 
 /*
  * Explicit trace correlation. This is Logs-local and does not require the C Trace API: a
@@ -338,7 +339,8 @@ otel_status_t otel_logger_emit(const otel_logger_t* logger,
 /*
  * Emit a record correlated with an immutable API-owned SpanContext snapshot. The context is
  * borrowed and copied during the call. This fails when `record` already selects its embedded
- * raw trace_context: callers must choose exactly one correlation source.
+ * raw trace_context: callers must choose exactly one correlation source. Fields added after
+ * the V1 record prefix are not forwarded by this entry point.
  */
 otel_status_t otel_logger_emit_with_context(const otel_logger_t* logger,
                                             const otel_log_record_view_t* record,

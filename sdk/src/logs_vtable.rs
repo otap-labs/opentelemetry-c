@@ -1171,13 +1171,13 @@ mod tests {
         view.present_fields = OTEL_LOG_FIELD_TRACE_CONTEXT;
         view.trace_context.trace_id = [1u8; 16];
         view.trace_context.span_id = [2u8; 8];
-        view.trace_context.trace_flags = 0x01;
+        view.trace_context.trace_flags = 0x03;
         assert_eq!(harness.emit(&view), OtelStatus::Ok);
         let log = harness.only();
         let ctx = log.record.trace_context().expect("trace context");
         assert_eq!(ctx.trace_id, TraceId::from_bytes([1u8; 16]));
         assert_eq!(ctx.span_id, SpanId::from_bytes([2u8; 8]));
-        assert_eq!(ctx.trace_flags, Some(TraceFlags::SAMPLED));
+        assert_eq!(ctx.trace_flags, Some(TraceFlags::new(0x03)));
 
         let mut bad = view;
         bad.trace_context.trace_id = [0u8; 16];

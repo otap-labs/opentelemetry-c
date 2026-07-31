@@ -39,7 +39,8 @@ Logs may be correlated either with the record's explicit trace/span identifiers 
 immutable API-owned `otel_span_context_t` snapshot obtained from `otel_span_get_context()`.
 Snapshots remain valid after the source span ends, are safe to clone/share across threads, can
 parent a later span with `otel_tracer_start_span_with_context()`, and are borrowed only for
-`otel_logger_emit_with_context()`.
+`otel_logger_emit_with_context()`. They are opaque, in-process handles in this release;
+propagation import/export APIs will be designed with the future trace-context surface.
 
 `logs.h` is a **log bridge**, meant for a logging library to route records through
 OpenTelemetry. Records are described by a borrowed, one-shot `otel_log_record_view_t`;

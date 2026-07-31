@@ -115,9 +115,28 @@ struct OtelLoggerOptionsV1 {
 
 const OTEL_LOGGER_OPTIONS_V1_SIZE: u64 = std::mem::size_of::<OtelLoggerOptionsV1>() as u64;
 
+/// Frozen V1 log-record layout. Keep this separate from the public append-only structure so a
+/// future field cannot silently change the minimum readable prefix.
+#[repr(C)]
+struct OtelLogRecordViewV1 {
+    struct_size: u64,
+    present_fields: u64,
+    timestamp_unix_nanos: u64,
+    observed_timestamp_unix_nanos: u64,
+    severity_number: u32,
+    reserved_flags: u32,
+    body: opentelemetry_c_abi::OtelLogValue,
+    attributes: *const opentelemetry_c_abi::OtelLogValueNode,
+    attribute_count: usize,
+    value_nodes: *const opentelemetry_c_abi::OtelLogValueNode,
+    value_node_count: usize,
+    trace_context: OtelLogTraceContext,
+    reserved: [u64; 4],
+}
+
 /// Minimum accepted `otel_log_record_view_t::struct_size`.
 pub(crate) const OTEL_LOG_RECORD_VIEW_V1_SIZE: u64 =
-    std::mem::size_of::<OtelLogRecordView>() as u64;
+    std::mem::size_of::<OtelLogRecordViewV1>() as u64;
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
@@ -125,6 +144,8 @@ const _: () = {
     assert!(std::mem::align_of::<OtelLoggerOptions>() == 8);
     assert!(OTEL_LOG_RECORD_VIEW_V1_SIZE == 160);
 };
+const _: () =
+    assert!(std::mem::size_of::<OtelLogRecordView>() == std::mem::size_of::<OtelLogRecordViewV1>());
 
 fn fail_abi(error: opentelemetry_c_abi::AbiError) -> OtelStatus {
     fail(error.status, error.message)
@@ -433,7 +454,6 @@ mod tests {
     use opentelemetry_c_abi::{
         OtelLogValue, OtelLogValuePayload, OtelLogValueType, OTEL_LOGS_IMPL_ABI_VERSION,
     };
-    use std::sync::Arc;
 
     extern "C" fn unused_get_logger(_: *mut c_void, _: *const OtelScopeConfig) -> *mut c_void {
         std::ptr::null_mut()
@@ -451,7 +471,7 @@ mod tests {
         assert_ne!(record.present_fields & OTEL_LOG_FIELD_TRACE_CONTEXT, 0);
         assert_eq!(record.trace_context.trace_id, [1; 16]);
         assert_eq!(record.trace_context.span_id, [2; 8]);
-        assert_eq!(record.trace_context.trace_flags, 1);
+        assert_eq!(record.trace_context.trace_flags, 3);
         OtelStatus::Ok
     }
 
@@ -505,15 +525,29 @@ mod tests {
         let context = into_raw(OtelSpanContext::from_parts(
             [1; 16],
             [2; 8],
-            1,
+            3,
             false,
-            Arc::from(""),
+            String::new(),
         ));
         let mut record = record();
         record.struct_size = OTEL_LOG_RECORD_VIEW_V1_SIZE + 64;
+        let original_struct_size = record.struct_size;
+        let original_present_fields = record.present_fields;
+        let original_trace_context = record.trace_context;
         assert_eq!(
             unsafe { otel_logger_emit_with_context(logger, &record, context) },
             OtelStatus::Ok
+        );
+        assert_eq!(record.struct_size, original_struct_size);
+        assert_eq!(record.present_fields, original_present_fields);
+        assert_eq!(
+            record.trace_context.trace_id,
+            original_trace_context.trace_id
+        );
+        assert_eq!(record.trace_context.span_id, original_trace_context.span_id);
+        assert_eq!(
+            record.trace_context.trace_flags,
+            original_trace_context.trace_flags
         );
         record.present_fields |= OTEL_LOG_FIELD_TRACE_CONTEXT;
         assert_eq!(

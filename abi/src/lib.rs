@@ -590,24 +590,20 @@ pub const OTEL_TRACE_IMPL_ABI_VERSION: u32 = 1;
 /// Metrics vtables must use [`OTEL_METRICS_IMPL_ABI_VERSION`] instead.
 pub const OTEL_IMPL_ABI_VERSION: u32 = OTEL_TRACE_IMPL_ABI_VERSION;
 
-/// Minimum vtable size required by this API version.
-pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize =
-    std::mem::offset_of!(OtelImplVtable, span_context_visit);
+/// Frozen trace-vtable prefix size before SpanContext snapshot support was appended.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = 128;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = 64;
 
 /// Trace vtable prefix size through immutable SpanContext snapshot support.
 ///
 /// Future entries may be appended after this prefix without making an SDK that implements
 /// these two entries appear to lose SpanContext support.
-pub const OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE: usize =
-    std::mem::offset_of!(OtelImplVtable, tracer_start_span_with_context)
-        + std::mem::size_of::<
-            extern "C" fn(
-                tracer_ctx: *mut c_void,
-                name: OtelStringView,
-                kind: u32,
-                parent: *const OtelSpanContextView,
-            ) -> *mut c_void,
-        >();
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE: usize = 144;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE: usize = 72;
 
 /// Internal Metrics implementation vtable. Metrics uses a distinct ABI identifier,
 /// provider context, and API-owned global slot from traces.
@@ -835,7 +831,12 @@ pub unsafe fn metrics_vtable_supports_bound_instruments(vtable: *const OtelMetri
 }
 
 const _: () = assert!(OTEL_TRACE_IMPL_ABI_VERSION != OTEL_METRICS_IMPL_ABI_VERSION);
-const _: () = assert!(OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE == std::mem::size_of::<OtelImplVtable>());
+const _: () = {
+    assert!(
+        OTEL_IMPL_VTABLE_REQUIRED_SIZE == std::mem::offset_of!(OtelImplVtable, span_context_visit)
+    );
+    assert!(OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE == std::mem::size_of::<OtelImplVtable>());
+};
 const _: () = assert!(OTEL_METRICS_IMPL_ABI_VERSION & 0xFF00_0000 == 0x4D00_0000);
 const _: () = assert!(
     OTEL_METRICS_VTABLE_SCOPE_CONFIG_SIZE
@@ -1019,10 +1020,13 @@ pub struct OtelLogTraceContext {
     pub reserved: [u8; 7],
 }
 
-/// The only trace flag defined by the W3C Trace Context recommendation ("sampled").
+/// W3C Trace Context sampled flag.
 pub const OTEL_LOG_TRACE_FLAGS_SAMPLED: u8 = 0x01;
+/// W3C Trace Context Level 2 random-trace-id flag.
+pub const OTEL_LOG_TRACE_FLAGS_RANDOM: u8 = 0x02;
 /// Mask of trace-flag bits this ABI version accepts. Any other bit is rejected.
-pub const OTEL_LOG_TRACE_FLAGS_SUPPORTED_MASK: u8 = OTEL_LOG_TRACE_FLAGS_SAMPLED;
+pub const OTEL_LOG_TRACE_FLAGS_SUPPORTED_MASK: u8 =
+    OTEL_LOG_TRACE_FLAGS_SAMPLED | OTEL_LOG_TRACE_FLAGS_RANDOM;
 
 /// `present_fields` bit selecting `timestamp_unix_nanos`.
 pub const OTEL_LOG_FIELD_TIMESTAMP: u64 = 1 << 0;
@@ -1364,7 +1368,7 @@ mod tests {
         assert_eq!(OTEL_LOG_FIELD_KNOWN_MASK, 0b111);
         assert_eq!(
             OTEL_LOG_TRACE_FLAGS_SUPPORTED_MASK,
-            OTEL_LOG_TRACE_FLAGS_SAMPLED
+            OTEL_LOG_TRACE_FLAGS_SAMPLED | OTEL_LOG_TRACE_FLAGS_RANDOM
         );
     }
 }
