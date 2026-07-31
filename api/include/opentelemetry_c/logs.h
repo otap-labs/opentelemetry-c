@@ -335,6 +335,15 @@ otel_bool_t otel_logger_enabled(const otel_logger_t* logger, otel_log_severity_t
 otel_status_t otel_logger_emit(const otel_logger_t* logger,
                                const otel_log_record_view_t* record);
 
+/*
+ * Emit a record correlated with an immutable API-owned SpanContext snapshot. The context is
+ * borrowed and copied during the call. This fails when `record` already selects its embedded
+ * raw trace_context: callers must choose exactly one correlation source.
+ */
+otel_status_t otel_logger_emit_with_context(const otel_logger_t* logger,
+                                            const otel_log_record_view_t* record,
+                                            const otel_span_context_t* context);
+
 /* ---- Helpers -------------------------------------------------------------- */
 
 #if defined(__cplusplus) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)

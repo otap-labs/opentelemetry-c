@@ -44,9 +44,10 @@ pub use global::{
     otel_api_provider_new, otel_api_register_global_provider, otel_global_tracer_provider,
 };
 pub use logs::{
-    otel_logger_destroy, otel_logger_emit, otel_logger_enabled, otel_logger_provider_destroy,
-    otel_logger_provider_get_logger, otel_logger_provider_get_logger_with_options, OtelLogger,
-    OtelLoggerOptions, OtelLoggerProvider,
+    otel_logger_destroy, otel_logger_emit, otel_logger_emit_with_context, otel_logger_enabled,
+    otel_logger_provider_destroy, otel_logger_provider_get_logger,
+    otel_logger_provider_get_logger_with_options, OtelLogger, OtelLoggerOptions,
+    OtelLoggerProvider,
 };
 pub use logs_global::{
     otel_api_logger_provider_new, otel_api_register_global_logger_provider_with_token,
@@ -59,11 +60,13 @@ pub use metrics_global::{
     otel_global_meter_provider,
 };
 pub use trace::{
-    otel_span_add_event, otel_span_destroy, otel_span_end, otel_span_set_attribute,
-    otel_span_set_bool_attribute, otel_span_set_double_attribute, otel_span_set_int64_attribute,
-    otel_span_set_status, otel_span_set_string_attribute, otel_span_update_name,
-    otel_tracer_destroy, otel_tracer_provider_destroy, otel_tracer_provider_get_tracer,
-    otel_tracer_start_span, OtelSpan, OtelSpanStartOptions, OtelTracer, OtelTracerProvider,
+    otel_span_add_event, otel_span_context_clone, otel_span_context_destroy, otel_span_destroy,
+    otel_span_end, otel_span_get_context, otel_span_set_attribute, otel_span_set_bool_attribute,
+    otel_span_set_double_attribute, otel_span_set_int64_attribute, otel_span_set_status,
+    otel_span_set_string_attribute, otel_span_update_name, otel_tracer_destroy,
+    otel_tracer_provider_destroy, otel_tracer_provider_get_tracer, otel_tracer_start_span,
+    otel_tracer_start_span_with_context, OtelSpan, OtelSpanContext, OtelSpanStartOptions,
+    OtelTracer, OtelTracerProvider,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");

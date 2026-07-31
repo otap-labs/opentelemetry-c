@@ -4,6 +4,9 @@
 
 ### Added
 
+- Trace vtable support for copying complete `SpanContext` snapshots (including trace state and
+  remote state) and starting children from implementation-neutral snapshots used by the C API
+  and Logs correlation path.
 - Experimental Logs pipeline: an independent `SdkLoggerProvider` with its own global slot and
   lifecycle (`otel_sdk_set_logs_as_global`, `otel_sdk_logs_force_flush`,
   `otel_sdk_logs_shutdown`), simple and batch log processors, and OTLP Logs export over

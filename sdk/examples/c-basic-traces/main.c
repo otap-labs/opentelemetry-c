@@ -43,8 +43,16 @@ static void do_instrumentation_work(void) {
 
     otel_span_start_options_t child_opts;
     child_opts.kind = OTEL_SPAN_KIND_CLIENT;
-    child_opts.parent = parent;
-    otel_span_t* child = otel_tracer_start_span(tracer, otel_cstr("query-database"), &child_opts);
+    child_opts.parent = parent; /* fallback used by the API-only no-op path */
+    otel_span_context_t* parent_context = NULL;
+    otel_span_t* child = NULL;
+    if (otel_span_get_context(parent, &parent_context) == OTEL_STATUS_OK) {
+        child_opts.parent = NULL;
+        child = otel_tracer_start_span_with_context(
+            tracer, otel_cstr("query-database"), &child_opts, parent_context);
+    } else {
+        child = otel_tracer_start_span(tracer, otel_cstr("query-database"), &child_opts);
+    }
     otel_span_set_string_attribute(child, otel_cstr("db.system"), otel_cstr("postgresql"));
     otel_span_set_ok(child);
     otel_span_end(child);
@@ -53,6 +61,7 @@ static void do_instrumentation_work(void) {
     otel_span_set_ok(parent);
     otel_span_end(parent);
     otel_span_destroy(parent);
+    otel_span_context_destroy(parent_context);
 
     otel_tracer_destroy(tracer);
     otel_tracer_provider_destroy(provider);

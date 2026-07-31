@@ -8,14 +8,15 @@
 
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use opentelemetry_c_abi::{
     OtelAttributeType, OtelBool, OtelHandleHeader, OtelImplVtable, OtelKeyValue,
-    OtelSpanStatusCode, OtelStringView, OTEL_HANDLE_KIND_SPAN, OTEL_HANDLE_KIND_TRACER,
-    OTEL_HANDLE_KIND_TRACER_PROVIDER,
+    OtelSpanContextView, OtelSpanStatusCode, OtelStringView, OTEL_HANDLE_KIND_SPAN,
+    OTEL_HANDLE_KIND_SPAN_CONTEXT, OTEL_HANDLE_KIND_TRACER, OTEL_HANDLE_KIND_TRACER_PROVIDER,
 };
 
-use crate::error::{clear_last_error, fail, OtelStatus};
+use crate::error::{clear_last_error, fail, set_last_error, OtelStatus};
 use crate::global::{retain_global, GlobalRetain};
 use crate::handle::{
     checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasHandleHeader,
@@ -83,6 +84,67 @@ pub struct OtelSpan {
     vtable: *const OtelImplVtable,
     ctx: *mut c_void,
     ended: AtomicBool,
+}
+
+/// Immutable, API-owned trace-context snapshot (`otel_span_context_t`).
+#[repr(C)]
+pub struct OtelSpanContext {
+    header: OtelHandleHeader,
+    trace_id: [u8; 16],
+    span_id: [u8; 8],
+    trace_flags: u8,
+    is_remote: bool,
+    trace_state: Arc<str>,
+}
+
+impl HasHandleHeader for OtelSpanContext {
+    const KIND: u64 = OTEL_HANDLE_KIND_SPAN_CONTEXT;
+    fn header(&self) -> &OtelHandleHeader {
+        &self.header
+    }
+    fn header_mut(&mut self) -> &mut OtelHandleHeader {
+        &mut self.header
+    }
+}
+
+unsafe impl Send for OtelSpanContext {}
+unsafe impl Sync for OtelSpanContext {}
+
+impl OtelSpanContext {
+    pub(crate) fn from_parts(
+        trace_id: [u8; 16],
+        span_id: [u8; 8],
+        trace_flags: u8,
+        is_remote: bool,
+        trace_state: Arc<str>,
+    ) -> Self {
+        Self {
+            header: OtelHandleHeader::new(Self::KIND),
+            trace_id,
+            span_id,
+            trace_flags,
+            is_remote,
+            trace_state,
+        }
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        self.trace_id != [0; 16] && self.span_id != [0; 8] && self.trace_flags & !1 == 0
+    }
+
+    pub(crate) fn view(&self) -> OtelSpanContextView {
+        OtelSpanContextView {
+            trace_id: self.trace_id,
+            span_id: self.span_id,
+            trace_flags: self.trace_flags,
+            reserved: [0; 3],
+            is_remote: u32::from(self.is_remote),
+            trace_state: OtelStringView {
+                ptr: self.trace_state.as_ptr().cast(),
+                len: self.trace_state.len(),
+            },
+        }
+    }
 }
 
 impl OtelSpan {
@@ -166,6 +228,139 @@ fn new_span(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelSpan {
         ctx,
         ended: AtomicBool::new(false),
     })
+}
+
+fn vtable_has_span_context(vtable: &OtelImplVtable) -> bool {
+    vtable.struct_size >= std::mem::size_of::<OtelImplVtable>()
+}
+
+struct SnapshotReceiver {
+    context: Option<OtelSpanContext>,
+}
+
+extern "C" fn receive_span_context(
+    user_data: *mut c_void,
+    view: *const OtelSpanContextView,
+) -> OtelStatus {
+    if user_data.is_null() || view.is_null() {
+        set_last_error("span context visitor received a NULL pointer");
+        return OtelStatus::InternalError;
+    }
+    // SAFETY: both pointers are supplied by the synchronous vtable call below.
+    let receiver = unsafe { &mut *(user_data as *mut SnapshotReceiver) };
+    let view = unsafe { &*view };
+    if view.reserved != [0; 3]
+        || view.trace_id == [0; 16]
+        || view.span_id == [0; 8]
+        || view.trace_flags & !1 != 0
+    {
+        set_last_error("SDK returned an invalid span context");
+        return OtelStatus::InternalError;
+    }
+    let trace_state = match unsafe { view.trace_state.as_str() } {
+        Ok(value) => Arc::<str>::from(value),
+        Err(error) => {
+            set_last_error(error.message);
+            return error.status;
+        }
+    };
+    receiver.context = Some(OtelSpanContext::from_parts(
+        view.trace_id,
+        view.span_id,
+        view.trace_flags,
+        view.is_remote != 0,
+        trace_state,
+    ));
+    OtelStatus::Ok
+}
+
+/// Copy the immutable context of a live SDK-backed span into an API-owned handle.
+///
+/// # Safety
+/// `span` must be live and not destroyed concurrently. `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_get_context(
+    span: *const OtelSpan,
+    out: *mut *mut OtelSpanContext,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        if out.is_null() {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "span context output pointer is NULL",
+            );
+        }
+        unsafe { *out = std::ptr::null_mut() };
+        let span = match unsafe { checked_ref(span) } {
+            Some(span) => span,
+            None => return OtelStatus::InvalidArgument,
+        };
+        if span.vtable.is_null() {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "a no-op span has no valid span context",
+            );
+        }
+        let vtable = unsafe { &*span.vtable };
+        if !vtable_has_span_context(vtable) {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "installed trace implementation does not support span-context snapshots",
+            );
+        }
+        let mut receiver = SnapshotReceiver { context: None };
+        let status = (vtable.span_context_visit)(
+            span.ctx,
+            Some(receive_span_context),
+            (&mut receiver as *mut SnapshotReceiver).cast(),
+        );
+        if status != OtelStatus::Ok {
+            return status;
+        }
+        let Some(context) = receiver.context else {
+            return fail(
+                OtelStatus::InternalError,
+                "trace implementation did not return a span context",
+            );
+        };
+        unsafe { *out = into_raw(context) };
+        OtelStatus::Ok
+    })
+}
+
+/// Clone an immutable span-context snapshot.
+///
+/// # Safety
+/// `context` must be a live context handle not destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_clone(
+    context: *const OtelSpanContext,
+) -> *mut OtelSpanContext {
+    guard_ptr(|| {
+        clear_last_error();
+        let context = match unsafe { checked_ref(context) } {
+            Some(context) => context,
+            None => return std::ptr::null_mut(),
+        };
+        into_raw(OtelSpanContext {
+            header: OtelHandleHeader::new(OtelSpanContext::KIND),
+            trace_id: context.trace_id,
+            span_id: context.span_id,
+            trace_flags: context.trace_flags,
+            is_remote: context.is_remote,
+            trace_state: Arc::clone(&context.trace_state),
+        })
+    })
+}
+
+/// Destroy an immutable span-context snapshot.
+///
+/// # Safety
+/// `context` must be NULL or a live owned handle not destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_destroy(context: *mut OtelSpanContext) {
+    guard_unit(|| unsafe { destroy(context) });
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +522,67 @@ pub unsafe extern "C" fn otel_tracer_start_span(
             return std::ptr::null_mut();
         }
         new_span(vtable, span_ctx)
+    })
+}
+
+/// Start a span using an immutable implementation-neutral parent context.
+///
+/// # Safety
+/// All handles must be live and not destroyed concurrently. `name` and `options`, when
+/// present, must satisfy their ordinary public contracts.
+#[no_mangle]
+pub unsafe extern "C" fn otel_tracer_start_span_with_context(
+    tracer: *const OtelTracer,
+    name: OtelStringView,
+    options: *const OtelSpanStartOptions,
+    parent: *const OtelSpanContext,
+) -> *mut OtelSpan {
+    guard_ptr(|| {
+        clear_last_error();
+        let tracer = match unsafe { checked_ref(tracer) } {
+            Some(tracer) => tracer,
+            None => return std::ptr::null_mut(),
+        };
+        let parent = match unsafe { checked_ref(parent) } {
+            Some(parent) if parent.is_valid() => parent,
+            Some(_) => {
+                fail(
+                    OtelStatus::InvalidArgument,
+                    "parent span context is invalid",
+                );
+                return std::ptr::null_mut();
+            }
+            None => return std::ptr::null_mut(),
+        };
+        let mut kind = 0;
+        if !options.is_null() {
+            let options = unsafe { &*options };
+            if !options.parent.is_null() {
+                fail(
+                    OtelStatus::InvalidArgument,
+                    "parent span handle and parent span context are mutually exclusive",
+                );
+                return std::ptr::null_mut();
+            }
+            kind = options.kind;
+        }
+        if tracer.vtable.is_null() {
+            return new_span(std::ptr::null(), std::ptr::null_mut());
+        }
+        let vtable = unsafe { &*tracer.vtable };
+        if !vtable_has_span_context(vtable) {
+            fail(
+                OtelStatus::InvalidConfig,
+                "installed trace implementation does not support context parenting",
+            );
+            return std::ptr::null_mut();
+        }
+        let view = parent.view();
+        let span_ctx = (vtable.tracer_start_span_with_context)(tracer.ctx, name, kind, &view);
+        if span_ctx.is_null() {
+            return std::ptr::null_mut();
+        }
+        new_span(tracer.vtable, span_ctx)
     })
 }
 

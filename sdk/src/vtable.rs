@@ -18,17 +18,19 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::str::FromStr;
 use std::time::SystemTime;
 
 use opentelemetry::trace::{
-    Span, SpanContext, SpanKind, Status, TraceContextExt, Tracer, TracerProvider,
+    Span, SpanContext, SpanId, SpanKind, Status, TraceContextExt, TraceFlags, TraceId, TraceState,
+    Tracer, TracerProvider,
 };
 use opentelemetry::{Context, InstrumentationScope, Key, KeyValue, StringValue, Value};
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider, Span as SdkOtelSpan};
 
 use opentelemetry_c_abi::{
-    OtelAttributeType, OtelImplVtable, OtelKeyValue, OtelSpanKind, OtelSpanStatusCode, OtelStatus,
-    OtelStringView, OTEL_TRACE_IMPL_ABI_VERSION,
+    OtelAttributeType, OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelSpanKind,
+    OtelSpanStatusCode, OtelStatus, OtelStringView, OTEL_TRACE_IMPL_ABI_VERSION,
 };
 
 use crate::error::{fail, fail_abi};
@@ -70,13 +72,7 @@ struct LocalParentSpan {
 impl LocalParentSpan {
     fn new(parent: &SpanContext) -> Self {
         LocalParentSpan {
-            span_context: SpanContext::new(
-                parent.trace_id(),
-                parent.span_id(),
-                parent.trace_flags(),
-                false, // force is_remote = false: this is an in-process parent
-                parent.trace_state().clone(),
-            ),
+            span_context: parent.clone(),
         }
     }
 }
@@ -330,6 +326,107 @@ extern "C" fn vt_tracer_start_span(
     })
 }
 
+extern "C" fn vt_span_context_visit(
+    ctx: *mut c_void,
+    visitor: opentelemetry_c_abi::OtelSpanContextVisitor,
+    user_data: *mut c_void,
+) -> OtelStatus {
+    guard_status(|| {
+        if ctx.is_null() {
+            return fail(OtelStatus::InvalidArgument, "span context is NULL");
+        }
+        let Some(visitor) = visitor else {
+            return fail(OtelStatus::InvalidArgument, "span context visitor is NULL");
+        };
+        // SAFETY: `ctx` is a live span context produced by this crate.
+        let span = unsafe { &*(ctx as *const SdkSpan) };
+        let context = span.span.span_context();
+        let trace_state = context.trace_state().header();
+        let view = OtelSpanContextView {
+            trace_id: context.trace_id().to_bytes(),
+            span_id: context.span_id().to_bytes(),
+            trace_flags: context.trace_flags().to_u8(),
+            reserved: [0; 3],
+            is_remote: u32::from(context.is_remote()),
+            trace_state: OtelStringView {
+                ptr: trace_state.as_ptr().cast(),
+                len: trace_state.len(),
+            },
+        };
+        visitor(user_data, &view)
+    })
+}
+
+extern "C" fn vt_tracer_start_span_with_context(
+    ctx: *mut c_void,
+    name: OtelStringView,
+    kind: u32,
+    parent: *const OtelSpanContextView,
+) -> *mut c_void {
+    guard_ptr(|| {
+        if ctx.is_null() || parent.is_null() {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: the API supplies a borrowed view valid for this call.
+        let parent = unsafe { &*parent };
+        if parent.reserved != [0; 3] {
+            fail(
+                OtelStatus::InvalidArgument,
+                "span context reserved bytes must be zero",
+            );
+            return std::ptr::null_mut();
+        }
+        let trace_state = match unsafe { parent.trace_state.as_str() }
+            .ok()
+            .and_then(|value| TraceState::from_str(value).ok())
+        {
+            Some(value) => value,
+            None => {
+                fail(
+                    OtelStatus::InvalidConfig,
+                    "span context trace state is invalid",
+                );
+                return std::ptr::null_mut();
+            }
+        };
+        let parent = SpanContext::new(
+            TraceId::from_bytes(parent.trace_id),
+            SpanId::from_bytes(parent.span_id),
+            TraceFlags::new(parent.trace_flags),
+            parent.is_remote != 0,
+            trace_state,
+        );
+        if !parent.is_valid() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "parent span context is invalid",
+            );
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `ctx` is a live tracer context produced by this crate.
+        let tracer = unsafe { &*(ctx as *const SdkTracer) };
+        // SAFETY: string view satisfies the ABI contract.
+        let name = match unsafe { name.to_string_strict() } {
+            Ok(name) => name,
+            Err(error) => {
+                fail_abi(error);
+                return std::ptr::null_mut();
+            }
+        };
+        let span_kind = match OtelSpanKind::from_u32(kind).unwrap_or(OtelSpanKind::Internal) {
+            OtelSpanKind::Internal => SpanKind::Internal,
+            OtelSpanKind::Server => SpanKind::Server,
+            OtelSpanKind::Client => SpanKind::Client,
+            OtelSpanKind::Producer => SpanKind::Producer,
+            OtelSpanKind::Consumer => SpanKind::Consumer,
+        };
+        let builder = tracer.span_builder(name).with_kind(span_kind);
+        let parent_context = Context::new().with_span(LocalParentSpan::new(&parent));
+        let span = tracer.build_with_context(builder, &parent_context);
+        Box::into_raw(Box::new(SdkSpan { span })) as *mut c_void
+    })
+}
+
 extern "C" fn vt_tracer_free(ctx: *mut c_void) {
     guard_unit(|| {
         if !ctx.is_null() {
@@ -525,6 +622,8 @@ pub(crate) static SDK_VTABLE: OtelImplVtable = OtelImplVtable {
     span_update_name: vt_span_update_name,
     span_end: vt_span_end,
     span_free: vt_span_free,
+    span_context_visit: vt_span_context_visit,
+    tracer_start_span_with_context: vt_tracer_start_span_with_context,
 };
 
 /// Pointer to the SDK vtable (installed via the API registration ABI).
@@ -626,6 +725,78 @@ mod tests {
         assert!(names.contains(&"c".to_string()) && names.contains(&"p".to_string()));
         (vt.span_free)(child);
         (vt.span_free)(parent);
+        (vt.tracer_free)(tctx);
+        (vt.provider_free)(pctx);
+    }
+
+    #[test]
+    fn context_snapshot_can_parent_after_source_span_ends() {
+        #[derive(Default)]
+        struct Snapshot {
+            trace_id: [u8; 16],
+            span_id: [u8; 8],
+            flags: u8,
+            remote: u32,
+            trace_state: String,
+        }
+        extern "C" fn receive(data: *mut c_void, view: *const OtelSpanContextView) -> OtelStatus {
+            let data = unsafe { &mut *(data as *mut Snapshot) };
+            let view = unsafe { &*view };
+            data.trace_id = view.trace_id;
+            data.span_id = view.span_id;
+            data.flags = view.trace_flags;
+            data.remote = view.is_remote;
+            data.trace_state = unsafe { view.trace_state.as_str() }.unwrap().to_owned();
+            OtelStatus::Ok
+        }
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let vt = &SDK_VTABLE;
+        let pctx = provider_ctx(provider);
+        let tctx = (vt.provider_get_tracer)(pctx, sv("scope"), empty(), empty());
+        let parent = (vt.tracer_start_span)(tctx, sv("parent"), 0, std::ptr::null_mut());
+        let mut snapshot = Snapshot::default();
+        assert_eq!(
+            (vt.span_context_visit)(
+                parent,
+                Some(receive),
+                (&mut snapshot as *mut Snapshot).cast()
+            ),
+            OtelStatus::Ok
+        );
+        (vt.span_end)(parent);
+        (vt.span_free)(parent);
+
+        let trace_state = sv(&snapshot.trace_state);
+        let parent_view = OtelSpanContextView {
+            trace_id: snapshot.trace_id,
+            span_id: snapshot.span_id,
+            trace_flags: snapshot.flags,
+            reserved: [0; 3],
+            is_remote: snapshot.remote,
+            trace_state,
+        };
+        let child = (vt.tracer_start_span_with_context)(tctx, sv("child"), 0, &parent_view);
+        assert!(!child.is_null());
+        (vt.span_end)(child);
+        (vt.span_free)(child);
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let parent_data = spans.iter().find(|span| span.name == "parent").unwrap();
+        let child_data = spans.iter().find(|span| span.name == "child").unwrap();
+        assert_eq!(
+            child_data.span_context.trace_id(),
+            parent_data.span_context.trace_id()
+        );
+        assert_eq!(
+            child_data.parent_span_id,
+            parent_data.span_context.span_id()
+        );
+        assert!(!child_data.parent_span_is_remote);
+
         (vt.tracer_free)(tctx);
         (vt.provider_free)(pctx);
     }

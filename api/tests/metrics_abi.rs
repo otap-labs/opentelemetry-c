@@ -153,6 +153,23 @@ extern "C" fn update_name(_: *mut c_void, _: OtelStringView) -> OtelStatus {
     OtelStatus::Ok
 }
 
+extern "C" fn visit_span_context(
+    _: *mut c_void,
+    _: opentelemetry_c_abi::OtelSpanContextVisitor,
+    _: *mut c_void,
+) -> OtelStatus {
+    OtelStatus::InvalidConfig
+}
+
+extern "C" fn start_span_with_context(
+    _: *mut c_void,
+    _: OtelStringView,
+    _: u32,
+    _: *const opentelemetry_c_abi::OtelSpanContextView,
+) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
 const VALID_TRACE: OtelImplVtable = OtelImplVtable {
     abi_version: OTEL_TRACE_IMPL_ABI_VERSION,
     struct_size: std::mem::size_of::<OtelImplVtable>(),
@@ -170,6 +187,8 @@ const VALID_TRACE: OtelImplVtable = OtelImplVtable {
     span_update_name: update_name,
     span_end: free,
     span_free: free,
+    span_context_visit: visit_span_context,
+    tracer_start_span_with_context: start_span_with_context,
 };
 
 static TOKEN_FREES: AtomicUsize = AtomicUsize::new(0);

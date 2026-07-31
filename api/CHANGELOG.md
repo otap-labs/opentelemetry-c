@@ -4,6 +4,9 @@
 
 ### Added
 
+- API-owned immutable `otel_span_context_t` snapshots. A context can be copied from a live
+  SDK-backed span, cloned across threads, used as an implementation-neutral parent for a new
+  span, and attached directly to a log record without manually copying trace/span IDs.
 - Experimental Logs API: an API-owned global `LoggerProvider` slot independent of the trace
   and Metrics slots, API-only no-op loggers, versioned logger options carrying a complete
   instrumentation scope, severity-based `otel_logger_enabled`, and a borrowed one-shot

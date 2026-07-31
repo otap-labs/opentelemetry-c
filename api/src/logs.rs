@@ -8,8 +8,9 @@
 use std::os::raw::c_void;
 
 use opentelemetry_c_abi::{
-    log_severity_is_valid, OtelHandleHeader, OtelKeyValue, OtelLogRecordView, OtelLogsVtable,
-    OtelScopeConfig, OtelStringView, OTEL_HANDLE_KIND_LOGGER, OTEL_HANDLE_KIND_LOGGER_PROVIDER,
+    log_severity_is_valid, OtelHandleHeader, OtelKeyValue, OtelLogRecordView, OtelLogTraceContext,
+    OtelLogsVtable, OtelScopeConfig, OtelStringView, OTEL_HANDLE_KIND_LOGGER,
+    OTEL_HANDLE_KIND_LOGGER_PROVIDER, OTEL_LOG_FIELD_TRACE_CONTEXT,
 };
 
 use crate::error::{clear_last_error, fail, has_last_error, set_last_error, OtelStatus};
@@ -17,6 +18,7 @@ use crate::handle::HasHandleHeader;
 use crate::handle::{checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw};
 use crate::logs_global::{retain_global_logs, GlobalLogsRetain};
 use crate::metrics::validate_scope_attributes;
+use crate::trace::OtelSpanContext;
 use crate::OtelBool;
 
 pub(crate) enum LoggerProviderInner {
@@ -367,4 +369,153 @@ pub unsafe extern "C" fn otel_logger_emit(
         }
         unsafe { ((*logger.vtable).logger_emit)(logger.ctx, record) }
     })
+}
+
+/// Emit one record correlated with an immutable API-owned span-context snapshot.
+///
+/// # Safety
+/// `logger` and `context` must be live and not destroyed concurrently. `record` and every
+/// nested borrowed pointer must remain readable until this call returns.
+#[no_mangle]
+pub unsafe extern "C" fn otel_logger_emit_with_context(
+    logger: *const OtelLogger,
+    record: *const OtelLogRecordView,
+    context: *const OtelSpanContext,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let context = match unsafe { checked_ref(context) } {
+            Some(context) if context.is_valid() => context,
+            Some(_) => {
+                return fail(OtelStatus::InvalidArgument, "span context is invalid");
+            }
+            None => return OtelStatus::InvalidArgument,
+        };
+        if record.is_null() {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "log record view must not be NULL",
+            );
+        }
+        let struct_size = unsafe { record.cast::<u64>().read() };
+        if struct_size < OTEL_LOG_RECORD_VIEW_V1_SIZE {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "log record view struct_size is smaller than the supported prefix",
+            );
+        }
+        let mut correlated = unsafe { *record };
+        if correlated.present_fields & OTEL_LOG_FIELD_TRACE_CONTEXT != 0 {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "raw trace context and span-context handle are mutually exclusive",
+            );
+        }
+        let context = context.view();
+        correlated.present_fields |= OTEL_LOG_FIELD_TRACE_CONTEXT;
+        correlated.trace_context = OtelLogTraceContext {
+            trace_id: context.trace_id,
+            span_id: context.span_id,
+            trace_flags: context.trace_flags,
+            reserved: [0; 7],
+        };
+        // SAFETY: `correlated` is a live local; all nested pointers still borrow from `record`.
+        unsafe { otel_logger_emit(logger, &correlated) }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry_c_abi::{
+        OtelLogValue, OtelLogValuePayload, OtelLogValueType, OTEL_LOGS_IMPL_ABI_VERSION,
+    };
+    use std::sync::Arc;
+
+    extern "C" fn unused_get_logger(_: *mut c_void, _: *const OtelScopeConfig) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    extern "C" fn unused_retain(_: *mut c_void) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    extern "C" fn unused_free(_: *mut c_void) {}
+    extern "C" fn unused_enabled(_: *mut c_void, _: u32) -> OtelBool {
+        0
+    }
+    extern "C" fn capture_emit(_: *mut c_void, record: *const OtelLogRecordView) -> OtelStatus {
+        let record = unsafe { &*record };
+        assert_ne!(record.present_fields & OTEL_LOG_FIELD_TRACE_CONTEXT, 0);
+        assert_eq!(record.trace_context.trace_id, [1; 16]);
+        assert_eq!(record.trace_context.span_id, [2; 8]);
+        assert_eq!(record.trace_context.trace_flags, 1);
+        OtelStatus::Ok
+    }
+
+    static TEST_VTABLE: OtelLogsVtable = OtelLogsVtable {
+        abi_version: OTEL_LOGS_IMPL_ABI_VERSION,
+        struct_size: std::mem::size_of::<OtelLogsVtable>(),
+        provider_get_logger: unused_get_logger,
+        provider_retain: unused_retain,
+        provider_free: unused_free,
+        logger_enabled: unused_enabled,
+        logger_emit: capture_emit,
+        logger_free: unused_free,
+    };
+
+    fn record() -> OtelLogRecordView {
+        OtelLogRecordView {
+            struct_size: std::mem::size_of::<OtelLogRecordView>() as u64,
+            present_fields: 0,
+            timestamp_unix_nanos: 0,
+            observed_timestamp_unix_nanos: 0,
+            severity_number: 9,
+            reserved_flags: 0,
+            body: OtelLogValue {
+                value_type: OtelLogValueType::Empty as u32,
+                reserved: 0,
+                value: OtelLogValuePayload {
+                    string_value: OtelStringView::empty(),
+                },
+            },
+            attributes: std::ptr::null(),
+            attribute_count: 0,
+            value_nodes: std::ptr::null(),
+            value_node_count: 0,
+            trace_context: OtelLogTraceContext {
+                trace_id: [0; 16],
+                span_id: [0; 8],
+                trace_flags: 0,
+                reserved: [0; 7],
+            },
+            reserved: [0; 4],
+        }
+    }
+
+    #[test]
+    fn emit_with_context_injects_correlation_and_rejects_two_sources() {
+        let logger = into_raw(OtelLogger {
+            header: OtelHandleHeader::new(OtelLogger::KIND),
+            vtable: &TEST_VTABLE,
+            ctx: std::ptr::null_mut(),
+        });
+        let context = into_raw(OtelSpanContext::from_parts(
+            [1; 16],
+            [2; 8],
+            1,
+            false,
+            Arc::from(""),
+        ));
+        let mut record = record();
+        assert_eq!(
+            unsafe { otel_logger_emit_with_context(logger, &record, context) },
+            OtelStatus::Ok
+        );
+        record.present_fields |= OTEL_LOG_FIELD_TRACE_CONTEXT;
+        assert_eq!(
+            unsafe { otel_logger_emit_with_context(logger, &record, context) },
+            OtelStatus::InvalidArgument
+        );
+        unsafe { otel_logger_destroy(logger) };
+        unsafe { crate::trace::otel_span_context_destroy(context) };
+    }
 }

@@ -65,6 +65,7 @@ impl OtelHandleHeader {
 pub const OTEL_HANDLE_KIND_TRACER_PROVIDER: u64 = 0x0101;
 pub const OTEL_HANDLE_KIND_TRACER: u64 = 0x0102;
 pub const OTEL_HANDLE_KIND_SPAN: u64 = 0x0103;
+pub const OTEL_HANDLE_KIND_SPAN_CONTEXT: u64 = 0x0104;
 pub const OTEL_HANDLE_KIND_METER_PROVIDER: u64 = 0x0110;
 pub const OTEL_HANDLE_KIND_METER: u64 = 0x0111;
 pub const OTEL_HANDLE_KIND_COUNTER_U64: u64 = 0x0120;
@@ -458,6 +459,26 @@ pub struct OtelMetricInstrumentConfig {
     pub callback_state_free: Option<extern "C" fn(state: *mut c_void)>,
 }
 
+/// Borrowed, implementation-neutral trace context snapshot used only during one vtable call.
+///
+/// The API copies this data into its own immutable `otel_span_context_t` handle. Conversely,
+/// when starting a span from a snapshot, every pointer remains valid until the vtable call
+/// returns. No Rust type or allocation ownership crosses the shared-library boundary.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSpanContextView {
+    pub trace_id: [u8; 16],
+    pub span_id: [u8; 8],
+    pub trace_flags: u8,
+    pub reserved: [u8; 3],
+    pub is_remote: OtelBool,
+    pub trace_state: OtelStringView,
+}
+
+pub type OtelSpanContextVisitor = Option<
+    extern "C" fn(user_data: *mut c_void, context: *const OtelSpanContextView) -> OtelStatus,
+>;
+
 /// Internal implementation vtable registered by the SDK into the API-owned global slot
 /// (and returned from `otel_sdk_get_tracer_provider`).
 ///
@@ -545,6 +566,20 @@ pub struct OtelImplVtable {
     /// this; dropping the underlying span additionally ends it if it was somehow not ended,
     /// so no span is left unfinished (and no span is double-ended).
     pub span_free: extern "C" fn(span_ctx: *mut c_void),
+
+    /// Visit a borrowed snapshot of the span's immutable context. Optional appended entry.
+    pub span_context_visit: extern "C" fn(
+        span_ctx: *mut c_void,
+        visitor: OtelSpanContextVisitor,
+        user_data: *mut c_void,
+    ) -> OtelStatus,
+    /// Start a span from an implementation-neutral parent context. Optional appended entry.
+    pub tracer_start_span_with_context: extern "C" fn(
+        tracer_ctx: *mut c_void,
+        name: OtelStringView,
+        kind: u32,
+        parent: *const OtelSpanContextView,
+    ) -> *mut c_void,
 }
 
 /// Current trace implementation ABI kind/version identifier.
@@ -556,7 +591,8 @@ pub const OTEL_TRACE_IMPL_ABI_VERSION: u32 = 1;
 pub const OTEL_IMPL_ABI_VERSION: u32 = OTEL_TRACE_IMPL_ABI_VERSION;
 
 /// Minimum vtable size required by this API version.
-pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize = std::mem::size_of::<OtelImplVtable>();
+pub const OTEL_IMPL_VTABLE_REQUIRED_SIZE: usize =
+    std::mem::offset_of!(OtelImplVtable, span_context_visit);
 
 /// Internal Metrics implementation vtable. Metrics uses a distinct ABI identifier,
 /// provider context, and API-owned global slot from traces.
@@ -1188,6 +1224,7 @@ mod tests {
             OTEL_HANDLE_KIND_TRACER_PROVIDER,
             OTEL_HANDLE_KIND_TRACER,
             OTEL_HANDLE_KIND_SPAN,
+            OTEL_HANDLE_KIND_SPAN_CONTEXT,
             OTEL_HANDLE_KIND_METER_PROVIDER,
             OTEL_HANDLE_KIND_METER,
             OTEL_HANDLE_KIND_COUNTER_U64,

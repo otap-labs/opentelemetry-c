@@ -197,6 +197,7 @@ typedef struct otel_sdk_t otel_sdk_t;
 typedef struct otel_tracer_provider_t otel_tracer_provider_t;
 typedef struct otel_tracer_t otel_tracer_t;
 typedef struct otel_span_t otel_span_t;
+typedef struct otel_span_context_t otel_span_context_t;
 typedef struct otel_meter_provider_t otel_meter_provider_t;
 typedef struct otel_meter_t otel_meter_t;
 typedef struct otel_counter_u64_t otel_counter_u64_t;
@@ -213,6 +214,11 @@ typedef struct { uint32_t kind; const otel_span_t* parent; } otel_span_start_opt
 extern otel_tracer_provider_t* otel_global_tracer_provider(void);
 extern otel_tracer_t* otel_tracer_provider_get_tracer(const otel_tracer_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
 extern otel_span_t* otel_tracer_start_span(const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*);
+extern int otel_span_get_context(const otel_span_t*, otel_span_context_t**);
+extern void otel_span_context_destroy(otel_span_context_t*);
+extern otel_span_t* otel_tracer_start_span_with_context(
+    const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*,
+    const otel_span_context_t*);
 extern int otel_span_set_string_attribute(otel_span_t*, otel_string_view_t, otel_string_view_t);
 extern int otel_span_end(otel_span_t*);
 extern void otel_span_destroy(otel_span_t*);
@@ -340,10 +346,21 @@ static void work(void){
     otel_tracer_t* t = otel_tracer_provider_get_tracer(p, cs("instr"), cs("1.0"), emp());
     otel_span_t* parent = otel_tracer_start_span(t, cs("parent"), (void*)0);
     otel_span_set_string_attribute(parent, cs("k"), cs("v"));
-    otel_span_start_options_t o; o.kind=2; o.parent=parent;
-    otel_span_t* child = otel_tracer_start_span(t, cs("child"), &o);
+    otel_span_context_t* parent_context = (void*)0;
+    otel_span_start_options_t o; o.kind=2; o.parent=(void*)0;
+    otel_span_t* child = (void*)0;
+    if (otel_span_get_context(parent, &parent_context) == 0 && parent_context != (void*)0) {
+        otel_span_end(parent); otel_span_destroy(parent);
+        parent=(void*)0;
+        child=otel_tracer_start_span_with_context(t, cs("child"), &o, parent_context);
+        if (child == (void*)0) abort();
+    } else {
+        o.parent=parent;
+        child=otel_tracer_start_span(t, cs("child"), &o);
+    }
     otel_span_end(child); otel_span_destroy(child);
-    otel_span_end(parent); otel_span_destroy(parent);
+    if (parent) { otel_span_end(parent); otel_span_destroy(parent); }
+    if (parent_context) otel_span_context_destroy(parent_context);
     otel_tracer_destroy(t); otel_tracer_provider_destroy(p);
 }
 static int metrics_work(void){

@@ -111,6 +111,21 @@ extern "C" fn vt_span_end(_c: *mut c_void) {}
 extern "C" fn vt_span_free(c: *mut c_void) {
     unsafe { free_dummy(c) };
 }
+extern "C" fn vt_span_context_visit(
+    _c: *mut c_void,
+    _v: opentelemetry_c_abi::OtelSpanContextVisitor,
+    _u: *mut c_void,
+) -> OtelStatus {
+    OtelStatus::InvalidConfig
+}
+extern "C" fn vt_start_with_context(
+    _c: *mut c_void,
+    _n: OtelStringView,
+    _k: u32,
+    _p: *const opentelemetry_c_abi::OtelSpanContextView,
+) -> *mut c_void {
+    std::ptr::null_mut()
+}
 
 static BACKED_VTABLE: OtelImplVtable = OtelImplVtable {
     abi_version: opentelemetry_c_abi::OTEL_TRACE_IMPL_ABI_VERSION,
@@ -129,6 +144,8 @@ static BACKED_VTABLE: OtelImplVtable = OtelImplVtable {
     span_update_name: vt_span_update,
     span_end: vt_span_end,
     span_free: vt_span_free,
+    span_context_visit: vt_span_context_visit,
+    tracer_start_span_with_context: vt_start_with_context,
 };
 
 fn good(s: &'static str) -> OtelStringView {
