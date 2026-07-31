@@ -358,6 +358,117 @@ int main(void) {
         ],
     );
 
+    let metrics_basic_example = manifest().join("examples/c-metrics-basic/main.c");
+    assert!(
+        metrics_basic_example.exists(),
+        "example missing: {}",
+        metrics_basic_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            metrics_basic_example.as_os_str(),
+        ],
+    );
+
+    let metrics_instruments_example = manifest().join("examples/c-metrics-instruments/main.c");
+    assert!(
+        metrics_instruments_example.exists(),
+        "example missing: {}",
+        metrics_instruments_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            metrics_instruments_example.as_os_str(),
+        ],
+    );
+
+    let manual_metrics_example = manifest().join("examples/c-manual-metrics/main.c");
+    assert!(
+        manual_metrics_example.exists(),
+        "example missing: {}",
+        manual_metrics_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            manual_metrics_example.as_os_str(),
+        ],
+    );
+
+    let custom_metrics_exporter_example =
+        manifest().join("examples/c-custom-metric-exporter/main.c");
+    assert!(
+        custom_metrics_exporter_example.exists(),
+        "example missing: {}",
+        custom_metrics_exporter_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            custom_metrics_exporter_example.as_os_str(),
+        ],
+    );
+
+    let periodic_metrics_example = manifest().join("examples/c-periodic-metrics/main.c");
+    assert!(
+        periodic_metrics_example.exists(),
+        "example missing: {}",
+        periodic_metrics_example.display()
+    );
+    syntax_check(
+        &cc,
+        &[
+            "-std=c11".as_ref(),
+            "-Wall".as_ref(),
+            "-Wextra".as_ref(),
+            "-Werror".as_ref(),
+            "-fsyntax-only".as_ref(),
+            "-I".as_ref(),
+            api_inc.as_os_str(),
+            "-I".as_ref(),
+            sdk_inc.as_os_str(),
+            periodic_metrics_example.as_os_str(),
+        ],
+    );
+
     let logs_example = manifest().join("examples/c-logs/main.c");
     assert!(
         logs_example.exists(),

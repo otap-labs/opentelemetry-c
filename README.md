@@ -83,8 +83,17 @@ Then start with a complete, buildable example:
 
 - [C traces](sdk/examples/c-basic-traces) — API instrumentation, OTLP exporter, batch
   processor, global installation, flush, and shutdown.
-- [C Metrics](sdk/examples/c-metrics) — synchronous and observable instruments, periodic
-  reader, views, OTLP export, and lifecycle.
+- [C metrics basic](sdk/examples/c-metrics-basic) — smallest complete Metrics lifecycle:
+  SDK + meter + counter + manual collection + shutdown.
+- [C metrics instruments](sdk/examples/c-metrics-instruments) — instrument-kind-focused usage:
+  counter, up/down counter, gauge, histogram, bound, and observable instruments.
+- [C manual metrics](sdk/examples/c-manual-metrics) — deterministic application-controlled
+  collection with a manual reader.
+- [C custom metric exporter](sdk/examples/c-custom-metric-exporter) — callback-based exporter,
+  batch visitor traversal, and exporter lifecycle.
+- [C periodic metrics](sdk/examples/c-periodic-metrics) — periodic reader interval-driven
+  collection/export and graceful shutdown.
+- [C Metrics (all-in-one)](sdk/examples/c-metrics) — combined OTLP Metrics reference.
 - [C Logs](sdk/examples/c-logs) — experimental log bridge: logger acquisition, structured
   record values, trace correlation, batch processor, OTLP export, and lifecycle.
 - [C custom Logs exporter](sdk/examples/c-custom-log-exporter) — receive finished log batches

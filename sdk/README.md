@@ -97,7 +97,12 @@ unsupported.
 
 Ready-to-run examples that link both libraries are in
 [`examples/c-basic-traces/`](examples/c-basic-traces) and
-[`examples/c-metrics/`](examples/c-metrics).
+[`examples/c-metrics-basic/`](examples/c-metrics-basic),
+[`examples/c-metrics-instruments/`](examples/c-metrics-instruments),
+[`examples/c-manual-metrics/`](examples/c-manual-metrics),
+[`examples/c-custom-metric-exporter/`](examples/c-custom-metric-exporter),
+[`examples/c-periodic-metrics/`](examples/c-periodic-metrics),
+and [`examples/c-metrics/`](examples/c-metrics) (combined OTLP reference).
 
 For minimal API-only instrumentation and application SDK setup snippets, see the
 [root component README](../README.md#minimal-c-usage).

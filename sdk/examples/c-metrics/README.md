@@ -1,8 +1,19 @@
-# C Metrics example
+# C Metrics example (all-in-one)
 
-This example builds an OTLP metric exporter, a periodic reader, and an SDK MeterProvider;
-installs it into the API-owned global Metrics slot; records synchronous and observable
-metrics; flushes; and shuts down. HTTP/protobuf remains the default:
+This original all-in-one example builds an OTLP metric exporter, a periodic reader, and an
+SDK MeterProvider; installs it into the API-owned global Metrics slot; records synchronous
+and observable metrics; flushes; and shuts down.
+
+For focused learning paths, prefer:
+
+- `../c-metrics-basic`
+- `../c-metrics-instruments`
+- `../c-manual-metrics`
+- `../c-custom-metric-exporter`
+- `../c-periodic-metrics`
+
+This file remains as a combined reference and OTLP transport example. HTTP/protobuf remains
+the default:
 
 ```sh
 make run
