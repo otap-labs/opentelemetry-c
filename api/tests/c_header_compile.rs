@@ -123,6 +123,23 @@ int main(void) {
     (void)otel_span_set_error(span, otel_cstr("boom"));
     (void)otel_span_get_context(span, &context);
     (void)otel_tracer_start_span_with_context(NULL, otel_cstr("child"), NULL, context);
+    {
+        uint8_t trace_id[16] = {0};
+        uint8_t span_id[8] = {0};
+        uint8_t flags = 0;
+        otel_span_context_t* built = NULL;
+        trace_id[15] = 1;
+        span_id[7] = 1;
+        built = otel_span_context_create(trace_id, span_id, 0x01, OTEL_TRUE,
+                                         otel_cstr("k=v"));
+        (void)otel_span_context_is_valid(built);
+        (void)otel_span_context_is_remote(built);
+        (void)otel_span_context_trace_id(built, trace_id);
+        (void)otel_span_context_span_id(built, span_id);
+        (void)otel_span_context_trace_flags(built, &flags);
+        (void)otel_span_context_tracestate(built);
+        otel_span_context_destroy(built);
+    }
     otel_span_context_destroy(otel_span_context_clone(context));
     otel_span_context_destroy(context);
     return 0;

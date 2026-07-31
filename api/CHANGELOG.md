@@ -4,6 +4,13 @@
 
 ### Added
 
+- SpanContext value operations over the immutable `otel_span_context_t`:
+  `otel_span_context_is_valid`, `otel_span_context_is_remote`, `otel_span_context_trace_id`
+  (16-byte big-endian), `otel_span_context_span_id` (8-byte big-endian),
+  `otel_span_context_trace_flags` (opaque `uint8_t`, all bits preserved),
+  `otel_span_context_tracestate` (borrowed UTF-8 view valid until the context is destroyed),
+  and `otel_span_context_create` to build an owned context from raw parts. All-zero IDs are
+  rejected; unknown/reserved trace-flag bits are kept opaque. See `TRACES_COMPLIANCE.md`.
 - API-owned immutable `otel_span_context_t` snapshots. A context can be copied from a live
   SDK-backed span, cloned across threads, used as an implementation-neutral parent for a new
   span, and attached directly to a log record without manually copying trace/span IDs.

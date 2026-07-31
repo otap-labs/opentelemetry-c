@@ -78,7 +78,14 @@ otel_observer_i64_observe
 otel_observer_u64_observe
 otel_span_add_event
 otel_span_context_clone
+otel_span_context_create
 otel_span_context_destroy
+otel_span_context_is_remote
+otel_span_context_is_valid
+otel_span_context_span_id
+otel_span_context_trace_flags
+otel_span_context_trace_id
+otel_span_context_tracestate
 otel_span_destroy
 otel_span_end
 otel_span_get_context

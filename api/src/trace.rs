@@ -19,7 +19,8 @@ use opentelemetry_c_abi::{
 use crate::error::{clear_last_error, fail, set_last_error, OtelStatus};
 use crate::global::{retain_global, GlobalRetain};
 use crate::handle::{
-    checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasHandleHeader,
+    checked_ref, destroy, guard_ptr, guard_status, guard_unit, guard_value, into_raw,
+    HasHandleHeader,
 };
 
 /// Backing selector for a provider handle.
@@ -390,6 +391,239 @@ pub unsafe extern "C" fn otel_span_context_clone(
 #[no_mangle]
 pub unsafe extern "C" fn otel_span_context_destroy(context: *mut OtelSpanContext) {
     guard_unit(|| unsafe { destroy(context) });
+}
+
+/// Maximum tracestate byte length accepted by [`otel_span_context_create`]. Bounds the copy
+/// for a caller-constructed context; the W3C recommendation keeps tracestate far below this.
+const OTEL_SPAN_CONTEXT_MAX_TRACESTATE: usize = 32 * 1024;
+
+/// Whether a span context is valid: a non-zero 16-byte trace ID **and** non-zero 8-byte span ID.
+///
+/// Returns `OTEL_FALSE` (0) for a NULL or wrong-kind handle. Never fails.
+///
+/// # Safety
+/// `context` must be NULL or a live context handle, not destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_is_valid(context: *const OtelSpanContext) -> OtelBool {
+    guard_value(0, || {
+        clear_last_error();
+        // SAFETY: forwarded to the caller's contract.
+        match unsafe { checked_ref::<OtelSpanContext>(context) } {
+            Some(c) => u32::from(c.is_valid()),
+            None => 0,
+        }
+    })
+}
+
+/// Whether a span context was extracted from a remote parent.
+///
+/// Returns `OTEL_FALSE` (0) for a NULL or wrong-kind handle. Never fails.
+///
+/// # Safety
+/// `context` must be NULL or a live context handle, not destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_is_remote(context: *const OtelSpanContext) -> OtelBool {
+    guard_value(0, || {
+        clear_last_error();
+        // SAFETY: forwarded to the caller's contract.
+        match unsafe { checked_ref::<OtelSpanContext>(context) } {
+            Some(c) => u32::from(c.is_remote),
+            None => 0,
+        }
+    })
+}
+
+/// Copy the 16-byte, W3C big-endian trace ID into `out`.
+///
+/// `out` must point to at least 16 writable bytes. Zero-fills nothing on failure.
+///
+/// # Safety
+/// `context` must be NULL or a live context handle; `out` must be writable for 16 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_trace_id(
+    context: *const OtelSpanContext,
+    out: *mut u8,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        if out.is_null() {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "trace id output buffer is NULL",
+            );
+        }
+        // SAFETY: forwarded to the caller's contract.
+        let context = match unsafe { checked_ref::<OtelSpanContext>(context) } {
+            Some(c) => c,
+            None => return OtelStatus::InvalidArgument,
+        };
+        // SAFETY: caller guarantees `out` is writable for at least 16 bytes; the source is a
+        // fixed 16-byte array, and the two regions do not overlap.
+        unsafe { std::ptr::copy_nonoverlapping(context.trace_id.as_ptr(), out, 16) };
+        OtelStatus::Ok
+    })
+}
+
+/// Copy the 8-byte, W3C big-endian span ID into `out`.
+///
+/// `out` must point to at least 8 writable bytes.
+///
+/// # Safety
+/// `context` must be NULL or a live context handle; `out` must be writable for 8 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_span_id(
+    context: *const OtelSpanContext,
+    out: *mut u8,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        if out.is_null() {
+            return fail(OtelStatus::InvalidArgument, "span id output buffer is NULL");
+        }
+        // SAFETY: forwarded to the caller's contract.
+        let context = match unsafe { checked_ref::<OtelSpanContext>(context) } {
+            Some(c) => c,
+            None => return OtelStatus::InvalidArgument,
+        };
+        // SAFETY: caller guarantees `out` is writable for at least 8 bytes; the source is a
+        // fixed 8-byte array, and the two regions do not overlap.
+        unsafe { std::ptr::copy_nonoverlapping(context.span_id.as_ptr(), out, 8) };
+        OtelStatus::Ok
+    })
+}
+
+/// Write the opaque `uint8_t` trace flags into `*out`.
+///
+/// All 8 bits are preserved verbatim, including unknown/reserved bits; interpret the
+/// `sampled` bit as `0x01`.
+///
+/// # Safety
+/// `context` must be NULL or a live context handle; `out` must be writable for 1 byte.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_trace_flags(
+    context: *const OtelSpanContext,
+    out: *mut u8,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        if out.is_null() {
+            return fail(
+                OtelStatus::InvalidArgument,
+                "trace flags output pointer is NULL",
+            );
+        }
+        // SAFETY: forwarded to the caller's contract.
+        let context = match unsafe { checked_ref::<OtelSpanContext>(context) } {
+            Some(c) => c,
+            None => return OtelStatus::InvalidArgument,
+        };
+        // SAFETY: caller guarantees `out` is writable for 1 byte.
+        unsafe { *out = context.trace_flags };
+        OtelStatus::Ok
+    })
+}
+
+/// Borrow the tracestate as a UTF-8 view. The returned bytes are owned by `context` and remain
+/// valid until it is destroyed; copy them to retain beyond that. An empty tracestate (or a
+/// NULL/wrong-kind handle) yields an empty view (`ptr == NULL`, `len == 0`).
+///
+/// # Safety
+/// `context` must be NULL or a live context handle, not destroyed while the view is in use.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_tracestate(
+    context: *const OtelSpanContext,
+) -> OtelStringView {
+    guard_value(OtelStringView::empty(), || {
+        clear_last_error();
+        // SAFETY: forwarded to the caller's contract.
+        match unsafe { checked_ref::<OtelSpanContext>(context) } {
+            Some(c) if !c.trace_state.is_empty() => OtelStringView {
+                ptr: c.trace_state.as_ptr().cast(),
+                len: c.trace_state.len(),
+            },
+            _ => OtelStringView::empty(),
+        }
+    })
+}
+
+/// Construct an owned immutable span context from raw parts.
+///
+/// `trace_id` points to 16 bytes and `span_id` to 8 bytes, both in W3C big-endian order.
+/// `trace_flags` is stored opaquely. `trace_state` is a borrowed UTF-8 view copied before
+/// return; pass an empty view for none. All-zero trace/span IDs are rejected. Returns NULL on
+/// invalid arguments or allocation failure with the last-error set. Release with
+/// [`otel_span_context_destroy`].
+///
+/// tracestate is validated as UTF-8 and bounded in length here; full W3C `tracestate` grammar
+/// validation is performed by the propagation extract path, not by raw construction.
+///
+/// # Safety
+/// `trace_id`/`span_id` must be readable for 16/8 bytes; `trace_state` must satisfy the
+/// `otel_string_view_t` contract.
+#[no_mangle]
+pub unsafe extern "C" fn otel_span_context_create(
+    trace_id: *const u8,
+    span_id: *const u8,
+    trace_flags: u8,
+    is_remote: OtelBool,
+    trace_state: OtelStringView,
+) -> *mut OtelSpanContext {
+    guard_ptr(|| {
+        clear_last_error();
+        if trace_id.is_null() || span_id.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "trace id / span id pointer is NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        let mut tid = [0u8; 16];
+        let mut sid = [0u8; 8];
+        // SAFETY: caller guarantees `trace_id`/`span_id` are readable for 16/8 bytes; the
+        // destinations are distinct local arrays.
+        unsafe {
+            std::ptr::copy_nonoverlapping(trace_id, tid.as_mut_ptr(), 16);
+            std::ptr::copy_nonoverlapping(span_id, sid.as_mut_ptr(), 8);
+        }
+        if tid == [0u8; 16] || sid == [0u8; 8] {
+            fail(
+                OtelStatus::InvalidArgument,
+                "span context requires a non-zero trace id and span id",
+            );
+            return std::ptr::null_mut();
+        }
+        if trace_state.len > OTEL_SPAN_CONTEXT_MAX_TRACESTATE {
+            fail(
+                OtelStatus::InvalidArgument,
+                "tracestate exceeds the maximum supported length",
+            );
+            return std::ptr::null_mut();
+        }
+        // SAFETY: forwarded to the caller's contract for the string view.
+        let value = match unsafe { trace_state.as_str() } {
+            Ok(v) => v,
+            Err(error) => {
+                set_last_error(error.message);
+                return std::ptr::null_mut();
+            }
+        };
+        let mut owned = String::new();
+        if owned.try_reserve_exact(value.len()).is_err() {
+            fail(
+                OtelStatus::InternalError,
+                "failed to allocate span context trace state",
+            );
+            return std::ptr::null_mut();
+        }
+        owned.push_str(value);
+        into_raw(OtelSpanContext::from_parts(
+            tid,
+            sid,
+            trace_flags,
+            is_remote != 0,
+            owned,
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------

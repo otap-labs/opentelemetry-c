@@ -226,6 +226,54 @@ otel_span_context_t* otel_span_context_clone(const otel_span_context_t* context)
 /* Release one owned snapshot handle. NULL is accepted. */
 void otel_span_context_destroy(otel_span_context_t* context);
 
+/* ---- SpanContext value access and construction ---------------------------- */
+
+/*
+ * Accessors over an immutable, API-owned otel_span_context_t. See TRACES_COMPLIANCE.md
+ * ("SpanContext value API") for the full contract. All are safe on any live context handle
+ * and are thread-safe (the context is immutable). A NULL or wrong-kind handle yields the
+ * documented empty/false/INVALID_ARGUMENT result without dereferencing memory it does not own.
+ *
+ * Byte order: trace and span IDs are big-endian (W3C/network order) — the same order used by
+ * the traceparent hex encoding. Trace flags are an opaque uint8_t; all 8 bits are preserved
+ * (only the sampled bit 0x01 has defined meaning today, unknown bits are retained).
+ */
+
+/* Whether the context is valid (non-zero trace ID and span ID). NULL/invalid => OTEL_FALSE. */
+otel_bool_t otel_span_context_is_valid(const otel_span_context_t* context);
+
+/* Whether the context was extracted from a remote parent. NULL/invalid => OTEL_FALSE. */
+otel_bool_t otel_span_context_is_remote(const otel_span_context_t* context);
+
+/* Copy the 16-byte trace ID into `out` (>= 16 writable bytes). */
+otel_status_t otel_span_context_trace_id(const otel_span_context_t* context, uint8_t out[16]);
+
+/* Copy the 8-byte span ID into `out` (>= 8 writable bytes). */
+otel_status_t otel_span_context_span_id(const otel_span_context_t* context, uint8_t out[8]);
+
+/* Write the opaque trace flags into `*out`. */
+otel_status_t otel_span_context_trace_flags(const otel_span_context_t* context, uint8_t* out);
+
+/*
+ * Borrow the tracestate as a UTF-8 view. The bytes are owned by `context` and valid until it
+ * is destroyed; copy them to retain longer. Empty tracestate or a NULL/wrong-kind handle
+ * yields an empty view (ptr == NULL, len == 0). The view is NOT NUL-terminated.
+ */
+otel_string_view_t otel_span_context_tracestate(const otel_span_context_t* context);
+
+/*
+ * Construct an owned immutable span context from raw parts. `trace_id` points to 16 bytes and
+ * `span_id` to 8 bytes, both big-endian. `trace_flags` is stored opaquely. `trace_state` is a
+ * borrowed UTF-8 view copied before return (empty view => none). All-zero trace/span IDs are
+ * rejected. Returns NULL on invalid arguments or allocation failure, with the last-error set.
+ * Release with otel_span_context_destroy().
+ */
+otel_span_context_t* otel_span_context_create(const uint8_t trace_id[16],
+                                              const uint8_t span_id[8],
+                                              uint8_t trace_flags,
+                                              otel_bool_t is_remote,
+                                              otel_string_view_t trace_state);
+
 /* ---- Convenience helpers -------------------------------------------------- */
 
 #if defined(__cplusplus) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)

@@ -60,13 +60,15 @@ pub use metrics_global::{
     otel_global_meter_provider,
 };
 pub use trace::{
-    otel_span_add_event, otel_span_context_clone, otel_span_context_destroy, otel_span_destroy,
-    otel_span_end, otel_span_get_context, otel_span_set_attribute, otel_span_set_bool_attribute,
-    otel_span_set_double_attribute, otel_span_set_int64_attribute, otel_span_set_status,
-    otel_span_set_string_attribute, otel_span_update_name, otel_tracer_destroy,
-    otel_tracer_provider_destroy, otel_tracer_provider_get_tracer, otel_tracer_start_span,
-    otel_tracer_start_span_with_context, OtelSpan, OtelSpanContext, OtelSpanStartOptions,
-    OtelTracer, OtelTracerProvider,
+    otel_span_add_event, otel_span_context_clone, otel_span_context_create,
+    otel_span_context_destroy, otel_span_context_is_remote, otel_span_context_is_valid,
+    otel_span_context_span_id, otel_span_context_trace_flags, otel_span_context_trace_id,
+    otel_span_context_tracestate, otel_span_destroy, otel_span_end, otel_span_get_context,
+    otel_span_set_attribute, otel_span_set_bool_attribute, otel_span_set_double_attribute,
+    otel_span_set_int64_attribute, otel_span_set_status, otel_span_set_string_attribute,
+    otel_span_update_name, otel_tracer_destroy, otel_tracer_provider_destroy,
+    otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_with_context,
+    OtelSpan, OtelSpanContext, OtelSpanStartOptions, OtelTracer, OtelTracerProvider,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
