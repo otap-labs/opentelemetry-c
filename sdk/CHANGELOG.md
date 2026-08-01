@@ -4,6 +4,12 @@
 
 ### Added
 
+- OTLP gRPC/tonic transport for Traces plus
+  `otel_otlp_trace_exporter_builder_set_transport` and
+  `otel_otlp_trace_exporter_builder_set_compression`, bringing Traces exporter selection to
+  parity with Metrics and Logs. The gRPC transport owns one single-worker Tokio runtime per
+  exporter and is gated by `otlp-grpc` (with `otlp-grpc-gzip`/`otlp-grpc-zstd` for
+  compression and `grpc-tls-ring` for TLS roots).
 - C callback-backed Traces exporter (`otel_custom_trace_exporter_new`), usable with span
   processors without any OTLP feature. The export callback receives a callback-scoped,
   read-only span batch view with resource, scope, span, event, and link data, plus

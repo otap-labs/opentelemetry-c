@@ -202,6 +202,9 @@ static otel_status_t hdr_export_logs(void* user_data, const otel_log_export_batc
 int main(void) {
     otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
     otel_otlp_trace_exporter_builder_set_endpoint(eb, otel_cstr("http://localhost:4318/v1/traces"));
+    otel_otlp_trace_exporter_builder_set_transport(
+        eb, OTEL_OTLP_TRACE_TRANSPORT_HTTP_PROTOBUF);
+    otel_otlp_trace_exporter_builder_set_compression(eb, OTEL_OTLP_COMPRESSION_NONE);
     otel_otlp_trace_exporter_builder_set_timeout_millis(eb, 5000);
     otel_trace_exporter_t* exporter = NULL;
     otel_otlp_trace_exporter_builder_build(eb, &exporter);

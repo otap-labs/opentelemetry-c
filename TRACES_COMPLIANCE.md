@@ -32,7 +32,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Span limits | Implemented | Max attributes/events/links per span and per-event/per-link attributes via `otel_sdk_builder_set_span_limits`; spec defaults (128) when unset; overflow items dropped by the SDK. |
 | Batch span processor | Implemented | Dedicated OS worker thread, spec-schedule export; SDK core. |
 | Simple span processor | Implemented | Synchronous export on the ending thread via `otel_simple_span_processor_create`; suitable for tests and low-volume diagnostics. |
-| OTLP Traces export | Implemented (HTTP) | HTTP/protobuf by default via the optional `otlp-http` feature. gRPC/tonic parity under evaluation (Phase 9). |
+| OTLP Traces export | Implemented | HTTP/protobuf by default via the optional `otlp-http` feature; gRPC/tonic via `otlp-grpc`. Transport and compression are selectable, matching Metrics/Logs. |
 | Custom C trace exporter | Done | Callback-backed exporter with a callback-scoped read-only exported-span batch view, scalar/one-level-array attributes, force-flush/shutdown callbacks, and exactly-once user-data destruction. |
 | Force flush / shutdown | Implemented | Deterministic force flush and shutdown through the SDK provider lifecycle. |
 | Split-artifact linking | Implemented | Instrumentation links only the API library; the SDK is configured/linked separately; cross-artifact C tests assert exported semantics. |
@@ -136,6 +136,7 @@ SDK configuration:
 - [x] ID-generator/user-callback decision: custom sampler/ID callbacks deferred; built-in only.
 - [x] Simple span processor (Phase 7).
 - [x] Custom/user-provided exporter with callback ownership + shutdown semantics (Phase 8).
+- [x] OTLP gRPC/tonic exporter with transport/compression selection (Phase 9).
 
 Validation and usability:
 - [ ] API-only no-op tests for all new calls.
