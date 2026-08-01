@@ -4,6 +4,11 @@
 
 ### Added
 
+- C callback-backed Traces exporter (`otel_custom_trace_exporter_new`), usable with span
+  processors without any OTLP feature. The export callback receives a callback-scoped,
+  read-only span batch view with resource, scope, span, event, and link data, plus
+  scalar/one-level-array attributes. Callback state transfers on `OTEL_STATUS_OK` only and
+  `state_destroy` runs exactly once after in-flight exports complete.
 - Simple span processor: `otel_simple_span_processor_create` consumes a trace exporter and
   produces a generic `otel_span_processor_t` that exports each finished span synchronously on
   the thread that ended it. It takes ownership of the exporter on `OTEL_STATUS_OK` (the pointer

@@ -38,6 +38,7 @@ mod api_ffi;
 mod batch_processor;
 mod custom_log_exporter;
 mod custom_metric_exporter;
+mod custom_trace_exporter;
 mod error;
 mod handle;
 mod log_export_view;
@@ -55,6 +56,7 @@ mod otlp_metric_exporter;
 mod periodic_metric_reader;
 mod sdk;
 mod simple_span_processor;
+mod span_export_view;
 mod span_processor;
 mod trace_exporter;
 mod vtable;
@@ -74,6 +76,10 @@ pub use custom_log_exporter::{
 };
 pub use custom_metric_exporter::{
     otel_custom_metric_exporter_new, OtelCustomMetricExporterCallbacks,
+};
+pub use custom_trace_exporter::{
+    otel_custom_trace_exporter_new, OtelCustomTraceExport, OtelCustomTraceExporterCallbacks,
+    OtelCustomTraceForceFlush, OtelCustomTraceShutdown, OtelCustomTraceStateDestroy,
 };
 pub use log_export_view::{
     OtelLogExportBatchView, OtelLogExportRecordView, OtelLogExportScopeView,
@@ -155,5 +161,11 @@ pub use sdk::{
     OtelSamplerConfig, OtelSdk, OtelSdkBuilder, OtelSpanLimits,
 };
 pub use simple_span_processor::otel_simple_span_processor_create;
+pub use span_export_view::{
+    OtelSpanArrayView, OtelSpanAttribute, OtelSpanAttributeValue, OtelSpanEventView,
+    OtelSpanExportBatchView, OtelSpanExportLinkView, OtelSpanExportRecordView,
+    OtelSpanExportScopeView, OTEL_SPAN_ATTRIBUTE_BOOL_ARRAY, OTEL_SPAN_ATTRIBUTE_DOUBLE_ARRAY,
+    OTEL_SPAN_ATTRIBUTE_INT64_ARRAY, OTEL_SPAN_ATTRIBUTE_STRING_ARRAY, OTEL_SPAN_EXPORT_MAX_SPANS,
+};
 pub use span_processor::{otel_span_processor_destroy, OtelSpanProcessor};
 pub use trace_exporter::{otel_trace_exporter_destroy, OtelTraceExporter};

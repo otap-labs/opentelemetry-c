@@ -249,7 +249,10 @@ pub unsafe extern "C" fn otel_otlp_trace_exporter_builder_build(
         {
             match build_trace_exporter(&builder.config) {
                 Err(status) => status,
-                Ok(exporter) => match exporter {},
+                Ok(_) => fail(
+                    OtelStatus::InvalidConfig,
+                    "OTLP HTTP exporter is not available",
+                ),
             }
         }
     })

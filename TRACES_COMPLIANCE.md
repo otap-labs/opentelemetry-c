@@ -33,7 +33,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Batch span processor | Implemented | Dedicated OS worker thread, spec-schedule export; SDK core. |
 | Simple span processor | Implemented | Synchronous export on the ending thread via `otel_simple_span_processor_create`; suitable for tests and low-volume diagnostics. |
 | OTLP Traces export | Implemented (HTTP) | HTTP/protobuf by default via the optional `otlp-http` feature. gRPC/tonic parity under evaluation (Phase 9). |
-| Custom C trace exporter | Planned | Callback-based exporter with a callback-scoped read-only exported-span batch view; exactly-once user-data destruction. |
+| Custom C trace exporter | Done | Callback-backed exporter with a callback-scoped read-only exported-span batch view, scalar/one-level-array attributes, force-flush/shutdown callbacks, and exactly-once user-data destruction. |
 | Force flush / shutdown | Implemented | Deterministic force flush and shutdown through the SDK provider lifecycle. |
 | Split-artifact linking | Implemented | Instrumentation links only the API library; the SDK is configured/linked separately; cross-artifact C tests assert exported semantics. |
 | C and C++ headers | Implemented | Trace headers compile standalone as C11 and within the C++17 pipeline. |
@@ -135,7 +135,7 @@ SDK configuration:
 - [x] Span limits (Phase 6).
 - [x] ID-generator/user-callback decision: custom sampler/ID callbacks deferred; built-in only.
 - [x] Simple span processor (Phase 7).
-- [ ] Custom/user-provided exporter with callback ownership + shutdown semantics (Phase 8).
+- [x] Custom/user-provided exporter with callback ownership + shutdown semantics (Phase 8).
 
 Validation and usability:
 - [ ] API-only no-op tests for all new calls.
