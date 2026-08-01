@@ -2428,6 +2428,7 @@ mod tests {
     fn set_sampler_reads_only_required_fields_when_struct_truncated() {
         unsafe {
             let builder = otel_sdk_builder_new();
+            assert!(!builder.is_null(), "builder allocation must succeed");
             // struct_size stops before the parent-based fields: parent-based defaults to
             // AlwaysOn root regardless of the (unread) parent_based_root_type bytes.
             let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
@@ -2443,6 +2444,7 @@ mod tests {
     fn set_sampler_rejects_invalid_configs() {
         unsafe {
             let builder = otel_sdk_builder_new();
+            assert!(!builder.is_null(), "builder allocation must succeed");
 
             // struct_size too small.
             let mut cfg = sampler_config(OTEL_SAMPLER_ALWAYS_ON);
@@ -2505,6 +2507,7 @@ mod tests {
     fn set_span_limits_maps_every_bound() {
         unsafe {
             let builder = otel_sdk_builder_new();
+            assert!(!builder.is_null(), "builder allocation must succeed");
             let cfg = span_limits_config();
             assert_eq!(
                 otel_sdk_builder_set_span_limits(builder, &cfg),
@@ -2531,6 +2534,7 @@ mod tests {
     fn set_span_limits_rejects_invalid_configs() {
         unsafe {
             let builder = otel_sdk_builder_new();
+            assert!(!builder.is_null(), "builder allocation must succeed");
 
             // struct_size too small.
             let mut cfg = span_limits_config();
