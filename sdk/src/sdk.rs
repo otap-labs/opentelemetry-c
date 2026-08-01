@@ -2388,6 +2388,14 @@ mod tests {
         assert!(!flag.load(Ordering::Acquire));
     }
 
+    // Borrow a builder handle for assertions via the null-checked `as_ref`, rather than a raw
+    // `builder_ref(builder)` dereference. This performs the pointer validity check up front and keeps the
+    // tests free of unguarded raw-pointer dereferences.
+    fn builder_ref<'a>(builder: *mut OtelSdkBuilder) -> &'a OtelSdkBuilder {
+        // SAFETY: the builder handle is live for the duration of each test.
+        unsafe { builder.as_ref() }.expect("builder allocation must succeed")
+    }
+
     fn sampler_config(sampler_type: u32) -> OtelSamplerConfig {
         OtelSamplerConfig {
             struct_size: std::mem::size_of::<OtelSamplerConfig>(),
@@ -2406,30 +2414,41 @@ mod tests {
 
             let cfg = sampler_config(OTEL_SAMPLER_ALWAYS_OFF);
             assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
-            assert!(matches!((*builder).sampler, Some(Sampler::AlwaysOff)));
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::AlwaysOff)
+            ));
 
             let mut cfg = sampler_config(OTEL_SAMPLER_TRACE_ID_RATIO_BASED);
             cfg.ratio = 0.25;
             assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
-            assert!(matches!((*builder).sampler, Some(Sampler::TraceIdRatioBased(r)) if r == 0.25));
+            assert!(
+                matches!(builder_ref(builder).sampler, Some(Sampler::TraceIdRatioBased(r)) if r == 0.25)
+            );
 
             let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
             cfg.parent_based_root_type = OTEL_SAMPLER_ALWAYS_ON;
             assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
-            assert!(matches!((*builder).sampler, Some(Sampler::ParentBased(_))));
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
 
             let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
             cfg.parent_based_root_type = OTEL_SAMPLER_TRACE_ID_RATIO_BASED;
             cfg.ratio = 1.0;
             assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
-            assert!(matches!((*builder).sampler, Some(Sampler::ParentBased(_))));
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
 
             // NULL clears the override.
             assert_eq!(
                 otel_sdk_builder_set_sampler(builder, std::ptr::null()),
                 OtelStatus::Ok
             );
-            assert!((*builder).sampler.is_none());
+            assert!(builder_ref(builder).sampler.is_none());
 
             otel_sdk_builder_destroy(builder);
         }
@@ -2439,14 +2458,16 @@ mod tests {
     fn set_sampler_reads_only_required_fields_when_struct_truncated() {
         unsafe {
             let builder = otel_sdk_builder_new();
-            assert!(!builder.is_null(), "builder allocation must succeed");
             // struct_size stops before the parent-based fields: parent-based defaults to
             // AlwaysOn root regardless of the (unread) parent_based_root_type bytes.
             let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
             cfg.struct_size = std::mem::offset_of!(OtelSamplerConfig, parent_based_root_type);
             cfg.parent_based_root_type = OTEL_SAMPLER_ALWAYS_OFF;
             assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
-            assert!(matches!((*builder).sampler, Some(Sampler::ParentBased(_))));
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
             otel_sdk_builder_destroy(builder);
         }
     }
@@ -2471,7 +2492,6 @@ mod tests {
         );
         unsafe {
             let builder = otel_sdk_builder_new();
-            assert!(!builder.is_null(), "builder allocation must succeed");
 
             // Parent-based with no tail bytes present: root defaults to AlwaysOn.
             let prefix = SamplerConfigPrefix {
@@ -2487,7 +2507,10 @@ mod tests {
                 ),
                 OtelStatus::Ok
             );
-            assert!(matches!((*builder).sampler, Some(Sampler::ParentBased(_))));
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
 
             // A ratio-based base sampler reads only prefix fields too.
             let prefix = SamplerConfigPrefix {
@@ -2503,7 +2526,9 @@ mod tests {
                 ),
                 OtelStatus::Ok
             );
-            assert!(matches!((*builder).sampler, Some(Sampler::TraceIdRatioBased(r)) if r == 0.5));
+            assert!(
+                matches!(builder_ref(builder).sampler, Some(Sampler::TraceIdRatioBased(r)) if r == 0.5)
+            );
 
             otel_sdk_builder_destroy(builder);
         }
@@ -2513,7 +2538,6 @@ mod tests {
     fn set_sampler_rejects_invalid_configs() {
         unsafe {
             let builder = otel_sdk_builder_new();
-            assert!(!builder.is_null(), "builder allocation must succeed");
 
             // struct_size too small.
             let mut cfg = sampler_config(OTEL_SAMPLER_ALWAYS_ON);
@@ -2555,7 +2579,7 @@ mod tests {
             );
 
             // all rejections must leave the builder unchanged.
-            assert!((*builder).sampler.is_none());
+            assert!(builder_ref(builder).sampler.is_none());
             otel_sdk_builder_destroy(builder);
         }
     }
@@ -2576,13 +2600,12 @@ mod tests {
     fn set_span_limits_maps_every_bound() {
         unsafe {
             let builder = otel_sdk_builder_new();
-            assert!(!builder.is_null(), "builder allocation must succeed");
             let cfg = span_limits_config();
             assert_eq!(
                 otel_sdk_builder_set_span_limits(builder, &cfg),
                 OtelStatus::Ok
             );
-            let limits = (*builder).span_limits.expect("limits stored");
+            let limits = builder_ref(builder).span_limits.expect("limits stored");
             assert_eq!(limits.max_attributes_per_span, 1);
             assert_eq!(limits.max_events_per_span, 2);
             assert_eq!(limits.max_links_per_span, 3);
@@ -2594,7 +2617,7 @@ mod tests {
                 otel_sdk_builder_set_span_limits(builder, std::ptr::null()),
                 OtelStatus::Ok
             );
-            assert!((*builder).span_limits.is_none());
+            assert!(builder_ref(builder).span_limits.is_none());
             otel_sdk_builder_destroy(builder);
         }
     }
@@ -2603,7 +2626,6 @@ mod tests {
     fn set_span_limits_rejects_invalid_configs() {
         unsafe {
             let builder = otel_sdk_builder_new();
-            assert!(!builder.is_null(), "builder allocation must succeed");
 
             // struct_size too small.
             let mut cfg = span_limits_config();
@@ -2621,7 +2643,7 @@ mod tests {
                 OtelStatus::InvalidArgument
             );
 
-            assert!((*builder).span_limits.is_none());
+            assert!(builder_ref(builder).span_limits.is_none());
             otel_sdk_builder_destroy(builder);
         }
     }
