@@ -101,6 +101,7 @@ Ready-to-run examples that link both libraries are in
 [`examples/c-metrics-instruments/`](examples/c-metrics-instruments),
 [`examples/c-manual-metrics/`](examples/c-manual-metrics),
 [`examples/c-custom-metric-exporter/`](examples/c-custom-metric-exporter),
+[`examples/c-custom-trace-exporter/`](examples/c-custom-trace-exporter),
 [`examples/c-periodic-metrics/`](examples/c-periodic-metrics),
 and [`examples/c-metrics/`](examples/c-metrics) (combined OTLP reference).
 

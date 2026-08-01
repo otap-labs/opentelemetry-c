@@ -141,7 +141,7 @@ SDK configuration:
 Validation and usability:
 - [ ] API-only no-op tests for all new calls.
 - [ ] SDK-backed semantic tests (sampling, limits, links, context parenting, propagation).
-- [ ] Extended C header compile tests and runnable C example.
+- [x] Extended C header compile tests and runnable C examples (`c-basic-traces`; `c-custom-trace-exporter` for the callback exporter).
 - [ ] Cross-artifact tests proving the API-only caller uses the installed SDK.
 - [ ] Hot-path benchmarks where new per-span operations are introduced.
 - [ ] Documented supported/deferred behavior and ABI evolution rules (this file, updated per phase).

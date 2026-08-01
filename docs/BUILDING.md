@@ -105,6 +105,7 @@ The trace, Metrics, and Logs examples provide working Makefiles:
 - [`sdk/examples/c-metrics`](../sdk/examples/c-metrics) (combined OTLP reference)
 - [`sdk/examples/c-logs`](../sdk/examples/c-logs)
 - [`sdk/examples/c-custom-log-exporter`](../sdk/examples/c-custom-log-exporter)
+- [`sdk/examples/c-custom-trace-exporter`](../sdk/examples/c-custom-trace-exporter)
 
 Windows shared-library use and supported static deployment are not currently available.
 
