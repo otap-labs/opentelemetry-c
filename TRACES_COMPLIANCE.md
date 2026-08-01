@@ -31,7 +31,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Built-in samplers | Implemented | `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased`, `ParentBased` with a configurable root sampler, via `otel_sdk_builder_set_sampler`. Custom sampler callbacks deferred. |
 | Span limits | Implemented | Max attributes/events/links per span and per-event/per-link attributes via `otel_sdk_builder_set_span_limits`; spec defaults (128) when unset; overflow items dropped by the SDK. |
 | Batch span processor | Implemented | Dedicated OS worker thread, spec-schedule export; SDK core. |
-| Simple span processor | Planned | Synchronous export on the ending thread; suitable for tests and low-volume diagnostics. |
+| Simple span processor | Implemented | Synchronous export on the ending thread via `otel_simple_span_processor_create`; suitable for tests and low-volume diagnostics. |
 | OTLP Traces export | Implemented (HTTP) | HTTP/protobuf by default via the optional `otlp-http` feature. gRPC/tonic parity under evaluation (Phase 9). |
 | Custom C trace exporter | Planned | Callback-based exporter with a callback-scoped read-only exported-span batch view; exactly-once user-data destruction. |
 | Force flush / shutdown | Implemented | Deterministic force flush and shutdown through the SDK provider lifecycle. |
@@ -134,7 +134,7 @@ SDK configuration:
 - [x] Built-in samplers (Phase 5).
 - [x] Span limits (Phase 6).
 - [x] ID-generator/user-callback decision: custom sampler/ID callbacks deferred; built-in only.
-- [ ] Simple span processor (Phase 7).
+- [x] Simple span processor (Phase 7).
 - [ ] Custom/user-provided exporter with callback ownership + shutdown semantics (Phase 8).
 
 Validation and usability:

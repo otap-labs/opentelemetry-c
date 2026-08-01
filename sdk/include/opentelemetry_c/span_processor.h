@@ -3,9 +3,10 @@
  *
  * The generic **span processor** handle (`otel_span_processor_t`) — the opaque object the SDK
  * builder consumes via otel_sdk_builder_add_span_processor(). A concrete processor is produced
- * by a processor builder (today only the batch span processor; see batch_span_processor.h).
- * This header is an opaque extension point: additional processor kinds can be added later
- * behind the same handle without reshaping the current C interface.
+ * by a processor constructor or builder (the simple span processor, see
+ * simple_span_processor.h; and the batch span processor, see batch_span_processor.h). This
+ * header is an opaque extension point: additional processor kinds can be added later behind the
+ * same handle without reshaping the current C interface.
  *
  * Ownership: a span processor is owned by the caller until it is transferred into the SDK
  * builder via otel_sdk_builder_add_span_processor() (ownership moves on OTEL_STATUS_OK). If

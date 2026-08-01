@@ -154,6 +154,7 @@ int main(void) {
 #include <opentelemetry_c/span_processor.h>
 #include <opentelemetry_c/otlp_trace_exporter.h>
 #include <opentelemetry_c/batch_span_processor.h>
+#include <opentelemetry_c/simple_span_processor.h>
 #include <opentelemetry_c/otlp_metric_exporter.h>
 #include <opentelemetry_c/periodic_metric_reader.h>
 #include <opentelemetry_c/metric_view.h>
@@ -196,6 +197,16 @@ int main(void) {
     otel_sdk_builder_t* sb = otel_sdk_builder_new();
     otel_sdk_builder_set_service_name(sb, otel_cstr("hdr-check"));
     otel_sdk_builder_add_span_processor(sb, processor);
+
+    /* A second span pipeline via the simple span processor, transferred into the same SDK. */
+    otel_otlp_trace_exporter_builder_t* eb2 = otel_otlp_trace_exporter_builder_new();
+    otel_otlp_trace_exporter_builder_set_endpoint(eb2, otel_cstr("http://localhost:4318/v1/traces"));
+    otel_trace_exporter_t* exporter2 = NULL;
+    otel_otlp_trace_exporter_builder_build(eb2, &exporter2);
+    otel_otlp_trace_exporter_builder_destroy(eb2);
+    otel_span_processor_t* simple_processor = NULL;
+    otel_simple_span_processor_create(exporter2, &simple_processor);
+    otel_sdk_builder_add_span_processor(sb, simple_processor);
 
     otel_otlp_metric_exporter_builder_t* meb = otel_otlp_metric_exporter_builder_new();
     otel_otlp_metric_exporter_builder_set_endpoint(meb, otel_cstr("http://localhost:4318/v1/metrics"));

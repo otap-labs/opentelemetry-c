@@ -4,6 +4,12 @@
 
 ### Added
 
+- Simple span processor: `otel_simple_span_processor_create` consumes a trace exporter and
+  produces a generic `otel_span_processor_t` that exports each finished span synchronously on
+  the thread that ended it. It takes ownership of the exporter on `OTEL_STATUS_OK` (the pointer
+  becomes invalid) and leaves it caller-owned on failure, matching the batch builder's
+  transfer contract. Intended for tests, short-lived programs, and debugging; production
+  pipelines should prefer the batch span processor.
 - Configurable trace span limits: `otel_sdk_builder_set_span_limits` caps the number of
   attributes, events, and links retained per span (and attributes per event/link) from a
   versioned `otel_span_limits_t` (`struct_size`-gated). Values map directly to the SDK's

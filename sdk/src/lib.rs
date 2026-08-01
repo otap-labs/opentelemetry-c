@@ -54,6 +54,7 @@ mod otlp_log_exporter;
 mod otlp_metric_exporter;
 mod periodic_metric_reader;
 mod sdk;
+mod simple_span_processor;
 mod span_processor;
 mod trace_exporter;
 mod vtable;
@@ -153,5 +154,6 @@ pub use sdk::{
     otel_sdk_set_logs_as_global, otel_sdk_set_metrics_as_global, otel_sdk_shutdown,
     OtelSamplerConfig, OtelSdk, OtelSdkBuilder, OtelSpanLimits,
 };
+pub use simple_span_processor::otel_simple_span_processor_create;
 pub use span_processor::{otel_span_processor_destroy, OtelSpanProcessor};
 pub use trace_exporter::{otel_trace_exporter_destroy, OtelTraceExporter};

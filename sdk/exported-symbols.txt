@@ -98,5 +98,6 @@ otel_sdk_set_logs_as_global
 otel_sdk_set_metrics_as_global
 otel_sdk_shutdown
 otel_simple_log_processor_create
+otel_simple_span_processor_create
 otel_span_processor_destroy
 otel_trace_exporter_destroy
