@@ -1,0 +1,35 @@
+{
+  "name": "opentelemetry-c",
+  "version": "0.1.0",
+  "description": "OpenTelemetry C API and SDK – Rust-backed C bindings for tracing, metrics, and logs",
+  "homepage": "https://github.com/otap-labs/opentelemetry-c",
+  "license": "Apache-2.0",
+  "supports": "!windows",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "otlp-http": {
+      "description": "Enable OTLP HTTP/protobuf transport"
+    },
+    "otlp-grpc": {
+      "description": "Enable OTLP gRPC/tonic transport"
+    },
+    "native-tls": {
+      "description": "Use platform TLS for OTLP HTTP"
+    },
+    "rustls-tls": {
+      "description": "Use rustls for OTLP HTTP (mutually exclusive with native-tls)"
+    },
+    "grpc-tls": {
+      "description": "Enable gRPC TLS using ring and platform roots (implies otlp-grpc)"
+    }
+  }
+}
