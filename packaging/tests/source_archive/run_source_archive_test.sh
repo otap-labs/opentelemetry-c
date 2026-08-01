@@ -6,10 +6,11 @@
 # verifies the api_consumer test passes.
 #
 # Usage:
-#   ./packaging/tests/source_archive/run_source_archive_test.sh [build_dir]
+#   ./packaging/tests/source_archive/run_source_archive_test.sh [work_parent_dir]
 #
-# build_dir: where to place the extracted archive and build outputs
-#            (default: a subdirectory of the repo root named archive-test-work)
+# work_parent_dir: parent directory where a temporary work directory
+#                  (otelc-archive-test-XXXXXX) will be created.
+#                  Default: /tmp
 # Requires: git, cmake, cargo, a C compiler.
 
 set -euo pipefail
@@ -18,21 +19,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # IMPORTANT: the work directory MUST be outside the repository checkout so that
-# git rev-parse does not discover the parent .git directory. Use /tmp by default.
+# git rev-parse does not discover the parent .git directory.
+#
+# To avoid accidental recursive deletion of arbitrary directories, the optional
+# argument is treated as a parent directory only; this script always creates and
+# removes its own uniquely named mktemp child directory.
 if [[ -n "${1:-}" ]]; then
-    WORK_DIR="$1"
+    WORK_PARENT="$1"
 else
-    WORK_DIR="$(mktemp -d /tmp/otelc-archive-test-XXXXXX)"
+    WORK_PARENT="/tmp"
 fi
-# If the caller explicitly chose a path inside the repo, warn and abort.
-if [[ "${WORK_DIR}" == "${REPO_ROOT}"* ]]; then
-    echo "ERROR: WORK_DIR '${WORK_DIR}' is inside the repository checkout." >&2
-    echo "       Choose a path under /tmp or another directory outside the repo." >&2
+
+mkdir -p "${WORK_PARENT}"
+WORK_PARENT="$(cd "${WORK_PARENT}" && pwd)"
+
+if [[ "${WORK_PARENT}" == "${REPO_ROOT}" || "${WORK_PARENT}" == "${REPO_ROOT}"/* ]]; then
+    echo "ERROR: WORK_PARENT '${WORK_PARENT}' is inside the repository checkout." >&2
+    echo "       Choose a directory under /tmp or another location outside the repo." >&2
     exit 1
 fi
 
-rm -rf "${WORK_DIR}"
-mkdir -p "${WORK_DIR}"
+WORK_DIR="$(mktemp -d "${WORK_PARENT%/}/otelc-archive-test-XXXXXX")"
+
+cleanup() {
+    if [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]]; then
+        case "$(basename "${WORK_DIR}")" in
+            otelc-archive-test-*) rm -rf "${WORK_DIR}" ;;
+            *) echo "WARN: refusing to remove unexpected directory '${WORK_DIR}'" >&2 ;;
+        esac
+    fi
+}
+trap cleanup EXIT
 
 ARCHIVE_FILE="${WORK_DIR}/opentelemetry-c-HEAD.tar.gz"
 EXTRACT_DIR="${WORK_DIR}/source"
@@ -97,8 +114,5 @@ if [[ "$(uname)" == "Darwin" ]]; then
 else
     LD_LIBRARY_PATH="${INSTALL_DIR}/lib" "${CONSUMER_BUILD}/api_consumer"
 fi
-
-echo "==> Cleaning up work directory"
-rm -rf "${WORK_DIR}"
 
 echo "==> Source archive test PASSED"
