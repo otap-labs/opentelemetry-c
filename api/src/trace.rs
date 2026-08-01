@@ -957,24 +957,36 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
             fail(OtelStatus::InvalidArgument, "options must not be NULL");
             return std::ptr::null_mut();
         }
-        // SAFETY: caller guarantees a valid options pointer; we read only fields covered by
-        // `struct_size` after the minimum-size check below.
-        let options = unsafe { &*options };
-        if options.struct_size < OTEL_SPAN_START_OPTIONS_EX_REQUIRED_SIZE {
+        // A genuinely older caller may pass a struct shorter than the current
+        // `OtelSpanStartOptionsEx`, so we must never form a reference to the full struct. Read
+        // the stable `struct_size` prefix first, then read each covered field through its own
+        // raw address, mirroring the Metrics/Logs versioned-struct handling.
+        // SAFETY: `struct_size` is the first field and is always present for non-NULL options.
+        let struct_size = unsafe { options.cast::<usize>().read() };
+        if struct_size < OTEL_SPAN_START_OPTIONS_EX_REQUIRED_SIZE {
             fail(
                 OtelStatus::InvalidConfig,
                 "options struct_size is smaller than the required minimum",
             );
             return std::ptr::null_mut();
         }
-        if options.reserved != 0 {
+        // SAFETY: `struct_size >= REQUIRED_SIZE` proves the prefix through
+        // `start_time_unix_nanos` is present; take each field's address without dereferencing
+        // the whole (possibly truncated) struct.
+        let kind = unsafe { std::ptr::addr_of!((*options).kind).read() };
+        let reserved = unsafe { std::ptr::addr_of!((*options).reserved).read() };
+        let parent = unsafe { std::ptr::addr_of!((*options).parent).read() };
+        let parent_context = unsafe { std::ptr::addr_of!((*options).parent_context).read() };
+        let start_time_unix_nanos =
+            unsafe { std::ptr::addr_of!((*options).start_time_unix_nanos).read() };
+        if reserved != 0 {
             fail(
                 OtelStatus::InvalidArgument,
                 "reserved field in span-start options must be zero",
             );
             return std::ptr::null_mut();
         }
-        if !options.parent.is_null() && !options.parent_context.is_null() {
+        if !parent.is_null() && !parent_context.is_null() {
             fail(
                 OtelStatus::InvalidArgument,
                 "parent span handle and parent span context are mutually exclusive",
@@ -984,25 +996,29 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
 
         // Fields present only when `struct_size` covers them fully (through the end of the
         // field). Offsets are computed from the struct layout so newer/older headers agree.
-        let has_attributes =
-            options.struct_size >= std::mem::offset_of!(OtelSpanStartOptionsEx, links);
-        let has_links = options.struct_size >= std::mem::size_of::<OtelSpanStartOptionsEx>();
-        let attributes = if has_attributes {
-            options.attributes
+        let has_attributes = struct_size >= std::mem::offset_of!(OtelSpanStartOptionsEx, links);
+        let has_links = struct_size >= std::mem::size_of::<OtelSpanStartOptionsEx>();
+        // SAFETY: each tail field is read only when `struct_size` proves it is fully present.
+        let (attributes, attribute_count) = if has_attributes {
+            unsafe {
+                (
+                    std::ptr::addr_of!((*options).attributes).read(),
+                    std::ptr::addr_of!((*options).attribute_count).read(),
+                )
+            }
         } else {
-            std::ptr::null()
+            (std::ptr::null(), 0)
         };
-        let attribute_count = if has_attributes {
-            options.attribute_count
+        let (links, link_count) = if has_links {
+            unsafe {
+                (
+                    std::ptr::addr_of!((*options).links).read(),
+                    std::ptr::addr_of!((*options).link_count).read(),
+                )
+            }
         } else {
-            0
+            (std::ptr::null(), 0)
         };
-        let links = if has_links {
-            options.links
-        } else {
-            std::ptr::null()
-        };
-        let link_count = if has_links { options.link_count } else { 0 };
 
         if attributes.is_null() && attribute_count != 0 {
             fail(
@@ -1042,17 +1058,17 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
         // Resolve the single parenting source.
         let mut parent_span_ctx: *mut c_void = std::ptr::null_mut();
         let mut parent_view_storage: Option<OtelSpanContextView> = None;
-        if !options.parent.is_null() {
+        if !parent.is_null() {
             // SAFETY: caller guarantees a live span handle when non-NULL.
-            match unsafe { checked_ref::<OtelSpan>(options.parent) } {
+            match unsafe { checked_ref::<OtelSpan>(parent) } {
                 // Only a parent from the SAME implementation contributes a live context.
                 Some(parent) if parent.vtable == vtable => parent_span_ctx = parent.ctx,
                 Some(_) => {}
                 None => return std::ptr::null_mut(),
             }
-        } else if !options.parent_context.is_null() {
+        } else if !parent_context.is_null() {
             // SAFETY: caller guarantees a live span-context handle when non-NULL.
-            match unsafe { checked_ref::<OtelSpanContext>(options.parent_context) } {
+            match unsafe { checked_ref::<OtelSpanContext>(parent_context) } {
                 Some(parent) if parent.is_valid() => parent_view_storage = Some(parent.view()),
                 Some(_) => {
                     fail(
@@ -1119,11 +1135,11 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
         };
 
         let config = OtelSpanStartConfig {
-            kind: options.kind,
+            kind,
             reserved: 0,
             parent_span_ctx,
             parent_context: parent_context_ptr,
-            start_time_unix_nanos: options.start_time_unix_nanos,
+            start_time_unix_nanos,
             attributes,
             attribute_count,
             links: links_ptr,

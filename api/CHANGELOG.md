@@ -19,7 +19,10 @@
   `otel_trace_propagation_inject_traceparent` / `_inject_tracestate` format an existing context
   into caller-provided buffers with a length-query/undersized contract. Strict lowercase-hex,
   version/flag/separator/all-zero-ID validation; unknown trace-flag bits preserved; input sizes
-  bounded before allocation. Baggage remains deferred. See `TRACES_COMPLIANCE.md`.
+  bounded before allocation. `tracestate` is validated against the W3C key/value grammar
+  (unique keys; blank list members tolerated); per the specification a malformed `tracestate`
+  never invalidates a valid `traceparent` — it is discarded and the context is still extracted.
+  Baggage remains deferred. See `TRACES_COMPLIANCE.md`.
 - SpanContext value operations over the immutable `otel_span_context_t`:
   `otel_span_context_is_valid`, `otel_span_context_is_remote`, `otel_span_context_trace_id`
   (16-byte big-endian), `otel_span_context_span_id` (8-byte big-endian),

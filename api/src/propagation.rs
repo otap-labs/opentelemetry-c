@@ -57,12 +57,14 @@ fn encode_hex(bytes: &[u8], out: &mut String) {
     }
 }
 
-/// Validate a `tracestate` value against a bounded subset of the W3C grammar.
+/// Validate a `tracestate` value against the W3C Trace Context grammar.
 ///
-/// Accepts a comma-separated list of `key=value` members (with optional surrounding
-/// whitespace), rejecting: over-length input, too many members, empty keys, members without
-/// `=`, and any byte outside printable ASCII (`0x20..=0x7e`). This is deliberately bounded;
-/// it preserves the value verbatim once accepted.
+/// Returns `true` when every non-blank list member is a well-formed `key=value` pair with a
+/// unique, grammar-valid key and a grammar-valid value. Blank (empty or whitespace-only) list
+/// members are permitted and ignored, per the W3C Level 2 recommendation. Over-length input
+/// (> [`MAX_TRACESTATE_LEN`]) or more than [`MAX_TRACESTATE_MEMBERS`] non-blank members are
+/// rejected. A caller that receives `false` must discard the whole `tracestate` but keep the
+/// extracted context — a malformed `tracestate` never invalidates a valid `traceparent`.
 fn validate_tracestate(value: &str) -> bool {
     if value.is_empty() {
         return true;
@@ -70,35 +72,107 @@ fn validate_tracestate(value: &str) -> bool {
     if value.len() > MAX_TRACESTATE_LEN {
         return false;
     }
-    if !value.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
-        return false;
-    }
     let mut members = 0usize;
-    for member in value.split(',') {
-        let member = member.trim_matches(|c| c == ' ' || c == '\t');
+    let mut seen_keys: Vec<&str> = Vec::new();
+    for raw in value.split(',') {
+        // OWS may surround a list member (the grammar allows `OWS "," OWS`).
+        let member = raw.trim_matches(|c| c == ' ' || c == '\t');
         if member.is_empty() {
-            // A trailing/leading empty segment (e.g. "a=1,") is malformed.
-            return false;
+            // Blank list members are explicitly permitted (W3C Level 2) and carry no data.
+            continue;
         }
         members += 1;
         if members > MAX_TRACESTATE_MEMBERS {
             return false;
         }
-        match member.split_once('=') {
-            Some((key, _value)) if !key.is_empty() => {}
-            _ => return false,
+        let Some((key, val)) = member.split_once('=') else {
+            return false;
+        };
+        if !is_valid_tracestate_key(key) || !is_valid_tracestate_value(val) {
+            return false;
         }
+        if seen_keys.contains(&key) {
+            // Duplicate keys are not allowed by the specification.
+            return false;
+        }
+        seen_keys.push(key);
     }
     true
+}
+
+/// A `tracestate` key character after the first: `lcalpha / DIGIT / "_" / "-" / "*" / "/"`.
+fn is_tracestate_key_char(c: u8) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-' | b'*' | b'/')
+}
+
+/// Validate a `tracestate` key against the W3C grammar (simple or multi-tenant form).
+///
+/// simple-key = lcalpha 0*255(key-char); multi-tenant-key = tenant-id "@" system-id, where
+/// tenant-id = (lcalpha / DIGIT) 0*240(key-char) and system-id = lcalpha 0*13(key-char).
+fn is_valid_tracestate_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    if let Some(at) = key.find('@') {
+        let tenant = &bytes[..at];
+        let system = &bytes[at + 1..];
+        if system.contains(&b'@') {
+            return false;
+        }
+        // tenant-id: 1..=241 chars, first lcalpha/DIGIT, remainder key-char.
+        if tenant.is_empty() || tenant.len() > 241 {
+            return false;
+        }
+        if !(tenant[0].is_ascii_lowercase() || tenant[0].is_ascii_digit()) {
+            return false;
+        }
+        if !tenant[1..].iter().all(|&c| is_tracestate_key_char(c)) {
+            return false;
+        }
+        // system-id: 1..=14 chars, first lcalpha, remainder key-char.
+        if system.is_empty() || system.len() > 14 {
+            return false;
+        }
+        if !system[0].is_ascii_lowercase() {
+            return false;
+        }
+        system[1..].iter().all(|&c| is_tracestate_key_char(c))
+    } else {
+        if bytes.is_empty() || bytes.len() > 256 {
+            return false;
+        }
+        if !bytes[0].is_ascii_lowercase() {
+            return false;
+        }
+        bytes[1..].iter().all(|&c| is_tracestate_key_char(c))
+    }
+}
+
+/// Validate a `tracestate` value against the W3C grammar.
+///
+/// value = 0*255(chr) nblk-chr; chr = %x20 / nblk-chr; nblk-chr = %x21-2B / %x2D-3C / %x3E-7E.
+/// In other words: 1..=256 printable-ASCII characters excluding comma and equals, where an
+/// internal space is allowed but the value must not end with a space.
+fn is_valid_tracestate_value(val: &str) -> bool {
+    let bytes = val.as_bytes();
+    if bytes.is_empty() || bytes.len() > 256 {
+        return false;
+    }
+    if *bytes.last().unwrap() == b' ' {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|&c| c == b' ' || ((0x21..=0x7e).contains(&c) && c != b',' && c != b'='))
 }
 
 /// Extract a remote [`OtelSpanContext`] from a W3C `traceparent` and optional `tracestate`.
 ///
 /// `traceparent` is required. `tracestate` may be an empty view for none. On success `*out`
 /// receives a new owned context with `is_remote == true`; release it with
-/// `otel_span_context_destroy`. On any malformed input `*out` is set to NULL and a failure
-/// status is returned with the last-error set. Trace-flag bits are preserved verbatim,
-/// including unknown/reserved bits.
+/// `otel_span_context_destroy`. On a malformed `traceparent` `*out` is set to NULL and a
+/// failure status is returned with the last-error set. A malformed `tracestate` does **not**
+/// fail the call: per W3C Trace Context it is discarded and the context is still extracted with
+/// an empty tracestate. Trace-flag bits are preserved verbatim, including unknown/reserved
+/// bits.
 ///
 /// # Safety
 /// The string views must satisfy the `otel_string_view_t` contract; `out` must be writable.
@@ -183,15 +257,15 @@ pub unsafe extern "C" fn otel_trace_propagation_extract(
             return fail(OtelStatus::InvalidArgument, "parent-id is all zero");
         }
 
-        // Optional tracestate.
+        // Optional tracestate. Per W3C Trace Context, a `tracestate` that fails to parse MUST
+        // NOT invalidate an otherwise-valid `traceparent`; the context is extracted with the
+        // malformed `tracestate` discarded (empty).
         // SAFETY: forwarded to the caller's contract.
         let ts = match unsafe { tracestate.as_str() } {
             Ok(s) => s,
             Err(error) => return fail(error.status, error.message),
         };
-        if !validate_tracestate(ts) {
-            return fail(OtelStatus::InvalidArgument, "tracestate is malformed");
-        }
+        let ts = if validate_tracestate(ts) { ts } else { "" };
         let mut owned_ts = String::new();
         if owned_ts.try_reserve_exact(ts.len()).is_err() {
             return fail(OtelStatus::InternalError, "failed to allocate tracestate");
@@ -528,15 +602,60 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_tracestate() {
-        // missing '='
-        assert_rejected(VALID_TP, "novalue");
-        // empty key
-        assert_rejected(VALID_TP, "=v");
-        // trailing empty member
-        assert_rejected(VALID_TP, "a=1,");
-        // control character
-        assert_rejected(VALID_TP, "a=\u{0007}");
+    fn malformed_tracestate_degrades_to_empty_context() {
+        // A malformed tracestate must NOT invalidate a valid traceparent (W3C). The context is
+        // still extracted, with the tracestate discarded.
+        let bad_states = [
+            "novalue",    // missing '='
+            "=v",         // empty key
+            "KEY=v",      // uppercase key is invalid
+            "1abc=v",     // simple key must start with lcalpha
+            "a=b=c",      // '=' is not allowed inside a value
+            "a=\u{0007}", // control character
+            "a=1,a=2",    // duplicate keys
+            "foo@=v",     // empty system-id in multi-tenant key
+            "@sys=v",     // empty tenant-id in multi-tenant key
+        ];
+        for ts in bad_states {
+            unsafe {
+                let ctx = extract(VALID_TP, ts);
+                assert_eq!(
+                    otel_span_context_is_valid(ctx),
+                    1,
+                    "context must still be valid for malformed tracestate {ts:?}"
+                );
+                assert_eq!(
+                    inject_tracestate(ctx),
+                    "",
+                    "malformed tracestate {ts:?} must be discarded"
+                );
+                otel_span_context_destroy(ctx);
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_legal_tracestate_forms() {
+        // Blank list members are permitted (W3C Level 2) and preserved verbatim; multi-tenant
+        // keys and values containing spaces/OWS are valid.
+        let good_states = [
+            "vendor=value",
+            "tenant@system=value",
+            "a=1, b=2",            // OWS around members
+            "foo=bar with spaces", // internal spaces in the value
+        ];
+        for ts in good_states {
+            unsafe {
+                let ctx = extract(VALID_TP, ts);
+                assert_eq!(otel_span_context_is_valid(ctx), 1);
+                assert_eq!(
+                    inject_tracestate(ctx),
+                    ts,
+                    "valid tracestate must survive {ts:?}"
+                );
+                otel_span_context_destroy(ctx);
+            }
+        }
     }
 
     #[test]

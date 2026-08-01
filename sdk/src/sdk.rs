@@ -493,44 +493,55 @@ pub unsafe extern "C" fn otel_sdk_builder_set_sampler(
                 b.sampler = None;
                 return OtelStatus::Ok;
             }
-            // SAFETY: caller guarantees a valid config pointer when non-NULL.
-            let config = &*config;
-            if config.struct_size < OTEL_SAMPLER_CONFIG_REQUIRED_SIZE {
+            // A genuinely older caller may pass a struct shorter than the current
+            // `OtelSamplerConfig`, so never form a reference to the full struct. Read the
+            // stable `struct_size` prefix first, then read each covered field via its own raw
+            // address, mirroring the Metrics/Logs versioned-struct handling.
+            // SAFETY: `struct_size` is the first field and is always present for non-NULL config.
+            let struct_size = config.cast::<usize>().read();
+            if struct_size < OTEL_SAMPLER_CONFIG_REQUIRED_SIZE {
                 return fail(
                     OtelStatus::InvalidConfig,
                     "sampler config struct_size is smaller than the required minimum",
                 );
             }
-            if config.reserved != 0 {
+            // SAFETY: `struct_size >= REQUIRED_SIZE` proves the prefix through `ratio` is
+            // present; take each field's address without dereferencing the whole struct.
+            let sampler_type = std::ptr::addr_of!((*config).sampler_type).read();
+            let reserved = std::ptr::addr_of!((*config).reserved).read();
+            let ratio = std::ptr::addr_of!((*config).ratio).read();
+            if reserved != 0 {
                 return fail(
                     OtelStatus::InvalidArgument,
                     "sampler config reserved field must be zero",
                 );
             }
-            let has_parent_fields = config.struct_size
+            let has_parent_fields = struct_size
                 >= std::mem::offset_of!(OtelSamplerConfig, reserved2) + std::mem::size_of::<u32>();
-            let sampler = match config.sampler_type {
+            // SAFETY: the parent-based tail is read only when `struct_size` covers it fully.
+            let (parent_based_root_type, reserved2) = if has_parent_fields {
+                (
+                    std::ptr::addr_of!((*config).parent_based_root_type).read(),
+                    std::ptr::addr_of!((*config).reserved2).read(),
+                )
+            } else {
+                (OTEL_SAMPLER_ALWAYS_ON, 0)
+            };
+            let sampler = match sampler_type {
                 OTEL_SAMPLER_ALWAYS_ON
                 | OTEL_SAMPLER_ALWAYS_OFF
-                | OTEL_SAMPLER_TRACE_ID_RATIO_BASED => {
-                    match base_sampler(config.sampler_type, config.ratio) {
-                        Ok(s) => s,
-                        Err(status) => return status,
-                    }
-                }
+                | OTEL_SAMPLER_TRACE_ID_RATIO_BASED => match base_sampler(sampler_type, ratio) {
+                    Ok(s) => s,
+                    Err(status) => return status,
+                },
                 OTEL_SAMPLER_PARENT_BASED => {
-                    if has_parent_fields && config.reserved2 != 0 {
+                    if reserved2 != 0 {
                         return fail(
                             OtelStatus::InvalidArgument,
                             "sampler config reserved field must be zero",
                         );
                     }
-                    let root_type = if has_parent_fields {
-                        config.parent_based_root_type
-                    } else {
-                        OTEL_SAMPLER_ALWAYS_ON
-                    };
-                    match base_sampler(root_type, config.ratio) {
+                    match base_sampler(parent_based_root_type, ratio) {
                         Ok(root) => Sampler::ParentBased(Box::new(root)),
                         Err(status) => return status,
                     }
@@ -2436,6 +2447,64 @@ mod tests {
             cfg.parent_based_root_type = OTEL_SAMPLER_ALWAYS_OFF;
             assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
             assert!(matches!((*builder).sampler, Some(Sampler::ParentBased(_))));
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    // A genuinely older caller whose struct ends at the required prefix. The backing storage is
+    // exactly `REQUIRED_SIZE` bytes, so reading any parent-based tail field would be a real
+    // out-of-bounds access (caught by Miri/ASan) rather than a merely-logical truncation.
+    #[repr(C)]
+    struct SamplerConfigPrefix {
+        struct_size: usize,
+        sampler_type: u32,
+        reserved: u32,
+        ratio: f64,
+    }
+
+    #[test]
+    fn set_sampler_accepts_truncated_backing_storage() {
+        assert_eq!(
+            std::mem::size_of::<SamplerConfigPrefix>(),
+            OTEL_SAMPLER_CONFIG_REQUIRED_SIZE,
+            "prefix struct must match the required-size boundary exactly"
+        );
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            assert!(!builder.is_null(), "builder allocation must succeed");
+
+            // Parent-based with no tail bytes present: root defaults to AlwaysOn.
+            let prefix = SamplerConfigPrefix {
+                struct_size: std::mem::size_of::<SamplerConfigPrefix>(),
+                sampler_type: OTEL_SAMPLER_PARENT_BASED,
+                reserved: 0,
+                ratio: 0.0,
+            };
+            assert_eq!(
+                otel_sdk_builder_set_sampler(
+                    builder,
+                    (&prefix as *const SamplerConfigPrefix).cast()
+                ),
+                OtelStatus::Ok
+            );
+            assert!(matches!((*builder).sampler, Some(Sampler::ParentBased(_))));
+
+            // A ratio-based base sampler reads only prefix fields too.
+            let prefix = SamplerConfigPrefix {
+                struct_size: std::mem::size_of::<SamplerConfigPrefix>(),
+                sampler_type: OTEL_SAMPLER_TRACE_ID_RATIO_BASED,
+                reserved: 0,
+                ratio: 0.5,
+            };
+            assert_eq!(
+                otel_sdk_builder_set_sampler(
+                    builder,
+                    (&prefix as *const SamplerConfigPrefix).cast()
+                ),
+                OtelStatus::Ok
+            );
+            assert!(matches!((*builder).sampler, Some(Sampler::TraceIdRatioBased(r)) if r == 0.5));
+
             otel_sdk_builder_destroy(builder);
         }
     }

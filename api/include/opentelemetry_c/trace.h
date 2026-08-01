@@ -277,9 +277,10 @@ void otel_span_destroy(otel_span_t* span);
 
 /*
  * Copy the immutable context of a live SDK-backed span into an API-owned handle. A no-op span
- * has no valid context and returns OTEL_STATUS_INVALID_CONFIG. The snapshot remains valid after
- * the source span ends or is destroyed and is safe to share across threads. This release keeps
- * snapshots opaque and in-process; propagation import/export APIs are not yet provided.
+ * has no valid context and returns OTEL_STATUS_INVALID_CONFIG. * The snapshot remains valid after
+ * the source span ends or is destroyed and is safe to share across threads. Snapshots are
+ * opaque and in-process; see the "W3C Trace Context propagation" section below for the
+ * traceparent/tracestate import/export APIs.
  */
 otel_status_t otel_span_get_context(const otel_span_t* span, otel_span_context_t** out);
 

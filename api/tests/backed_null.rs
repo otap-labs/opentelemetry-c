@@ -424,6 +424,82 @@ fn start_span_ex_noop_tracer_returns_noop_span() {
     }
 }
 
+// Exactly the required prefix of `OtelSpanStartOptionsEx` (through `start_time_unix_nanos`),
+// as a genuinely older caller would compile it. The backing allocation is only this many
+// bytes, so any read past `struct_size` is a real out-of-bounds access (caught by Miri/ASan),
+// not merely a logical truncation of a full struct.
+#[repr(C)]
+struct SpanStartOptionsExPrefix {
+    struct_size: usize,
+    kind: u32,
+    reserved: u32,
+    parent: *const OtelSpan,
+    parent_context: *const OtelSpanContext,
+    start_time_unix_nanos: u64,
+}
+
+#[test]
+fn start_span_ex_accepts_truncated_backing_storage() {
+    assert_eq!(
+        std::mem::size_of::<SpanStartOptionsExPrefix>(),
+        std::mem::offset_of!(OtelSpanStartOptionsEx, attributes),
+        "prefix struct must match the required-size boundary exactly"
+    );
+    let make_prefix = || SpanStartOptionsExPrefix {
+        struct_size: std::mem::size_of::<SpanStartOptionsExPrefix>(),
+        kind: 0,
+        reserved: 0,
+        parent: std::ptr::null(),
+        parent_context: std::ptr::null(),
+        start_time_unix_nanos: 0,
+    };
+
+    // No-op tracer: the prefix fields are read before the NULL-vtable check, so this alone
+    // exercises the truncated read path.
+    let provider = otel_global_tracer_provider();
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("instr"), empty(), empty()) };
+    let prefix = make_prefix();
+    let span = unsafe {
+        otel_tracer_start_span_ex(
+            tracer,
+            good("ex"),
+            (&prefix as *const SpanStartOptionsExPrefix).cast(),
+        )
+    };
+    assert!(
+        !span.is_null(),
+        "no-op prefix start_span_ex must return a span"
+    );
+    assert!(!last_error_is_set());
+    unsafe {
+        otel_span_end(span);
+        otel_span_destroy(span);
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+
+    // Backed tracer: the same prefix drives the extended vtable entry to a real span.
+    let provider = backed_provider();
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("instr"), empty(), empty()) };
+    let prefix = make_prefix();
+    let span = unsafe {
+        otel_tracer_start_span_ex(
+            tracer,
+            good("ex"),
+            (&prefix as *const SpanStartOptionsExPrefix).cast(),
+        )
+    };
+    assert!(!span.is_null(), "backed prefix start_span_ex must succeed");
+    unsafe {
+        otel_span_end(span);
+        otel_span_destroy(span);
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+}
+
 #[test]
 fn start_span_ex_backed_success_and_validation() {
     let provider = backed_provider();
