@@ -109,12 +109,13 @@ otlp-http = [
     "opentelemetry-otlp/http-proto",
     "opentelemetry-otlp/reqwest-blocking-client",
 ]
-# gRPC/tonic transport for Metrics and Logs. The C SDK owns the Tokio runtime used by this
-# transport.
+# gRPC/tonic transport for Traces, Metrics, and Logs. The C SDK owns the Tokio runtime used
+# by this transport.
 otlp-grpc = [
     "dep:opentelemetry-otlp",
     "dep:tokio",
     "dep:tonic",
+    "opentelemetry-otlp/trace",
     "opentelemetry-otlp/metrics",
     "opentelemetry-otlp/logs",
     "opentelemetry-otlp/grpc-tonic",

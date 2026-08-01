@@ -18,7 +18,7 @@ use std::time::Duration;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider, SpanLimits};
 use opentelemetry_sdk::Resource;
 
 use opentelemetry_c_abi::{
@@ -64,6 +64,10 @@ pub struct OtelSdkBuilder {
     // batch processor makes its worker exit without guaranteeing a queue drain or exporter
     // shutdown.
     log_processors: Vec<LogProcessorImpl>,
+    // Optional root sampler; `None` uses the SDK's spec default (ParentBased(AlwaysOn)).
+    sampler: Option<Sampler>,
+    // Optional span limits; `None` uses the SDK's spec defaults (128 for every bound).
+    span_limits: Option<SpanLimits>,
 }
 
 enum MetricReaderImpl {
@@ -206,6 +210,8 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
             metric_readers: Vec::new(),
             metric_views: Vec::new(),
             log_processors: Vec::new(),
+            sampler: None,
+            span_limits: None,
         })
     })
 }
@@ -409,6 +415,228 @@ pub unsafe extern "C" fn otel_sdk_builder_add_resource_attribute(
     }
 }
 
+/// Sampler kind selector for [`OtelSamplerConfig`].
+pub const OTEL_SAMPLER_ALWAYS_ON: u32 = 0;
+pub const OTEL_SAMPLER_ALWAYS_OFF: u32 = 1;
+pub const OTEL_SAMPLER_TRACE_ID_RATIO_BASED: u32 = 2;
+pub const OTEL_SAMPLER_PARENT_BASED: u32 = 3;
+
+/// Versioned built-in sampler configuration passed to [`otel_sdk_builder_set_sampler`].
+///
+/// `struct_size` must be `sizeof(otel_sampler_config_t)` as compiled by the caller; only the
+/// fields covered by `struct_size` are read, so the struct may grow without breaking callers.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSamplerConfig {
+    /// Size in bytes of this struct as seen by the caller.
+    pub struct_size: usize,
+    /// One of the `OTEL_SAMPLER_*` selectors.
+    pub sampler_type: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+    /// Sampling probability in `[0, 1]`, used when the (root) sampler is ratio-based.
+    pub ratio: f64,
+    /// For `OTEL_SAMPLER_PARENT_BASED`, the root sampler kind used when there is no parent.
+    /// Must be one of the non-parent-based selectors. Ignored otherwise.
+    pub parent_based_root_type: u32,
+    /// Reserved; must be zero.
+    pub reserved2: u32,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(std::mem::size_of::<OtelSamplerConfig>() == 32);
+    assert!(std::mem::align_of::<OtelSamplerConfig>() == 8);
+};
+
+/// Minimum `struct_size` accepted by [`otel_sdk_builder_set_sampler`]: through `ratio`.
+/// Parent-based fields are read only when `struct_size` covers them.
+const OTEL_SAMPLER_CONFIG_REQUIRED_SIZE: usize =
+    std::mem::offset_of!(OtelSamplerConfig, parent_based_root_type);
+
+/// Build a base (non-parent-based) sampler from a kind selector and ratio. Rejects the
+/// parent-based selector and out-of-range ratios.
+fn base_sampler(kind: u32, ratio: f64) -> Result<Sampler, OtelStatus> {
+    match kind {
+        OTEL_SAMPLER_ALWAYS_ON => Ok(Sampler::AlwaysOn),
+        OTEL_SAMPLER_ALWAYS_OFF => Ok(Sampler::AlwaysOff),
+        OTEL_SAMPLER_TRACE_ID_RATIO_BASED => {
+            if !(0.0..=1.0).contains(&ratio) {
+                return Err(fail(
+                    OtelStatus::InvalidConfig,
+                    "sampler ratio must be within [0, 1]",
+                ));
+            }
+            Ok(Sampler::TraceIdRatioBased(ratio))
+        }
+        _ => Err(fail(
+            OtelStatus::InvalidConfig,
+            "unknown or unsupported base sampler type",
+        )),
+    }
+}
+
+/// Configure the SDK's root sampler. Passing NULL leaves the SDK's spec default in place
+/// (`ParentBased(AlwaysOn)`). Overrides any previously set sampler.
+///
+/// # Safety
+/// `builder` must satisfy the handle contract; `config`, when non-NULL, must point to a valid
+/// [`OtelSamplerConfig`] with `struct_size` bytes readable.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_set_sampler(
+    builder: *mut OtelSdkBuilder,
+    config: *const OtelSamplerConfig,
+) -> OtelStatus {
+    unsafe {
+        with_builder(builder, |b| {
+            if config.is_null() {
+                b.sampler = None;
+                return OtelStatus::Ok;
+            }
+            // A genuinely older caller may pass a struct shorter than the current
+            // `OtelSamplerConfig`, so never form a reference to the full struct. Read the
+            // stable `struct_size` prefix first, then read each covered field via its own raw
+            // address, mirroring the Metrics/Logs versioned-struct handling.
+            // SAFETY: `struct_size` is the first field and is always present for non-NULL config.
+            let struct_size = config.cast::<usize>().read();
+            if struct_size < OTEL_SAMPLER_CONFIG_REQUIRED_SIZE {
+                return fail(
+                    OtelStatus::InvalidConfig,
+                    "sampler config struct_size is smaller than the required minimum",
+                );
+            }
+            // SAFETY: `struct_size >= REQUIRED_SIZE` proves the prefix through `ratio` is
+            // present; take each field's address without dereferencing the whole struct.
+            let sampler_type = std::ptr::addr_of!((*config).sampler_type).read();
+            let reserved = std::ptr::addr_of!((*config).reserved).read();
+            let ratio = std::ptr::addr_of!((*config).ratio).read();
+            if reserved != 0 {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "sampler config reserved field must be zero",
+                );
+            }
+            let has_parent_fields = struct_size
+                >= std::mem::offset_of!(OtelSamplerConfig, reserved2) + std::mem::size_of::<u32>();
+            // SAFETY: the parent-based tail is read only when `struct_size` covers it fully.
+            let (parent_based_root_type, reserved2) = if has_parent_fields {
+                (
+                    std::ptr::addr_of!((*config).parent_based_root_type).read(),
+                    std::ptr::addr_of!((*config).reserved2).read(),
+                )
+            } else {
+                (OTEL_SAMPLER_ALWAYS_ON, 0)
+            };
+            let sampler = match sampler_type {
+                OTEL_SAMPLER_ALWAYS_ON
+                | OTEL_SAMPLER_ALWAYS_OFF
+                | OTEL_SAMPLER_TRACE_ID_RATIO_BASED => match base_sampler(sampler_type, ratio) {
+                    Ok(s) => s,
+                    Err(status) => return status,
+                },
+                OTEL_SAMPLER_PARENT_BASED => {
+                    if reserved2 != 0 {
+                        return fail(
+                            OtelStatus::InvalidArgument,
+                            "sampler config reserved field must be zero",
+                        );
+                    }
+                    match base_sampler(parent_based_root_type, ratio) {
+                        Ok(root) => Sampler::ParentBased(Box::new(root)),
+                        Err(status) => return status,
+                    }
+                }
+                _ => {
+                    return fail(OtelStatus::InvalidConfig, "unknown sampler type");
+                }
+            };
+            b.sampler = Some(sampler);
+            OtelStatus::Ok
+        })
+    }
+}
+
+/// Versioned span-limit configuration passed to [`otel_sdk_builder_set_span_limits`].
+///
+/// `struct_size` must be `sizeof(otel_span_limits_t)` as compiled by the caller; only the
+/// fields covered by `struct_size` are read, so the struct may grow without breaking callers.
+/// Each bound caps how many attributes/events/links a span (or event/link) retains; when a
+/// bound is exceeded the most recently added items are dropped. A value of `0` drops all
+/// items in that collection.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSpanLimits {
+    /// Size in bytes of this struct as seen by the caller.
+    pub struct_size: usize,
+    /// Maximum attributes retained per span.
+    pub max_attributes_per_span: u32,
+    /// Maximum events retained per span.
+    pub max_events_per_span: u32,
+    /// Maximum links retained per span.
+    pub max_links_per_span: u32,
+    /// Maximum attributes retained per event.
+    pub max_attributes_per_event: u32,
+    /// Maximum attributes retained per link.
+    pub max_attributes_per_link: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(std::mem::size_of::<OtelSpanLimits>() == 32);
+    assert!(std::mem::align_of::<OtelSpanLimits>() == 8);
+};
+
+/// Minimum `struct_size` accepted by [`otel_sdk_builder_set_span_limits`]: the full initial
+/// layout through `reserved`. Frozen — future fields appended after `reserved` are read only
+/// when a larger `struct_size` covers them.
+const OTEL_SPAN_LIMITS_REQUIRED_SIZE: usize =
+    std::mem::offset_of!(OtelSpanLimits, reserved) + std::mem::size_of::<u32>();
+
+/// Configure the tracer provider's span limits. Passing NULL clears any override and restores
+/// the SDK defaults (128 for every bound). Overrides any previously set limits.
+///
+/// # Safety
+/// `builder` must satisfy the handle contract; `config`, when non-NULL, must point to a valid
+/// [`OtelSpanLimits`] with `struct_size` bytes readable.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_set_span_limits(
+    builder: *mut OtelSdkBuilder,
+    config: *const OtelSpanLimits,
+) -> OtelStatus {
+    unsafe {
+        with_builder(builder, |b| {
+            if config.is_null() {
+                b.span_limits = None;
+                return OtelStatus::Ok;
+            }
+            // SAFETY: caller guarantees a valid config pointer when non-NULL.
+            let config = &*config;
+            if config.struct_size < OTEL_SPAN_LIMITS_REQUIRED_SIZE {
+                return fail(
+                    OtelStatus::InvalidConfig,
+                    "span limits struct_size is smaller than the required minimum",
+                );
+            }
+            if config.reserved != 0 {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "span limits reserved field must be zero",
+                );
+            }
+            b.span_limits = Some(SpanLimits {
+                max_attributes_per_span: config.max_attributes_per_span,
+                max_events_per_span: config.max_events_per_span,
+                max_links_per_span: config.max_links_per_span,
+                max_attributes_per_event: config.max_attributes_per_event,
+                max_attributes_per_link: config.max_attributes_per_link,
+            });
+            OtelStatus::Ok
+        })
+    }
+}
+
 /// Add (transfer) a span processor built by a span-processor builder. On `OTEL_STATUS_OK`,
 /// ownership of `processor` moves into the SDK builder and the original pointer becomes
 /// invalid. On failure (invalid builder or processor), the caller still owns `processor`.
@@ -545,6 +773,12 @@ pub unsafe extern "C" fn otel_sdk_build(
         let log_processors = std::mem::take(&mut builder.log_processors);
         let resource = build_resource(builder);
         let mut provider_builder = SdkTracerProvider::builder().with_resource(resource);
+        if let Some(sampler) = builder.sampler.take() {
+            provider_builder = provider_builder.with_sampler(sampler);
+        }
+        if let Some(limits) = builder.span_limits.take() {
+            provider_builder = provider_builder.with_span_limits(limits);
+        }
         for processor in processors {
             provider_builder = provider_builder.with_span_processor(processor);
         }
@@ -2152,5 +2386,265 @@ mod tests {
         }));
         assert!(r.is_err());
         assert!(!flag.load(Ordering::Acquire));
+    }
+
+    // Borrow a builder handle for assertions via the null-checked `as_ref`, rather than a raw
+    // `builder_ref(builder)` dereference. This performs the pointer validity check up front and keeps the
+    // tests free of unguarded raw-pointer dereferences.
+    fn builder_ref<'a>(builder: *mut OtelSdkBuilder) -> &'a OtelSdkBuilder {
+        // SAFETY: the builder handle is live for the duration of each test.
+        unsafe { builder.as_ref() }.expect("builder allocation must succeed")
+    }
+
+    fn sampler_config(sampler_type: u32) -> OtelSamplerConfig {
+        OtelSamplerConfig {
+            struct_size: std::mem::size_of::<OtelSamplerConfig>(),
+            sampler_type,
+            reserved: 0,
+            ratio: 0.0,
+            parent_based_root_type: OTEL_SAMPLER_ALWAYS_ON,
+            reserved2: 0,
+        }
+    }
+
+    #[test]
+    fn set_sampler_resolves_builtin_variants() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+
+            let cfg = sampler_config(OTEL_SAMPLER_ALWAYS_OFF);
+            assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::AlwaysOff)
+            ));
+
+            let mut cfg = sampler_config(OTEL_SAMPLER_TRACE_ID_RATIO_BASED);
+            cfg.ratio = 0.25;
+            assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
+            assert!(
+                matches!(builder_ref(builder).sampler, Some(Sampler::TraceIdRatioBased(r)) if r == 0.25)
+            );
+
+            let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
+            cfg.parent_based_root_type = OTEL_SAMPLER_ALWAYS_ON;
+            assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
+
+            let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
+            cfg.parent_based_root_type = OTEL_SAMPLER_TRACE_ID_RATIO_BASED;
+            cfg.ratio = 1.0;
+            assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
+
+            // NULL clears the override.
+            assert_eq!(
+                otel_sdk_builder_set_sampler(builder, std::ptr::null()),
+                OtelStatus::Ok
+            );
+            assert!(builder_ref(builder).sampler.is_none());
+
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn set_sampler_reads_only_required_fields_when_struct_truncated() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            // struct_size stops before the parent-based fields: parent-based defaults to
+            // AlwaysOn root regardless of the (unread) parent_based_root_type bytes.
+            let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
+            cfg.struct_size = std::mem::offset_of!(OtelSamplerConfig, parent_based_root_type);
+            cfg.parent_based_root_type = OTEL_SAMPLER_ALWAYS_OFF;
+            assert_eq!(otel_sdk_builder_set_sampler(builder, &cfg), OtelStatus::Ok);
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    // A genuinely older caller whose struct ends at the required prefix. The backing storage is
+    // exactly `REQUIRED_SIZE` bytes, so reading any parent-based tail field would be a real
+    // out-of-bounds access (caught by Miri/ASan) rather than a merely-logical truncation.
+    #[repr(C)]
+    struct SamplerConfigPrefix {
+        struct_size: usize,
+        sampler_type: u32,
+        reserved: u32,
+        ratio: f64,
+    }
+
+    #[test]
+    fn set_sampler_accepts_truncated_backing_storage() {
+        assert_eq!(
+            std::mem::size_of::<SamplerConfigPrefix>(),
+            OTEL_SAMPLER_CONFIG_REQUIRED_SIZE,
+            "prefix struct must match the required-size boundary exactly"
+        );
+        unsafe {
+            let builder = otel_sdk_builder_new();
+
+            // Parent-based with no tail bytes present: root defaults to AlwaysOn.
+            let prefix = SamplerConfigPrefix {
+                struct_size: std::mem::size_of::<SamplerConfigPrefix>(),
+                sampler_type: OTEL_SAMPLER_PARENT_BASED,
+                reserved: 0,
+                ratio: 0.0,
+            };
+            assert_eq!(
+                otel_sdk_builder_set_sampler(
+                    builder,
+                    (&prefix as *const SamplerConfigPrefix).cast()
+                ),
+                OtelStatus::Ok
+            );
+            assert!(matches!(
+                builder_ref(builder).sampler,
+                Some(Sampler::ParentBased(_))
+            ));
+
+            // A ratio-based base sampler reads only prefix fields too.
+            let prefix = SamplerConfigPrefix {
+                struct_size: std::mem::size_of::<SamplerConfigPrefix>(),
+                sampler_type: OTEL_SAMPLER_TRACE_ID_RATIO_BASED,
+                reserved: 0,
+                ratio: 0.5,
+            };
+            assert_eq!(
+                otel_sdk_builder_set_sampler(
+                    builder,
+                    (&prefix as *const SamplerConfigPrefix).cast()
+                ),
+                OtelStatus::Ok
+            );
+            assert!(
+                matches!(builder_ref(builder).sampler, Some(Sampler::TraceIdRatioBased(r)) if r == 0.5)
+            );
+
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn set_sampler_rejects_invalid_configs() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+
+            // struct_size too small.
+            let mut cfg = sampler_config(OTEL_SAMPLER_ALWAYS_ON);
+            cfg.struct_size = 1;
+            assert_eq!(
+                otel_sdk_builder_set_sampler(builder, &cfg),
+                OtelStatus::InvalidConfig
+            );
+
+            // reserved must be zero.
+            let mut cfg = sampler_config(OTEL_SAMPLER_ALWAYS_ON);
+            cfg.reserved = 1;
+            assert_eq!(
+                otel_sdk_builder_set_sampler(builder, &cfg),
+                OtelStatus::InvalidArgument
+            );
+
+            // ratio out of range.
+            let mut cfg = sampler_config(OTEL_SAMPLER_TRACE_ID_RATIO_BASED);
+            cfg.ratio = 1.5;
+            assert_eq!(
+                otel_sdk_builder_set_sampler(builder, &cfg),
+                OtelStatus::InvalidConfig
+            );
+
+            // parent-based root cannot itself be parent-based.
+            let mut cfg = sampler_config(OTEL_SAMPLER_PARENT_BASED);
+            cfg.parent_based_root_type = OTEL_SAMPLER_PARENT_BASED;
+            assert_eq!(
+                otel_sdk_builder_set_sampler(builder, &cfg),
+                OtelStatus::InvalidConfig
+            );
+
+            // unknown sampler type.
+            let cfg = sampler_config(99);
+            assert_eq!(
+                otel_sdk_builder_set_sampler(builder, &cfg),
+                OtelStatus::InvalidConfig
+            );
+
+            // all rejections must leave the builder unchanged.
+            assert!(builder_ref(builder).sampler.is_none());
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    fn span_limits_config() -> OtelSpanLimits {
+        OtelSpanLimits {
+            struct_size: std::mem::size_of::<OtelSpanLimits>(),
+            max_attributes_per_span: 1,
+            max_events_per_span: 2,
+            max_links_per_span: 3,
+            max_attributes_per_event: 4,
+            max_attributes_per_link: 5,
+            reserved: 0,
+        }
+    }
+
+    #[test]
+    fn set_span_limits_maps_every_bound() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            let cfg = span_limits_config();
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, &cfg),
+                OtelStatus::Ok
+            );
+            let limits = builder_ref(builder).span_limits.expect("limits stored");
+            assert_eq!(limits.max_attributes_per_span, 1);
+            assert_eq!(limits.max_events_per_span, 2);
+            assert_eq!(limits.max_links_per_span, 3);
+            assert_eq!(limits.max_attributes_per_event, 4);
+            assert_eq!(limits.max_attributes_per_link, 5);
+
+            // NULL clears the override.
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, std::ptr::null()),
+                OtelStatus::Ok
+            );
+            assert!(builder_ref(builder).span_limits.is_none());
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn set_span_limits_rejects_invalid_configs() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+
+            // struct_size too small.
+            let mut cfg = span_limits_config();
+            cfg.struct_size = std::mem::size_of::<OtelSpanLimits>() - 1;
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, &cfg),
+                OtelStatus::InvalidConfig
+            );
+
+            // reserved must be zero.
+            let mut cfg = span_limits_config();
+            cfg.reserved = 7;
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, &cfg),
+                OtelStatus::InvalidArgument
+            );
+
+            assert!(builder_ref(builder).span_limits.is_none());
+            otel_sdk_builder_destroy(builder);
+        }
     }
 }

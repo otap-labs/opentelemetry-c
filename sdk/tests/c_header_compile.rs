@@ -108,6 +108,16 @@ fn sdk_header_and_example_compile() {
 int main(void) {
     otel_sdk_builder_t* b = otel_sdk_builder_new();
     (void)b;
+    otel_sampler_config_t sampler = OTEL_SAMPLER_CONFIG_INIT;
+    sampler.sampler_type = OTEL_SAMPLER_TRACE_ID_RATIO_BASED;
+    sampler.ratio = 0.5;
+    (void)otel_sdk_builder_set_sampler(b, &sampler);
+    (void)otel_sdk_builder_set_sampler(b, (const otel_sampler_config_t*)0);
+    otel_span_limits_t limits = OTEL_SPAN_LIMITS_INIT;
+    limits.max_attributes_per_span = 32;
+    limits.max_events_per_span = 64;
+    (void)otel_sdk_builder_set_span_limits(b, &limits);
+    (void)otel_sdk_builder_set_span_limits(b, (const otel_span_limits_t*)0);
     otel_span_t* span = (void*)0;
     (void)otel_span_set_attribute(span, otel_kv_double(otel_cstr("d"), 2.5));
     (void)otel_span_set_ok(span);
@@ -144,6 +154,7 @@ int main(void) {
 #include <opentelemetry_c/span_processor.h>
 #include <opentelemetry_c/otlp_trace_exporter.h>
 #include <opentelemetry_c/batch_span_processor.h>
+#include <opentelemetry_c/simple_span_processor.h>
 #include <opentelemetry_c/otlp_metric_exporter.h>
 #include <opentelemetry_c/periodic_metric_reader.h>
 #include <opentelemetry_c/metric_view.h>
@@ -151,6 +162,26 @@ int main(void) {
 #include <opentelemetry_c/log_processor.h>
 #include <opentelemetry_c/otlp_log_exporter.h>
 #include <opentelemetry_c/custom_log_exporter.h>
+#include <opentelemetry_c/custom_trace_exporter.h>
+
+
+static otel_status_t hdr_export_spans(void* user_data, const otel_span_export_batch_view_t* batch) {
+    (void)user_data;
+    if (batch == NULL || batch->record_count > OTEL_SPAN_EXPORT_MAX_SPANS) {
+        return OTEL_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t i = 0; i < batch->record_count; i++) {
+        const otel_span_export_record_view_t* record = &batch->records[i];
+        (void)record->name;
+        (void)record->scope->name;
+        for (size_t j = 0; j < record->attribute_count; j++) {
+            if (record->attributes[j].value_type == OTEL_SPAN_ATTRIBUTE_TYPE_INT64_ARRAY) {
+                (void)record->attributes[j].value.array.count;
+            }
+        }
+    }
+    return OTEL_STATUS_OK;
+}
 
 static otel_status_t hdr_export_logs(void* user_data, const otel_log_export_batch_view_t* batch) {
     (void)user_data;
@@ -171,6 +202,9 @@ static otel_status_t hdr_export_logs(void* user_data, const otel_log_export_batc
 int main(void) {
     otel_otlp_trace_exporter_builder_t* eb = otel_otlp_trace_exporter_builder_new();
     otel_otlp_trace_exporter_builder_set_endpoint(eb, otel_cstr("http://localhost:4318/v1/traces"));
+    otel_otlp_trace_exporter_builder_set_transport(
+        eb, OTEL_OTLP_TRACE_TRANSPORT_HTTP_PROTOBUF);
+    otel_otlp_trace_exporter_builder_set_compression(eb, OTEL_OTLP_COMPRESSION_NONE);
     otel_otlp_trace_exporter_builder_set_timeout_millis(eb, 5000);
     otel_trace_exporter_t* exporter = NULL;
     otel_otlp_trace_exporter_builder_build(eb, &exporter);
@@ -186,6 +220,17 @@ int main(void) {
     otel_sdk_builder_t* sb = otel_sdk_builder_new();
     otel_sdk_builder_set_service_name(sb, otel_cstr("hdr-check"));
     otel_sdk_builder_add_span_processor(sb, processor);
+
+    /* A second span pipeline via the custom trace exporter and simple span processor. */
+    otel_custom_trace_exporter_callbacks_t trace_callbacks;
+    memset(&trace_callbacks, 0, sizeof(trace_callbacks));
+    trace_callbacks.struct_size = sizeof(trace_callbacks);
+    trace_callbacks.export_spans = hdr_export_spans;
+    otel_trace_exporter_t* exporter2 = NULL;
+    otel_custom_trace_exporter_new(&trace_callbacks, NULL, &exporter2);
+    otel_span_processor_t* simple_processor = NULL;
+    otel_simple_span_processor_create(exporter2, &simple_processor);
+    otel_sdk_builder_add_span_processor(sb, simple_processor);
 
     otel_otlp_metric_exporter_builder_t* meb = otel_otlp_metric_exporter_builder_new();
     otel_otlp_metric_exporter_builder_set_endpoint(meb, otel_cstr("http://localhost:4318/v1/metrics"));
@@ -310,6 +355,10 @@ int main(void) {
         (
             "custom_log_exporter",
             "opentelemetry_c/custom_log_exporter.h",
+        ),
+        (
+            "custom_trace_exporter",
+            "opentelemetry_c/custom_trace_exporter.h",
         ),
     ] {
         let standalone = unique_temp_c(label);

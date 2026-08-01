@@ -38,6 +38,7 @@ mod api_ffi;
 mod batch_processor;
 mod custom_log_exporter;
 mod custom_metric_exporter;
+mod custom_trace_exporter;
 mod error;
 mod handle;
 mod log_export_view;
@@ -54,6 +55,8 @@ mod otlp_log_exporter;
 mod otlp_metric_exporter;
 mod periodic_metric_reader;
 mod sdk;
+mod simple_span_processor;
+mod span_export_view;
 mod span_processor;
 mod trace_exporter;
 mod vtable;
@@ -73,6 +76,10 @@ pub use custom_log_exporter::{
 };
 pub use custom_metric_exporter::{
     otel_custom_metric_exporter_new, OtelCustomMetricExporterCallbacks,
+};
+pub use custom_trace_exporter::{
+    otel_custom_trace_exporter_new, OtelCustomTraceExport, OtelCustomTraceExporterCallbacks,
+    OtelCustomTraceForceFlush, OtelCustomTraceShutdown, OtelCustomTraceStateDestroy,
 };
 pub use log_export_view::{
     OtelLogExportBatchView, OtelLogExportRecordView, OtelLogExportScopeView,
@@ -145,12 +152,20 @@ pub use sdk::{
     otel_sdk_build, otel_sdk_builder_add_log_processor, otel_sdk_builder_add_manual_metric_reader,
     otel_sdk_builder_add_metric_reader, otel_sdk_builder_add_metric_view,
     otel_sdk_builder_add_resource_attribute, otel_sdk_builder_add_span_processor,
-    otel_sdk_builder_destroy, otel_sdk_builder_new, otel_sdk_builder_set_service_name,
-    otel_sdk_destroy, otel_sdk_force_flush, otel_sdk_get_logger_provider,
-    otel_sdk_get_meter_provider, otel_sdk_get_tracer_provider, otel_sdk_logs_force_flush,
-    otel_sdk_logs_shutdown, otel_sdk_metrics_force_flush, otel_sdk_metrics_shutdown,
-    otel_sdk_set_as_global, otel_sdk_set_logs_as_global, otel_sdk_set_metrics_as_global,
-    otel_sdk_shutdown, OtelSdk, OtelSdkBuilder,
+    otel_sdk_builder_destroy, otel_sdk_builder_new, otel_sdk_builder_set_sampler,
+    otel_sdk_builder_set_service_name, otel_sdk_builder_set_span_limits, otel_sdk_destroy,
+    otel_sdk_force_flush, otel_sdk_get_logger_provider, otel_sdk_get_meter_provider,
+    otel_sdk_get_tracer_provider, otel_sdk_logs_force_flush, otel_sdk_logs_shutdown,
+    otel_sdk_metrics_force_flush, otel_sdk_metrics_shutdown, otel_sdk_set_as_global,
+    otel_sdk_set_logs_as_global, otel_sdk_set_metrics_as_global, otel_sdk_shutdown,
+    OtelSamplerConfig, OtelSdk, OtelSdkBuilder, OtelSpanLimits,
+};
+pub use simple_span_processor::otel_simple_span_processor_create;
+pub use span_export_view::{
+    OtelSpanArrayView, OtelSpanAttribute, OtelSpanAttributeValue, OtelSpanEventView,
+    OtelSpanExportBatchView, OtelSpanExportLinkView, OtelSpanExportRecordView,
+    OtelSpanExportScopeView, OTEL_SPAN_ATTRIBUTE_BOOL_ARRAY, OTEL_SPAN_ATTRIBUTE_DOUBLE_ARRAY,
+    OTEL_SPAN_ATTRIBUTE_INT64_ARRAY, OTEL_SPAN_ATTRIBUTE_STRING_ARRAY, OTEL_SPAN_EXPORT_MAX_SPANS,
 };
 pub use span_processor::{otel_span_processor_destroy, OtelSpanProcessor};
 pub use trace_exporter::{otel_trace_exporter_destroy, OtelTraceExporter};

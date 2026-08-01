@@ -110,6 +110,14 @@ extern "C" fn start_with_context(
     std::ptr::null_mut()
 }
 
+extern "C" fn start_span_ex(
+    _c: *mut c_void,
+    _n: OtelStringView,
+    _cfg: *const opentelemetry_c_abi::OtelSpanStartConfig,
+) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
 const fn vtable_with(retain: extern "C" fn(*mut c_void) -> *mut c_void) -> OtelImplVtable {
     OtelImplVtable {
         abi_version: OTEL_TRACE_IMPL_ABI_VERSION,
@@ -130,6 +138,7 @@ const fn vtable_with(retain: extern "C" fn(*mut c_void) -> *mut c_void) -> OtelI
         span_free,
         span_context_visit,
         tracer_start_span_with_context: start_with_context,
+        tracer_start_span_ex: start_span_ex,
     }
 }
 

@@ -4,20 +4,23 @@
 //! The opaque C handle wraps a `SpanProcessorImpl` — an internal enum whose variants are the
 //! concrete span-processor kinds this SDK supports. It implements
 //! [`opentelemetry_sdk::trace::SpanProcessor`], so the SDK builder stores a homogeneous
-//! `Vec<SpanProcessorImpl>` and drives every processor uniformly. The batch span processor is
-//! one variant (SDK core, always available). Adding another processor kind (e.g. a simple span
-//! processor) is a new variant plus a builder — no change to the public C ABI, the generic
-//! handle, or the SDK builder's storage.
+//! `Vec<SpanProcessorImpl>` and drives every processor uniformly. The batch and simple span
+//! processors are the two variants today (both SDK core, always available). Adding another
+//! processor kind is a new variant plus a constructor/builder — no change to the public C ABI,
+//! the generic handle, or the SDK builder's storage.
 
 use std::time::Duration;
 
 use opentelemetry::Context;
 use opentelemetry_c_abi::{OtelHandleHeader, OTEL_HANDLE_KIND_SPAN_PROCESSOR};
 use opentelemetry_sdk::error::OTelSdkResult;
-use opentelemetry_sdk::trace::{BatchSpanProcessor, Span, SpanData, SpanProcessor};
+use opentelemetry_sdk::trace::{
+    BatchSpanProcessor, SimpleSpanProcessor, Span, SpanData, SpanProcessor,
+};
 use opentelemetry_sdk::Resource;
 
 use crate::handle::{destroy, guard_unit, HasHandleHeader};
+use crate::trace_exporter::TraceExporterImpl;
 
 /// Internal span-processor implementation. Each variant is a concrete processor kind; the enum
 /// dispatches the [`SpanProcessor`] trait to the active one. The batch processor is SDK core,
@@ -26,32 +29,40 @@ use crate::handle::{destroy, guard_unit, HasHandleHeader};
 pub(crate) enum SpanProcessorImpl {
     /// Batch span processor (dedicated OS thread, spec-schedule export).
     Batch(BatchSpanProcessor),
+    /// Simple span processor (synchronous export on the ending thread). Boxed to keep the enum
+    /// small, as the simple processor embeds the exporter inline.
+    Simple(Box<SimpleSpanProcessor<TraceExporterImpl>>),
 }
 
 impl SpanProcessor for SpanProcessorImpl {
     fn on_start(&self, span: &mut Span, cx: &Context) {
         match self {
             SpanProcessorImpl::Batch(p) => p.on_start(span, cx),
+            SpanProcessorImpl::Simple(p) => p.on_start(span, cx),
         }
     }
     fn on_end(&self, span: SpanData) {
         match self {
             SpanProcessorImpl::Batch(p) => p.on_end(span),
+            SpanProcessorImpl::Simple(p) => p.on_end(span),
         }
     }
     fn force_flush(&self) -> OTelSdkResult {
         match self {
             SpanProcessorImpl::Batch(p) => p.force_flush(),
+            SpanProcessorImpl::Simple(p) => p.force_flush(),
         }
     }
     fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
         match self {
             SpanProcessorImpl::Batch(p) => p.shutdown_with_timeout(timeout),
+            SpanProcessorImpl::Simple(p) => p.shutdown_with_timeout(timeout),
         }
     }
     fn set_resource(&mut self, resource: &Resource) {
         match self {
             SpanProcessorImpl::Batch(p) => p.set_resource(resource),
+            SpanProcessorImpl::Simple(p) => p.set_resource(resource),
         }
     }
 }

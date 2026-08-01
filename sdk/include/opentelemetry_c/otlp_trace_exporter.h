@@ -1,13 +1,15 @@
 /*
  * opentelemetry_c/otlp_trace_exporter.h
  *
- * Builder for the OTLP **HTTP/protobuf** trace exporter, the one concrete trace exporter
- * currently implemented. It produces a generic otel_trace_exporter_t (see trace_exporter.h)
- * that a span processor builder then consumes.
+ * OTLP Traces exporter builder (HTTP/protobuf and gRPC), with explicit
+ * transport/compression selection. It produces a generic otel_trace_exporter_t (see
+ * trace_exporter.h) that a span processor builder then consumes.
  *
  * The exporter owns its own blocking HTTP client, so no user-managed async runtime is
  * required. HTTPS is available via a selectable TLS backend chosen at compile time with the
  * crate's cargo features: `native-tls` (default; the platform TLS stack) or `rustls-tls`.
+ * The gRPC transport owns a private single-worker Tokio runtime per exporter. HTTP endpoints
+ * normally include "/v1/traces"; gRPC endpoints normally contain only scheme and authority.
  *
  * Part of `libopentelemetry_c_sdk`. Requires linking the SDK alongside the API.
  */
@@ -15,6 +17,7 @@
 #define OPENTELEMETRY_C_OTLP_TRACE_EXPORTER_H
 
 #include <opentelemetry_c/common.h>
+#include <opentelemetry_c/otlp_metric_exporter.h> /* otel_otlp_compression_t */
 #include <opentelemetry_c/trace_exporter.h>
 
 #ifdef __cplusplus
@@ -23,6 +26,14 @@ extern "C" {
 
 /* Opaque OTLP trace exporter builder. Not thread-safe; confine to one thread. */
 typedef struct otel_otlp_trace_exporter_builder_t otel_otlp_trace_exporter_builder_t;
+
+typedef uint32_t otel_otlp_trace_transport_t;
+enum {
+    /* Default. Endpoint normally includes the signal path, e.g. /v1/traces. */
+    OTEL_OTLP_TRACE_TRANSPORT_HTTP_PROTOBUF = 0,
+    /* Endpoint is normally an authority, e.g. http://localhost:4317. */
+    OTEL_OTLP_TRACE_TRANSPORT_GRPC = 1
+};
 
 /* Create a new OTLP trace exporter builder. NULL only on allocation failure. Release with
  * otel_otlp_trace_exporter_builder_destroy(). */
@@ -45,7 +56,24 @@ otel_status_t otel_otlp_trace_exporter_builder_set_endpoint(
     otel_otlp_trace_exporter_builder_t* builder, otel_string_view_t endpoint);
 
 /*
- * Add an HTTP header sent with every export request (e.g. for authentication).
+ * Select the transport explicitly; HTTP/protobuf is the default. The requested transport must
+ * be compiled into the SDK or build returns OTEL_STATUS_INVALID_CONFIG. Transport is never
+ * inferred from endpoint syntax.
+ */
+otel_status_t otel_otlp_trace_exporter_builder_set_transport(
+    otel_otlp_trace_exporter_builder_t* builder, otel_otlp_trace_transport_t transport);
+
+/*
+ * Select compression, reusing otel_otlp_compression_t. Gzip/zstd require the matching Cargo
+ * feature for the selected transport; build fails rather than silently disabling unavailable
+ * compression. NONE leaves compression unset so upstream environment/default resolution
+ * still applies.
+ */
+otel_status_t otel_otlp_trace_exporter_builder_set_compression(
+    otel_otlp_trace_exporter_builder_t* builder, otel_otlp_compression_t compression);
+
+/*
+ * Add a header (HTTP) / metadata entry (gRPC) sent with every export request.
  *
  * Duplicate keys are rejected case-insensitively: adding a key that matches an already-added
  * key under ASCII case-insensitive comparison (e.g. "Authorization" vs "authorization")
@@ -69,11 +97,9 @@ otel_status_t otel_otlp_trace_exporter_builder_set_timeout_millis(
  * Ownership of *out: release it with otel_trace_exporter_destroy(), or transfer it into a
  * span processor builder via otel_batch_span_processor_builder_set_exporter().
  *
- * OTLP disabled: the OTLP exporter is an optional cargo feature (`otlp`, on by default). If
- * opentelemetry-c-sdk is built WITHOUT that feature, these builder symbols remain present for
- * ABI stability and the config setters above still validate and store configuration, but this
- * build function returns OTEL_STATUS_INVALID_CONFIG, writes NULL to *out, and records a
- * last-error message explaining that OTLP support was compiled out.
+ * The requested transport must be compiled into the SDK; otherwise this function returns
+ * OTEL_STATUS_INVALID_CONFIG, writes NULL to *out, and records a last-error message naming
+ * the required cargo feature.
  */
 otel_status_t otel_otlp_trace_exporter_builder_build(
     const otel_otlp_trace_exporter_builder_t* builder, otel_trace_exporter_t** out);

@@ -4,6 +4,32 @@
 
 ### Added
 
+- Extended span start: `otel_tracer_start_span_ex` accepts a versioned
+  `otel_span_start_options_ex_t` (a `struct_size`-first descriptor) carrying span links
+  (`otel_span_link_t`: a borrowed `otel_span_context_t` plus optional link attributes), an
+  explicit start timestamp (`start_time_unix_nanos`, 0 = unset), initial span attributes, and a
+  single parenting source (`parent` or `parent_context`, mutually exclusive). Optional fields
+  are read only when `struct_size` covers them, so older and newer headers interoperate; unknown
+  tail fields are ignored. A backed implementation predating this entry fails closed with
+  `OTEL_STATUS_INVALID_CONFIG`; an unbacked tracer returns a valid no-op span. See
+  `TRACES_COMPLIANCE.md`.
+- W3C Trace Context propagation: a bounded, direct API operating on the immutable
+  `otel_span_context_t` (no SDK, vtable, or global state). `otel_trace_propagation_extract`
+  parses a `traceparent` plus optional `tracestate` into a new owned **remote** context;
+  `otel_trace_propagation_inject_traceparent` / `_inject_tracestate` format an existing context
+  into caller-provided buffers with a length-query/undersized contract. Strict lowercase-hex,
+  version/flag/separator/all-zero-ID validation; unknown trace-flag bits preserved; input sizes
+  bounded before allocation. `tracestate` is validated against the W3C key/value grammar
+  (unique keys; blank list members tolerated); per the specification a malformed `tracestate`
+  never invalidates a valid `traceparent` — it is discarded and the context is still extracted.
+  Baggage remains deferred. See `TRACES_COMPLIANCE.md`.
+- SpanContext value operations over the immutable `otel_span_context_t`:
+  `otel_span_context_is_valid`, `otel_span_context_is_remote`, `otel_span_context_trace_id`
+  (16-byte big-endian), `otel_span_context_span_id` (8-byte big-endian),
+  `otel_span_context_trace_flags` (opaque `uint8_t`, all bits preserved),
+  `otel_span_context_tracestate` (borrowed UTF-8 view valid until the context is destroyed),
+  and `otel_span_context_create` to build an owned context from raw parts. All-zero IDs are
+  rejected; unknown/reserved trace-flag bits are kept opaque. See `TRACES_COMPLIANCE.md`.
 - API-owned immutable `otel_span_context_t` snapshots. A context can be copied from a live
   SDK-backed span, cloned across threads, used as an implementation-neutral parent for a new
   span, and attached directly to a log record without manually copying trace/span IDs.

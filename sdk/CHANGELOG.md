@@ -4,6 +4,43 @@
 
 ### Added
 
+- OTLP gRPC/tonic transport for Traces plus
+  `otel_otlp_trace_exporter_builder_set_transport` and
+  `otel_otlp_trace_exporter_builder_set_compression`, bringing Traces exporter selection to
+  parity with Metrics and Logs. The gRPC transport owns one single-worker Tokio runtime per
+  exporter and is gated by `otlp-grpc` (with `otlp-grpc-gzip`/`otlp-grpc-zstd` for
+  compression and `grpc-tls-ring` for TLS roots).
+- C callback-backed Traces exporter (`otel_custom_trace_exporter_new`), usable with span
+  processors without any OTLP feature. The export callback receives a callback-scoped,
+  read-only span batch view with resource, scope, span, event, and link data, plus
+  scalar/one-level-array attributes. Callback state transfers on `OTEL_STATUS_OK` only and
+  `state_destroy` runs exactly once after in-flight exports complete. A runnable
+  `c-custom-trace-exporter` example demonstrates callback registration, span-batch-view
+  traversal, and callback-state lifecycle.
+- Simple span processor: `otel_simple_span_processor_create` consumes a trace exporter and
+  produces a generic `otel_span_processor_t` that exports each finished span synchronously on
+  the thread that ended it. It takes ownership of the exporter on `OTEL_STATUS_OK` (the pointer
+  becomes invalid) and leaves it caller-owned on failure, matching the batch builder's
+  transfer contract. Intended for tests, short-lived programs, and debugging; production
+  pipelines should prefer the batch span processor.
+- Configurable trace span limits: `otel_sdk_builder_set_span_limits` caps the number of
+  attributes, events, and links retained per span (and attributes per event/link) from a
+  versioned `otel_span_limits_t` (`struct_size`-gated). Values map directly to the SDK's
+  `SpanLimits`; a NULL config restores the spec defaults (128 for every bound); a non-zero
+  reserved field or an undersized `struct_size` is rejected. Overflowing items are dropped by
+  the SDK (most-recently-added first), matching the specification.
+- Built-in trace sampler configuration: `otel_sdk_builder_set_sampler` selects the tracer
+  provider's root sampler from a versioned `otel_sampler_config_t` (`struct_size`-gated).
+  Supported kinds are `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased` (probability in `[0, 1]`),
+  and `ParentBased` wrapping a configurable non-parent-based root sampler. Passing a NULL
+  config restores the SDK default (`ParentBased(AlwaysOn)`); invalid ratios, reserved bytes,
+  and a parent-based root that is itself parent-based are rejected. Custom sampler callbacks
+  remain deferred; see `TRACES_COMPLIANCE.md`.
+- Trace vtable support for the extended span-start entry (`tracer_start_span_ex`): the SDK
+  reconstructs span contexts and links from a borrowed forward-only descriptor and forwards
+  span links, an explicit start timestamp, initial attributes, and a single parenting source
+  into the OTel `SpanBuilder`. The entry is appended after the SpanContext prefix and gated by a
+  new frozen `OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE` capability boundary.
 - Trace vtable support for copying complete `SpanContext` snapshots (including trace state and
   remote state) and starting children from implementation-neutral snapshots used by the C API
   and Logs correlation path.

@@ -123,6 +123,52 @@ int main(void) {
     (void)otel_span_set_error(span, otel_cstr("boom"));
     (void)otel_span_get_context(span, &context);
     (void)otel_tracer_start_span_with_context(NULL, otel_cstr("child"), NULL, context);
+    {
+        uint8_t trace_id[16] = {0};
+        uint8_t span_id[8] = {0};
+        uint8_t flags = 0;
+        otel_span_context_t* built = NULL;
+        trace_id[15] = 1;
+        span_id[7] = 1;
+        built = otel_span_context_create(trace_id, span_id, 0x01, OTEL_TRUE,
+                                         otel_cstr("k=v"));
+        (void)otel_span_context_is_valid(built);
+        (void)otel_span_context_is_remote(built);
+        (void)otel_span_context_trace_id(built, trace_id);
+        (void)otel_span_context_span_id(built, span_id);
+        (void)otel_span_context_trace_flags(built, &flags);
+        (void)otel_span_context_tracestate(built);
+        {
+            char tp[64];
+            size_t need = 0;
+            otel_span_context_t* extracted = NULL;
+            (void)otel_trace_propagation_inject_traceparent(built, tp, sizeof(tp), &need);
+            (void)otel_trace_propagation_inject_tracestate(built, tp, sizeof(tp), &need);
+            (void)otel_trace_propagation_extract(
+                otel_cstr("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+                otel_string_view_empty(), &extracted);
+            otel_span_context_destroy(extracted);
+        }
+        {
+            otel_span_start_options_ex_t opts = OTEL_SPAN_START_OPTIONS_EX_INIT;
+            otel_span_link_t links[1];
+            otel_key_value_t link_attrs[] = {
+                otel_kv_string(otel_cstr("k"), otel_cstr("v"))
+            };
+            links[0].context = built;
+            links[0].attributes = link_attrs;
+            links[0].attribute_count = sizeof(link_attrs) / sizeof(link_attrs[0]);
+            opts.kind = OTEL_SPAN_KIND_CLIENT;
+            opts.parent_context = built;
+            opts.start_time_unix_nanos = 1700000000000000000ull;
+            opts.attributes = link_attrs;
+            opts.attribute_count = sizeof(link_attrs) / sizeof(link_attrs[0]);
+            opts.links = links;
+            opts.link_count = sizeof(links) / sizeof(links[0]);
+            (void)otel_tracer_start_span_ex(NULL, otel_cstr("ex"), &opts);
+        }
+        otel_span_context_destroy(built);
+    }
     otel_span_context_destroy(otel_span_context_clone(context));
     otel_span_context_destroy(context);
     return 0;
