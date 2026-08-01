@@ -79,3 +79,10 @@ path = "fuzz_targets/span_limits.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "trace_exporter_callbacks"
+path = "fuzz_targets/trace_exporter_callbacks.rs"
+test = false
+doc = false
+bench = false

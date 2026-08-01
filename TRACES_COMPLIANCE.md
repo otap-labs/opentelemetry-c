@@ -142,6 +142,6 @@ Validation and usability:
 - [ ] API-only no-op tests for all new calls.
 - [ ] SDK-backed semantic tests (sampling, limits, links, context parenting, propagation).
 - [x] Extended C header compile tests and runnable C examples (`c-basic-traces`; `c-custom-trace-exporter` for the callback exporter).
-- [ ] Cross-artifact tests proving the API-only caller uses the installed SDK.
+- [x] Cross-artifact tests proving the API-only caller uses the installed SDK (`cross_artifact.rs` for the OTLP path; `custom_trace_exporter_cross_artifact.rs` for the callback exporter across simple and batch processors). Callback-ABI and exported-span-view invariants are additionally fuzzed by `trace_exporter_callbacks` (see `scripts/fuzz-traces.sh`).
 - [ ] Hot-path benchmarks where new per-span operations are introduced.
 - [ ] Documented supported/deferred behavior and ABI evolution rules (this file, updated per phase).
