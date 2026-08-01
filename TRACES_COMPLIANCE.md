@@ -139,9 +139,9 @@ SDK configuration:
 - [x] OTLP gRPC/tonic exporter with transport/compression selection (Phase 9).
 
 Validation and usability:
-- [ ] API-only no-op tests for all new calls.
-- [ ] SDK-backed semantic tests (sampling, limits, links, context parenting, propagation).
+- [x] API-only no-op tests for all new calls (`api/tests/backed_null.rs` no-op/unbacked span paths incl. `start_span_ex`/`start_span_with_context`; `api/tests/span_context_value.rs` SpanContext value ops without an SDK; `api/src/propagation.rs` inject/extract unit tests).
+- [x] SDK-backed semantic tests (sampling, limits, links, context parenting, propagation) across `sdk/src/sdk.rs`, `sdk/src/vtable.rs`, and `api/src/propagation.rs` (e.g. `vtable_sampler_governs_recording`, `set_span_limits_maps_every_bound`, `vtable_start_span_ex_links_start_time_and_attributes`, `vtable_parent_child_and_attributes`, `context_snapshot_preserves_remote_flags_and_trace_state_after_source_span_ends`).
 - [x] Extended C header compile tests and runnable C examples (`c-basic-traces`; `c-custom-trace-exporter` for the callback exporter).
 - [x] Cross-artifact tests proving the API-only caller uses the installed SDK (`cross_artifact.rs` for the OTLP path; `custom_trace_exporter_cross_artifact.rs` for the callback exporter across simple and batch processors). Callback-ABI and exported-span-view invariants are additionally fuzzed by `trace_exporter_callbacks` (see `scripts/fuzz-traces.sh`).
-- [ ] Hot-path benchmarks where new per-span operations are introduced.
-- [ ] Documented supported/deferred behavior and ABI evolution rules (this file, updated per phase).
+- [x] Hot-path benchmarks covering the new per-span operations (`api/benches/api_hotpath.rs` no-op FFI overhead; `sdk/benches/sdk_hotpath.rs` SDK-backed span path).
+- [x] Documented supported/deferred behavior and ABI evolution rules (this file, updated per phase).
