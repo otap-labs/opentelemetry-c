@@ -1,0 +1,12 @@
+# ${pcfiledir} is the directory containing this .pc file (<prefix>/@CMAKE_INSTALL_LIBDIR@/pkgconfig).
+# Going up two levels gives the install prefix, making this file relocatable.
+prefix=${pcfiledir}/../..
+libdir=${pcfiledir}/..
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: opentelemetry-c-sdk
+Description: OpenTelemetry C SDK (OTLP exporter, metrics, logs backends)
+Version: @OTEL_C_VERSION@
+Requires: opentelemetry-c-api = @OTEL_C_VERSION@
+Libs: -L${libdir} -lopentelemetry_c_sdk
+Cflags: -I${includedir}

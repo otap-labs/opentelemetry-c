@@ -1,0 +1,364 @@
+name: Packaging
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cmake-install:
+    name: CMake install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Configure (no-default-features for CI speed)
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install" \
+            -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Install
+        run: cmake --install build
+
+      - name: Verify install layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="${GITHUB_WORKSPACE}/install"
+
+          echo "==> Checking headers"
+          test -f "${PREFIX}/include/opentelemetry_c/api.h"
+          test -f "${PREFIX}/include/opentelemetry_c/common.h"
+          test -f "${PREFIX}/include/opentelemetry_c/trace.h"
+          test -f "${PREFIX}/include/opentelemetry_c/sdk.h"
+
+          echo "==> Checking libraries"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            test -f "${PREFIX}/lib/libopentelemetry_c_api.dylib"
+            test -f "${PREFIX}/lib/libopentelemetry_c_sdk.dylib"
+          else
+            test -f "${PREFIX}/lib/libopentelemetry_c_api.so"
+            test -f "${PREFIX}/lib/libopentelemetry_c_sdk.so"
+          fi
+
+          echo "==> Checking pkg-config"
+          test -f "${PREFIX}/lib/pkgconfig/opentelemetry-c-api.pc"
+          test -f "${PREFIX}/lib/pkgconfig/opentelemetry-c-sdk.pc"
+
+          echo "==> Checking CMake config"
+          test -f "${PREFIX}/lib/cmake/OpenTelemetryC/OpenTelemetryCConfig.cmake"
+          test -f "${PREFIX}/lib/cmake/OpenTelemetryC/OpenTelemetryCConfigVersion.cmake"
+
+          echo "==> Checking docs"
+          test -f "${PREFIX}/share/doc/opentelemetry-c/README.md"
+
+          echo "Install layout OK"
+
+  cmake-consumer-api:
+    name: API consumer CMake (${{ matrix.os }})
+    needs: cmake-install
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build and install opentelemetry-c
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install" \
+            -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
+          cmake --build build --parallel
+          cmake --install build
+
+      - name: Build API consumer
+        run: |
+          cmake -S packaging/tests/api_consumer \
+                -B build-api-consumer \
+                -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/install" \
+                -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-api-consumer
+
+      - name: Run API consumer
+        run: |
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-api-consumer/api_consumer
+          else
+            LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-api-consumer/api_consumer
+          fi
+
+  pkgconfig-consumer:
+    name: pkg-config consumer (${{ matrix.os }})
+    needs: cmake-install
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install pkg-config (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pkg-config
+
+      - name: Build and install opentelemetry-c
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install" \
+            -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
+          cmake --build build --parallel
+          cmake --install build
+
+      - name: Verify pkg-config
+        run: |
+          export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/install/lib/pkgconfig"
+          pkg-config --modversion opentelemetry-c-api
+          pkg-config --cflags opentelemetry-c-api
+          pkg-config --libs opentelemetry-c-api
+          pkg-config --modversion opentelemetry-c-sdk
+          pkg-config --libs opentelemetry-c-sdk
+
+      - name: Compile via pkg-config flags
+        run: |
+          export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/install/lib/pkgconfig"
+          CFLAGS=$(pkg-config --cflags opentelemetry-c-api)
+          LIBS=$(pkg-config --libs opentelemetry-c-api)
+          # Compile the api_consumer main.c directly via pkg-config flags
+          # shellcheck disable=SC2086
+          ${CC:-cc} -std=c11 ${CFLAGS} packaging/tests/api_consumer/main.c \
+            ${LIBS} -o build-pkgconfig-consumer
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-pkgconfig-consumer
+          else
+            LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-pkgconfig-consumer
+          fi
+
+  cmake-consumer-sdk:
+    name: SDK consumer CMake (${{ matrix.os }})
+    needs: cmake-install
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build and install opentelemetry-c (no-default-features)
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install" \
+            -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
+          cmake --build build --parallel
+          cmake --install build
+
+      - name: Build SDK consumer
+        run: |
+          cmake -S packaging/tests/sdk_consumer \
+                -B build-sdk-consumer \
+                -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/install" \
+                -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-sdk-consumer
+
+      - name: Run SDK consumer
+        run: |
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-sdk-consumer/sdk_consumer
+          else
+            LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-sdk-consumer/sdk_consumer
+          fi
+
+  cmake-consumer-cpp:
+    name: C++17 consumer CMake (${{ matrix.os }})
+    needs: cmake-install
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build and install opentelemetry-c
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install" \
+            -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
+          cmake --build build --parallel
+          cmake --install build
+
+      - name: Build C++17 consumer
+        run: |
+          cmake -S packaging/tests/cpp_header_consumer \
+                -B build-cpp-consumer \
+                -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/install" \
+                -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cpp-consumer
+
+      - name: Run C++17 consumer
+        run: |
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-cpp-consumer/cpp_consumer
+          else
+            LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/install/lib" ./build-cpp-consumer/cpp_consumer
+          fi
+
+  relocation-test:
+    name: Relocation test (${{ matrix.os }})
+    needs: cmake-install
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build opentelemetry-c
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install-placeholder" \
+            -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
+          cmake --build build --parallel
+
+      - name: Run relocation test
+        run: bash packaging/tests/relocation/run_relocation_test.sh build
+
+  source-archive-test:
+    name: Source archive test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-archive-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Run source archive test
+        run: bash packaging/tests/source_archive/run_source_archive_test.sh /tmp/otelc-archive-test

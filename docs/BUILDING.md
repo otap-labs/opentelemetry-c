@@ -3,7 +3,26 @@
 `opentelemetry-c` is distributed as source. API and SDK libraries must be built from the
 same `vMAJOR.MINOR.PATCH` tag and kept loaded while OpenTelemetry handles can use them.
 
-## Build the libraries
+## Build and install with CMake (recommended)
+
+A CMake frontend is provided for the standard configure/build/install workflow,
+including CMake package config, pkg-config metadata, and relocation support:
+
+```sh
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build --parallel
+cmake --install build
+```
+
+After installation, downstream projects can use `find_package(OpenTelemetryC CONFIG REQUIRED)`
+or `pkg-config --libs opentelemetry-c-api`. See [docs/PACKAGING.md](PACKAGING.md) for full
+CMake consumer integration, pkg-config, Conan 2, vcpkg, and Homebrew instructions.
+
+---
+
+## Build the libraries directly with Cargo
 
 1. Download a GitHub-generated source archive for a release tag, or clone and check out the
    tag.
