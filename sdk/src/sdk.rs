@@ -18,7 +18,7 @@ use std::time::Duration;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider, SpanLimits};
 use opentelemetry_sdk::Resource;
 
 use opentelemetry_c_abi::{
@@ -66,6 +66,8 @@ pub struct OtelSdkBuilder {
     log_processors: Vec<LogProcessorImpl>,
     // Optional root sampler; `None` uses the SDK's spec default (ParentBased(AlwaysOn)).
     sampler: Option<Sampler>,
+    // Optional span limits; `None` uses the SDK's spec defaults (128 for every bound).
+    span_limits: Option<SpanLimits>,
 }
 
 enum MetricReaderImpl {
@@ -209,6 +211,7 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
             metric_views: Vec::new(),
             log_processors: Vec::new(),
             sampler: None,
+            span_limits: None,
         })
     })
 }
@@ -542,6 +545,87 @@ pub unsafe extern "C" fn otel_sdk_builder_set_sampler(
     }
 }
 
+/// Versioned span-limit configuration passed to [`otel_sdk_builder_set_span_limits`].
+///
+/// `struct_size` must be `sizeof(otel_span_limits_t)` as compiled by the caller; only the
+/// fields covered by `struct_size` are read, so the struct may grow without breaking callers.
+/// Each bound caps how many attributes/events/links a span (or event/link) retains; when a
+/// bound is exceeded the most recently added items are dropped. A value of `0` drops all
+/// items in that collection.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelSpanLimits {
+    /// Size in bytes of this struct as seen by the caller.
+    pub struct_size: usize,
+    /// Maximum attributes retained per span.
+    pub max_attributes_per_span: u32,
+    /// Maximum events retained per span.
+    pub max_events_per_span: u32,
+    /// Maximum links retained per span.
+    pub max_links_per_span: u32,
+    /// Maximum attributes retained per event.
+    pub max_attributes_per_event: u32,
+    /// Maximum attributes retained per link.
+    pub max_attributes_per_link: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(std::mem::size_of::<OtelSpanLimits>() == 32);
+    assert!(std::mem::align_of::<OtelSpanLimits>() == 8);
+};
+
+/// Minimum `struct_size` accepted by [`otel_sdk_builder_set_span_limits`]: the full initial
+/// layout through `reserved`. Frozen — future fields appended after `reserved` are read only
+/// when a larger `struct_size` covers them.
+const OTEL_SPAN_LIMITS_REQUIRED_SIZE: usize =
+    std::mem::offset_of!(OtelSpanLimits, reserved) + std::mem::size_of::<u32>();
+
+/// Configure the tracer provider's span limits. Passing NULL clears any override and restores
+/// the SDK defaults (128 for every bound). Overrides any previously set limits.
+///
+/// # Safety
+/// `builder` must satisfy the handle contract; `config`, when non-NULL, must point to a valid
+/// [`OtelSpanLimits`] with `struct_size` bytes readable.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_set_span_limits(
+    builder: *mut OtelSdkBuilder,
+    config: *const OtelSpanLimits,
+) -> OtelStatus {
+    unsafe {
+        with_builder(builder, |b| {
+            if config.is_null() {
+                b.span_limits = None;
+                return OtelStatus::Ok;
+            }
+            // SAFETY: caller guarantees a valid config pointer when non-NULL.
+            let config = &*config;
+            if config.struct_size < OTEL_SPAN_LIMITS_REQUIRED_SIZE {
+                return fail(
+                    OtelStatus::InvalidConfig,
+                    "span limits struct_size is smaller than the required minimum",
+                );
+            }
+            if config.reserved != 0 {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "span limits reserved field must be zero",
+                );
+            }
+            b.span_limits = Some(SpanLimits {
+                max_attributes_per_span: config.max_attributes_per_span,
+                max_events_per_span: config.max_events_per_span,
+                max_links_per_span: config.max_links_per_span,
+                max_attributes_per_event: config.max_attributes_per_event,
+                max_attributes_per_link: config.max_attributes_per_link,
+            });
+            OtelStatus::Ok
+        })
+    }
+}
+
 /// Add (transfer) a span processor built by a span-processor builder. On `OTEL_STATUS_OK`,
 /// ownership of `processor` moves into the SDK builder and the original pointer becomes
 /// invalid. On failure (invalid builder or processor), the caller still owns `processor`.
@@ -680,6 +764,9 @@ pub unsafe extern "C" fn otel_sdk_build(
         let mut provider_builder = SdkTracerProvider::builder().with_resource(resource);
         if let Some(sampler) = builder.sampler.take() {
             provider_builder = provider_builder.with_sampler(sampler);
+        }
+        if let Some(limits) = builder.span_limits.take() {
+            provider_builder = provider_builder.with_span_limits(limits);
         }
         for processor in processors {
             provider_builder = provider_builder.with_span_processor(processor);
@@ -2398,6 +2485,70 @@ mod tests {
 
             // all rejections must leave the builder unchanged.
             assert!((*builder).sampler.is_none());
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    fn span_limits_config() -> OtelSpanLimits {
+        OtelSpanLimits {
+            struct_size: std::mem::size_of::<OtelSpanLimits>(),
+            max_attributes_per_span: 1,
+            max_events_per_span: 2,
+            max_links_per_span: 3,
+            max_attributes_per_event: 4,
+            max_attributes_per_link: 5,
+            reserved: 0,
+        }
+    }
+
+    #[test]
+    fn set_span_limits_maps_every_bound() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            let cfg = span_limits_config();
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, &cfg),
+                OtelStatus::Ok
+            );
+            let limits = (*builder).span_limits.expect("limits stored");
+            assert_eq!(limits.max_attributes_per_span, 1);
+            assert_eq!(limits.max_events_per_span, 2);
+            assert_eq!(limits.max_links_per_span, 3);
+            assert_eq!(limits.max_attributes_per_event, 4);
+            assert_eq!(limits.max_attributes_per_link, 5);
+
+            // NULL clears the override.
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, std::ptr::null()),
+                OtelStatus::Ok
+            );
+            assert!((*builder).span_limits.is_none());
+            otel_sdk_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn set_span_limits_rejects_invalid_configs() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+
+            // struct_size too small.
+            let mut cfg = span_limits_config();
+            cfg.struct_size = std::mem::size_of::<OtelSpanLimits>() - 1;
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, &cfg),
+                OtelStatus::InvalidConfig
+            );
+
+            // reserved must be zero.
+            let mut cfg = span_limits_config();
+            cfg.reserved = 7;
+            assert_eq!(
+                otel_sdk_builder_set_span_limits(builder, &cfg),
+                OtelStatus::InvalidArgument
+            );
+
+            assert!((*builder).span_limits.is_none());
             otel_sdk_builder_destroy(builder);
         }
     }

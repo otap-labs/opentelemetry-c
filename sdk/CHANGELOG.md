@@ -4,6 +4,12 @@
 
 ### Added
 
+- Configurable trace span limits: `otel_sdk_builder_set_span_limits` caps the number of
+  attributes, events, and links retained per span (and attributes per event/link) from a
+  versioned `otel_span_limits_t` (`struct_size`-gated). Values map directly to the SDK's
+  `SpanLimits`; a NULL config restores the spec defaults (128 for every bound); a non-zero
+  reserved field or an undersized `struct_size` is rejected. Overflowing items are dropped by
+  the SDK (most-recently-added first), matching the specification.
 - Built-in trace sampler configuration: `otel_sdk_builder_set_sampler` selects the tracer
   provider's root sampler from a versioned `otel_sampler_config_t` (`struct_size`-gated).
   Supported kinds are `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased` (probability in `[0, 1]`),

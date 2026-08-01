@@ -29,7 +29,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Versioned span-start options | Implemented | `otel_span_start_options_ex_t` is a `struct_size`-first descriptor carrying kind, a single parenting source, initial attributes, links, and a start timestamp; optional fields read only when `struct_size` covers them, so older/newer callers interoperate. Gated on the appended `tracer_start_span_ex` vtable entry (`OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE`); pre-extension backed implementations fail closed with `INVALID_CONFIG`. |
 | Array-valued span attributes | Deferred | See "Deliberate limitations". |
 | Built-in samplers | Implemented | `AlwaysOn`, `AlwaysOff`, `TraceIdRatioBased`, `ParentBased` with a configurable root sampler, via `otel_sdk_builder_set_sampler`. Custom sampler callbacks deferred. |
-| Span limits | Planned | Max attributes/events/links per span and per-event/per-link attributes; spec defaults; overflow rejected. |
+| Span limits | Implemented | Max attributes/events/links per span and per-event/per-link attributes via `otel_sdk_builder_set_span_limits`; spec defaults (128) when unset; overflow items dropped by the SDK. |
 | Batch span processor | Implemented | Dedicated OS worker thread, spec-schedule export; SDK core. |
 | Simple span processor | Planned | Synchronous export on the ending thread; suitable for tests and low-volume diagnostics. |
 | OTLP Traces export | Implemented (HTTP) | HTTP/protobuf by default via the optional `otlp-http` feature. gRPC/tonic parity under evaluation (Phase 9). |
@@ -40,7 +40,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Hot path | Implemented | SDK-backed handles own concrete Rust objects; span operations dispatch through the per-handle vtable with no global lookup, lock, or pipeline allocation. |
 | ABI compatibility | Implemented | Append-only trace vtable with `abi_version` + `struct_size` prefix checks; each optional capability gated on the offset of its final required field; frozen size boundaries asserted at compile time. |
 | Status/error policy | Implemented | Signal-independent status classification and thread-local last-error diagnostics. |
-| Resource bounds | Implemented (partial) | SDK builders bound span-processor and resource-attribute counts; `otel_tracer_start_span_ex` bounds link and attribute counts before allocation. Per-span attribute/event/link limits configuration lands with Phase 6. |
+| Resource bounds | Implemented | SDK builders bound span-processor and resource-attribute counts; `otel_tracer_start_span_ex` bounds link and attribute counts before allocation; per-span attribute/event/link limits are configurable via `otel_sdk_builder_set_span_limits`. |
 
 ## SpanContext value API
 
@@ -132,7 +132,7 @@ Span creation and data:
 
 SDK configuration:
 - [x] Built-in samplers (Phase 5).
-- [ ] Span limits (Phase 6).
+- [x] Span limits (Phase 6).
 - [x] ID-generator/user-callback decision: custom sampler/ID callbacks deferred; built-in only.
 - [ ] Simple span processor (Phase 7).
 - [ ] Custom/user-provided exporter with callback ownership + shutdown semantics (Phase 8).

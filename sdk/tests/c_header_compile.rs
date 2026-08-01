@@ -113,6 +113,11 @@ int main(void) {
     sampler.ratio = 0.5;
     (void)otel_sdk_builder_set_sampler(b, &sampler);
     (void)otel_sdk_builder_set_sampler(b, (const otel_sampler_config_t*)0);
+    otel_span_limits_t limits = OTEL_SPAN_LIMITS_INIT;
+    limits.max_attributes_per_span = 32;
+    limits.max_events_per_span = 64;
+    (void)otel_sdk_builder_set_span_limits(b, &limits);
+    (void)otel_sdk_builder_set_span_limits(b, (const otel_span_limits_t*)0);
     otel_span_t* span = (void*)0;
     (void)otel_span_set_attribute(span, otel_kv_double(otel_cstr("d"), 2.5));
     (void)otel_span_set_ok(span);

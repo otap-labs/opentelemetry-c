@@ -1287,4 +1287,38 @@ mod tests {
             (vt.provider_free)(pctx);
         }
     }
+
+    /// Span limits configured on the provider must cap the number of attributes retained on a
+    /// span: the SDK drops the most recently added attributes once the bound is reached
+    /// (verified end-to-end through the vtable against an in-memory exporter).
+    #[test]
+    fn vtable_span_attribute_limit_is_enforced() {
+        let exporter = InMemorySpanExporter::default();
+        let limits = opentelemetry_sdk::trace::SpanLimits {
+            max_attributes_per_span: 2,
+            ..Default::default()
+        };
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .with_span_limits(limits)
+            .build();
+        let vt = &SDK_VTABLE;
+        let pctx = provider_ctx(provider);
+        let tctx = (vt.provider_get_tracer)(pctx, sv("scope"), empty(), empty());
+
+        let span = (vt.tracer_start_span)(tctx, sv("root"), 0, std::ptr::null_mut());
+        assert!(!span.is_null());
+        assert_eq!((vt.span_set_i64)(span, sv("a"), 1), OtelStatus::Ok);
+        assert_eq!((vt.span_set_i64)(span, sv("b"), 2), OtelStatus::Ok);
+        assert_eq!((vt.span_set_i64)(span, sv("c"), 3), OtelStatus::Ok);
+        (vt.span_end)(span);
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let root = spans.iter().find(|s| s.name == "root").expect("root");
+        assert_eq!(root.attributes.len(), 2, "attributes must be capped at 2");
+
+        (vt.span_free)(span);
+        (vt.tracer_free)(tctx);
+        (vt.provider_free)(pctx);
+    }
 }

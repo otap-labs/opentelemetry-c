@@ -72,3 +72,10 @@ path = "fuzz_targets/sampler_config.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "span_limits"
+path = "fuzz_targets/span_limits.rs"
+test = false
+doc = false
+bench = false

@@ -197,6 +197,54 @@ _Static_assert(sizeof(otel_sampler_config_t) == 32, "otel_sampler_config_t ABI m
 otel_status_t otel_sdk_builder_set_sampler(otel_sdk_builder_t* builder,
                                            const otel_sampler_config_t* config);
 
+/* ---- Span limits ---------------------------------------------------------- */
+
+/*
+ * Versioned span-limit configuration. Set `struct_size` to sizeof(otel_span_limits_t) so the
+ * SDK reads only the fields your build knows about; the struct may grow in future revisions
+ * without breaking existing callers.
+ *
+ * Each bound caps how many attributes/events/links a span (or a single event/link) retains.
+ * When a bound is exceeded, the most recently added items are dropped. A bound of 0 drops all
+ * items in that collection.
+ */
+typedef struct otel_span_limits_t {
+  /* Size in bytes of this struct as compiled by the caller. Use OTEL_SPAN_LIMITS_INIT. */
+  size_t struct_size;
+  /* Maximum attributes retained per span. */
+  uint32_t max_attributes_per_span;
+  /* Maximum events retained per span. */
+  uint32_t max_events_per_span;
+  /* Maximum links retained per span. */
+  uint32_t max_links_per_span;
+  /* Maximum attributes retained per event. */
+  uint32_t max_attributes_per_event;
+  /* Maximum attributes retained per link. */
+  uint32_t max_attributes_per_link;
+  /* Reserved; must be zero. */
+  uint32_t reserved;
+} otel_span_limits_t;
+
+/* Initializer that stamps struct_size and sets every bound to the spec default of 128. */
+#define OTEL_SPAN_LIMITS_INIT \
+  { sizeof(otel_span_limits_t), 128u, 128u, 128u, 128u, 128u, 0u }
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
+    defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
+_Static_assert(sizeof(otel_span_limits_t) == 32, "otel_span_limits_t ABI mismatch");
+#endif
+
+/*
+ * Configure the span limits used by the tracer provider. Passing a NULL `config` clears any
+ * override and restores the SDK defaults (128 for every bound). Calling this repeatedly
+ * replaces the previously configured limits.
+ *
+ * Validation: `struct_size` must cover the full initial layout (through `reserved`) and the
+ * `reserved` field must be zero.
+ */
+otel_status_t otel_sdk_builder_set_span_limits(otel_sdk_builder_t* builder,
+                                               const otel_span_limits_t* config);
+
 /* ---- Span processors ------------------------------------------------------ */
 
 /*

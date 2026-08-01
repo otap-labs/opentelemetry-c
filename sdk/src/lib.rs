@@ -146,11 +146,12 @@ pub use sdk::{
     otel_sdk_builder_add_metric_reader, otel_sdk_builder_add_metric_view,
     otel_sdk_builder_add_resource_attribute, otel_sdk_builder_add_span_processor,
     otel_sdk_builder_destroy, otel_sdk_builder_new, otel_sdk_builder_set_sampler,
-    otel_sdk_builder_set_service_name, otel_sdk_destroy, otel_sdk_force_flush,
-    otel_sdk_get_logger_provider, otel_sdk_get_meter_provider, otel_sdk_get_tracer_provider,
-    otel_sdk_logs_force_flush, otel_sdk_logs_shutdown, otel_sdk_metrics_force_flush,
-    otel_sdk_metrics_shutdown, otel_sdk_set_as_global, otel_sdk_set_logs_as_global,
-    otel_sdk_set_metrics_as_global, otel_sdk_shutdown, OtelSamplerConfig, OtelSdk, OtelSdkBuilder,
+    otel_sdk_builder_set_service_name, otel_sdk_builder_set_span_limits, otel_sdk_destroy,
+    otel_sdk_force_flush, otel_sdk_get_logger_provider, otel_sdk_get_meter_provider,
+    otel_sdk_get_tracer_provider, otel_sdk_logs_force_flush, otel_sdk_logs_shutdown,
+    otel_sdk_metrics_force_flush, otel_sdk_metrics_shutdown, otel_sdk_set_as_global,
+    otel_sdk_set_logs_as_global, otel_sdk_set_metrics_as_global, otel_sdk_shutdown,
+    OtelSamplerConfig, OtelSdk, OtelSdkBuilder, OtelSpanLimits,
 };
 pub use span_processor::{otel_span_processor_destroy, OtelSpanProcessor};
 pub use trace_exporter::{otel_trace_exporter_destroy, OtelTraceExporter};

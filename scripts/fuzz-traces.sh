@@ -12,7 +12,9 @@ set -euo pipefail
 # and the link array walk (each link carrying its own context handle and attribute array) that
 # the SDK reconstructs into span contexts and links. `sampler_config` drives the versioned
 # built-in sampler descriptor (`otel_sampler_config_t`): it fuzzes `struct_size` field gating,
-# the reserved words, the ratio bound, and the parent-based root-type validation.
+# the reserved words, the ratio bound, and the parent-based root-type validation. `span_limits`
+# drives the versioned span-limits descriptor (`otel_span_limits_t`): it fuzzes `struct_size`
+# field gating and the reserved word.
 #
 # No fuzz target ever dereferences a fuzzer-supplied address: only lengths, tags, counts, and
 # structure sizes are fuzzed, and every pointer is either NULL or points at a live buffer.
@@ -26,7 +28,7 @@ for value in "$seconds" "$long_seconds"; do
   fi
 done
 
-targets=(trace_propagation span_start_ex sampler_config)
+targets=(trace_propagation span_start_ex sampler_config span_limits)
 
 cargo +nightly fuzz build
 for target in "${targets[@]}"; do
