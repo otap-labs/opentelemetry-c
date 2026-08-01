@@ -12,35 +12,24 @@ the application owns the SDK.
 
 ## Project status
 
-OpenTelemetry implementations mature at different rates by signal and component. A single
-repository-wide label would hide that this project has broad Metrics coverage, partial trace
-coverage, and an experimental Logs bridge.
+All three signals are available, but the C API and ABI remain experimental.
 
 | Signal | C API | Native ABI | C SDK | OTLP exporter | Current scope |
 | --- | --- | --- | --- | --- | --- |
-| **Traces** | Alpha, partial | Alpha | Alpha, partial | Alpha: HTTP/protobuf | Spans, events, scalar attributes, status, reusable SpanContext snapshots, batch processing, and lifecycle are implemented. Sampling configuration, propagation, links, limits, and other items remain in the [traces epic](https://github.com/otap-labs/opentelemetry-c/issues/4). |
-| **Metrics** | Alpha | Alpha | Alpha | Alpha: HTTP/protobuf and optional gRPC | Synchronous and observable instruments, periodic readers, views, temporality, and lifecycle are implemented. See the [compliance ledger](METRICS_COMPLIANCE.md) and [Metrics epic](https://github.com/otap-labs/opentelemetry-c/issues/5) for constraints and remaining extensions. |
-| **Logs** | Experimental | Experimental | Experimental | Experimental: HTTP/protobuf and optional gRPC | A **log bridge**: logger acquisition, severity, body, structured attributes, raw or shared-SpanContext trace correlation, simple/batch processors, and lifecycle are implemented. `event_name`, `target`, and unsigned 64-bit values are deliberately not exposed. See the [compliance ledger](LOGS_COMPLIANCE.md) and [logs epic](https://github.com/otap-labs/opentelemetry-c/issues/6). |
+| **Traces** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Spans, context propagation, sampling, processors, OTLP export, and custom C export. See [TRACES_COMPLIANCE.md](TRACES_COMPLIANCE.md). |
+| **Metrics** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Synchronous and observable instruments, readers, views, OTLP export, and custom C export. See [METRICS_COMPLIANCE.md](METRICS_COMPLIANCE.md). |
+| **Logs** | Experimental | Experimental | Experimental | HTTP/protobuf and optional gRPC | Structured log bridge, trace correlation, processors, OTLP export, and custom C export. See [LOGS_COMPLIANCE.md](LOGS_COMPLIANCE.md). |
 
-Component stability is also explicit:
-
-| Component | Status | Compatibility meaning |
-| --- | --- | --- |
-| Public C API (headers and behavior) | Alpha (Logs: Experimental) | Experimental for the implemented trace and Metrics surfaces. The Logs surface is newer and may change more freely within `0.x`. |
-| Public native ABI (`otel_*` symbols, layouts, ownership) | Alpha | No stable ABI promise before the project explicitly declares one. |
-| C SDK and exporters | Alpha | Experimental pipeline configuration, lifecycle, and transport surface. |
-| Internal API-to-SDK ABI crate and vtables | Internal | Version-checked for fail-closed dispatch, but not a public or third-party extension interface. |
-
-These labels describe the maturity of **this C surface**, not the stability of the underlying
-OpenTelemetry Rust crates or the OpenTelemetry specification. “Implemented” in a compliance
-ledger describes feature coverage; it does not upgrade that component from Alpha.
+“Implemented” describes feature coverage, not API or ABI stability. See
+[VERSIONING.md](VERSIONING.md) for the compatibility policy.
 
 Releases are **source-only**: one version and tag cover the API, SDK, and internal ABI
 packages. No prebuilt native binaries or crates.io packages are distributed, and API/SDK
 artifacts from different tags must not be mixed. Linux and macOS shared-library use are
 supported; Windows shared-library use and static deployment are unsupported.
 
-Build from source using [docs/BUILDING.md](docs/BUILDING.md). See
+Build and install from source using [docs/BUILDING.md](docs/BUILDING.md) and
+[docs/PACKAGING.md](docs/PACKAGING.md). See
 [VERSIONING.md](VERSIONING.md), [RELEASING.md](RELEASING.md),
 [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and the
 [examples](sdk/examples).
@@ -53,8 +42,8 @@ Build from source using [docs/BUILDING.md](docs/BUILDING.md). See
   defaults. Depends only on the internal ABI
   crate — never on the SDK/OTLP.
   Instrumentation links **this library only**.
-- **[sdk/](sdk/)** — package `opentelemetry-c-sdk`. The **SDK**: OTLP HTTP/protobuf trace,
-  HTTP/protobuf and optional gRPC Metrics and Logs exporters, a batch span processor,
+- **[sdk/](sdk/)** — package `opentelemetry-c-sdk`. The **SDK**: optional OTLP
+  HTTP/protobuf and gRPC exporters for Traces, Metrics, and Logs; span processors,
   periodic Metrics readers, declarative Metrics views, simple and batch log processors, and
   signal-specific lifecycle operations.
   Applications link **this plus the API**.
@@ -73,11 +62,20 @@ Build from source using [docs/BUILDING.md](docs/BUILDING.md). See
 
 ## Getting started
 
-Build the coordinated API and SDK libraries from one source release:
+Build and install the coordinated API and SDK libraries from one source release:
 
 ```sh
-cargo build --locked --release -p opentelemetry-c-api -p opentelemetry-c-sdk
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install"
+cmake --build build --parallel
+cmake --install build
 ```
+
+Installed consumers can use `find_package(OpenTelemetryC CONFIG REQUIRED)` or the
+`opentelemetry-c-api` and `opentelemetry-c-sdk` pkg-config modules. Direct Cargo builds,
+local Conan and vcpkg recipes, and the Homebrew formula generator are documented in the
+[Packaging Guide](docs/PACKAGING.md).
 
 Then start with a complete, buildable example:
 
@@ -103,8 +101,8 @@ Then start with a complete, buildable example:
   batches in your own C code, with no OTLP transport: callback registration, span-batch-view
   traversal (attributes, events, links), and callback-state ownership.
 
-See [Building from a source release](docs/BUILDING.md) for Cargo features, both required
-header include roots, native linking, and platform constraints.
+See [Building from a source release](docs/BUILDING.md) for feature selection and platform
+constraints.
 
 ## Documentation
 
@@ -112,11 +110,14 @@ header include roots, native linking, and platform constraints.
   instrumentation.
 - [C SDK](sdk/README.md) — trace, Metrics, and Logs pipelines, Cargo features, exporters,
   readers, views, processors, and lifecycle.
+- [Traces compliance](TRACES_COMPLIANCE.md) — implemented surface and experimental
+  constraints.
 - [Metrics compliance](METRICS_COMPLIANCE.md) — implemented surface and experimental
   constraints.
 - [Logs compliance](LOGS_COMPLIANCE.md) — implemented surface and the deliberate
   `event_name`/`target` omissions.
 - [Performance](docs/PERFORMANCE.md) — hot-path contract and opt-in benchmarks.
+- [Packaging](docs/PACKAGING.md) — CMake installation and consumer integration.
 - [Versioning](VERSIONING.md) and [releasing](RELEASING.md) — compatibility and source-only
   release policy.
 - [Contributing](CONTRIBUTING.md) and [security](SECURITY.md).

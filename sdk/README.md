@@ -181,8 +181,8 @@ default and the existing `otlp` feature remains a compatibility alias:
 | Feature | Default | Effect |
 | --- | --- | --- |
 | `otlp` | ❌ | Compatibility alias for `otlp-http`. |
-| `otlp-http` | ✅ | OTLP HTTP/protobuf traces and Metrics using blocking reqwest. |
-| `otlp-grpc` | ❌ | OTLP/gRPC Metrics using tonic and an SDK-owned Tokio runtime. |
+| `otlp-http` | ✅ | OTLP HTTP/protobuf export for Traces, Metrics, and Logs using blocking reqwest. |
+| `otlp-grpc` | ❌ | OTLP/gRPC export for Traces, Metrics, and Logs using tonic and SDK-owned Tokio runtimes. |
 | `metrics-async-runtime` | ❌ | SDK-owned async periodic Metrics reader with configurable export timeout. |
 | `native-tls` | ✅ | Implies `otlp-http`; HTTP HTTPS via the platform TLS stack. |
 | `rustls-tls` | ❌ | Implies `otlp-http`; HTTP HTTPS via rustls. |
