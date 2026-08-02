@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Handle plumbing for the SDK crate's own handles (`otel_sdk_builder_t`, `otel_sdk_t`).
 //!
 //! Mirrors the API crate's handle plumbing, but diagnostics are recorded in the API-owned

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! SDK implementation of the internal Logs vtable.
 //!
 //! This is where a borrowed `otel_log_record_view_t` is validated and turned into an owned

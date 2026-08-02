@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bridge to the API cdylib's internal registration ABI.
 //!
 //! In a normal build these are `extern "C"` imports resolved at load time against

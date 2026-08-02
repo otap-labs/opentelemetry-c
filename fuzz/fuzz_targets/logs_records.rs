@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Structured fuzzing of the Logs record surface.
 //!
 //! The interesting attack surface is the **flat value node pool**: a record hands the SDK an

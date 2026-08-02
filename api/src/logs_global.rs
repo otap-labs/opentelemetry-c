@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! API-owned process-global Logs provider slot.
 //!
 //! Mirrors the corrected Metrics lifecycle (token-based registration, stale-token-safe

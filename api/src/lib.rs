@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # opentelemetry-c-api
 //!
 //! The **C API facade** of the `opentelemetry-c` split. This library exposes the public

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # opentelemetry-c-abi
 
 **Internal** crate (`publish = false`). Defines the shared `#[repr(C)]` value types and the

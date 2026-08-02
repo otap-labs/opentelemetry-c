@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Concurrency proof for the API-owned global provider slot lifetime.
 //!
 //! Reproduces the previously-racy pattern: reader threads repeatedly resolve the global

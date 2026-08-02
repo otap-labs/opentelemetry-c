@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # c-metrics-basic
 
 Smallest complete Metrics SDK program using only public C headers.

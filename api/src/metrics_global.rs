@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! API-owned process-global Metrics provider slot.
 
 use std::os::raw::c_void;

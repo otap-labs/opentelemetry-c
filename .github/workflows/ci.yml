@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 name: CI
 
 on:
@@ -131,6 +133,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Check license identifiers
+        run: scripts/check-license-headers.py
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy

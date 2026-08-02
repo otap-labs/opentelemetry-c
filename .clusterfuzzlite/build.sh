@@ -1,4 +1,5 @@
 #!/bin/bash -eu
+# SPDX-License-Identifier: Apache-2.0
 
 cd "$SRC/opentelemetry-c"
 

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Packaging Guide
 
 This document describes how to build, install, and consume the

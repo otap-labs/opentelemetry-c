@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Versioning, compatibility, and release policy
 
 This document is the authoritative release policy for `opentelemetry-c`.

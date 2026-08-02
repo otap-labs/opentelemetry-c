@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! C callback-backed Traces exporter.
 
 use std::os::raw::c_void;

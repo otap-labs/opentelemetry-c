@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # c-manual-metrics
 
 Deterministic, application-controlled Metrics collection with the public manual reader.

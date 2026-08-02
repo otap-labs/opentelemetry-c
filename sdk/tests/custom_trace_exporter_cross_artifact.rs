@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-artifact custom Traces exporter proof.
 //!
 //! Compiles a standalone C program that includes only the public headers, links both

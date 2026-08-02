@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Makefile for the split-artifact c-basic-traces example.
 #
 # Builds BOTH Rust libraries (opentelemetry-c-api and opentelemetry-c-sdk) and links this

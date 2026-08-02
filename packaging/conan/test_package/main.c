@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * Conan test_package: minimal C program that includes the OpenTelemetry C API
  * header and calls a version query to confirm the library loaded correctly.

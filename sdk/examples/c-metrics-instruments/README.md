@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # c-metrics-instruments
 
 Demonstrates supported public Metrics instrument kinds with practical meanings.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build script for `opentelemetry-c-sdk`.
 //!
 //! The SDK cdylib references the API cdylib's internal registration symbols

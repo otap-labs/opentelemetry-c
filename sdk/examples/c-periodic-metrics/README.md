@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # c-periodic-metrics
 
 Periodic collection/export with the public periodic reader and a callback exporter.

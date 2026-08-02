@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The generic log-processor handle (`otel_log_processor_t`) and the simple/batch builders.
 //!
 //! Like [`crate::span_processor`], the opaque C handle wraps an internal enum of concrete

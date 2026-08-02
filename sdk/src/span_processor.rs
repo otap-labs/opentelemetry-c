@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The generic span-processor handle (`otel_span_processor_t`) and its internal implementation
 //! enum.
 //!

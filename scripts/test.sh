@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 # Build and test the default HTTP configuration, then the isolated Metrics transport matrix.

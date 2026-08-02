@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 #include <opentelemetry_c/manual_metric_reader.h>
 #include <opentelemetry_c/metric_exporter.h>
 #include <opentelemetry_c/metrics.h>

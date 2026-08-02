@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # opentelemetry-c-api
 
 [![Apache License][license-image]][license-url]

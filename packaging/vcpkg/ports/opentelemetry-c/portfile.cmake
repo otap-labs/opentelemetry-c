@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # vcpkg overlay port for opentelemetry-c
 #
 # LOCAL SOURCE port — builds from the repository source tree rather than

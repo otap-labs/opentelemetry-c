@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # c-custom-metric-exporter
 
 Callback-based custom Metrics exporter with full batch traversal.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! OTLP Logs exporter builder with optional HTTP/protobuf and gRPC transports.
 //!
 //! Mirrors [`crate::otlp_metric_exporter`]: transport and compression are selected through

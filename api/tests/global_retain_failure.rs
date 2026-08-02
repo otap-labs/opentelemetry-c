@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Global provider **retain failure** must surface as NULL, not a no-op tracer.
 //!
 //! When an SDK/provider is installed but its `provider_retain` returns NULL,

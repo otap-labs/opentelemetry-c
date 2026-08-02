@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-artifact proof for the experimental **Logs** bridge.
 //!
 //! Compiles a C program, links it against BOTH `libopentelemetry_c_api` and
