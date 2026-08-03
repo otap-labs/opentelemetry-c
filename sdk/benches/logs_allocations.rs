@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Steady-state allocation counts for the experimental Logs emit path.
 //!
 //! The Criterion suite in `logs_hotpath` is the source for latency. This executable answers a

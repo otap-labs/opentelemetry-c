@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! SDK-side error helpers. Diagnostics are recorded in the **API-owned** thread-local slot
 //! (via the internal ABI in [`crate::api_ffi`]) so a subsequent `otel_last_error_message()`
 //! returns them, exactly as in the single-crate build.

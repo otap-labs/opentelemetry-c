@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Experimental Logs compliance
 
 This ledger records the implemented OpenTelemetry Logs surface for the current experimental

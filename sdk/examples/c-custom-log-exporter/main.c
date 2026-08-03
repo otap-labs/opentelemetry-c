@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * Callback-backed Logs exporter: receive finished log batches in your own C code.
  *

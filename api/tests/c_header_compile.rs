@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Best-effort check that the API library's public C headers compile with a system C
 //! compiler (syntax-only, no linking). Self-skips if no compiler is available.
 

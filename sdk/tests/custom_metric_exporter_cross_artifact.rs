@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-artifact custom Metrics exporter and manual-reader proof.
 
 use std::path::{Path, PathBuf};

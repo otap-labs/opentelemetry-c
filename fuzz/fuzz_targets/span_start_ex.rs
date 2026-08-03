@@ -1,4 +1,5 @@
 #![no_main]
+// SPDX-License-Identifier: Apache-2.0
 
 //! Structured fuzzing of the versioned extended span-start surface
 //! ([`otel_tracer_start_span_ex`]).

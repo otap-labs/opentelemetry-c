@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 # relocation/run_relocation_test.sh
 #
 # Install opentelemetry-c to a temporary prefix A, then move it to prefix B,

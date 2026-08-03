@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Conan 2 local recipe for opentelemetry-c.
 

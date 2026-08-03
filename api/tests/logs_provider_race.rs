@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Concurrency proof for the API-owned global LoggerProvider slot.
 //!
 //! The Logs slot is separate from the trace and Metrics slots, so it needs its own proof that a

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Building from a source release
 
 `opentelemetry-c` is distributed as source. API and SDK libraries must be built from the

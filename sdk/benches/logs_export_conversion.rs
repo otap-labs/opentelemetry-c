@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Conversion-cost benchmarks for the callback-based custom Logs exporter.
 //!
 //! `logs_hotpath` measures the *emit* direction: borrowed C memory converted into owned Rust.

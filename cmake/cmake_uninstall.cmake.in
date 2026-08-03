@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Safe uninstall: removes only files listed in install_manifest.txt.
 # Never recursively deletes directories.
 # Prefer package-manager uninstall when installed through a package manager.

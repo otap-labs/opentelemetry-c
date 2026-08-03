@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The simple span processor constructor (`otel_simple_span_processor_create`).
 //!
 //! Consumes an [`OtelTraceExporter`] and produces a generic [`OtelSpanProcessor`] handle

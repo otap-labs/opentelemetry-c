@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Status codes and thread-local error reporting for the C API.
 //!
 //! The **API cdylib owns** the single thread-local error slot and exports

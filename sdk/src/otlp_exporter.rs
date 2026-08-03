@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! OTLP trace exporter builder with optional HTTP/protobuf and gRPC transports.
 //!
 //! Configures and builds an OTLP trace exporter as one `TraceExporterImpl` variant, producing a

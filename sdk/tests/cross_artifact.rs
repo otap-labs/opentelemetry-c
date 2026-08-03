@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-artifact proof: the API and SDK are **separate** dynamic libraries that share the
 //! API-owned global provider slot.
 //!

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # OpenTelemetry C
 
 A **Rust-backed C implementation** of OpenTelemetry traces, Metrics, and Logs, delivered as one

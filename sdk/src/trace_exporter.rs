@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The generic trace-exporter handle (`otel_trace_exporter_t`) and its internal
 //! implementation enum.
 //!

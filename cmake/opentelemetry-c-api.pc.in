@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # ${pcfiledir} is the directory containing this .pc file (<prefix>/@CMAKE_INSTALL_LIBDIR@/pkgconfig).
 # Going up two levels gives the install prefix, making this file relocatable.
 prefix=${pcfiledir}/../..

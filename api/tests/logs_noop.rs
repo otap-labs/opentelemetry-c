@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! API-only (no SDK installed) Logs behavior.
 //!
 //! Everything here runs in a process where no Logs implementation was ever registered, so it

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The SDK's implementation of the internal [`OtelImplVtable`].
 //!
 //! These `extern "C"` functions are the concrete, `opentelemetry_sdk`-backed behavior

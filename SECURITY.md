@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Security policy
 
 `opentelemetry-c` is experimental. Until multiple release lines are maintained, only the

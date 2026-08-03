@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # opentelemetry-c-sdk
 //!
 //! The **C SDK** of the `opentelemetry-c` split. It follows idiomatic OpenTelemetry layering:

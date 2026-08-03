@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "opentelemetry-c-api"
 description = "Rust-backed C API facade for OpenTelemetry traces (owns the global provider slot)"

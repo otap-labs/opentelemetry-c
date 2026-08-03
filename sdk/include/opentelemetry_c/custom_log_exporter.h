@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef OPENTELEMETRY_C_CUSTOM_LOG_EXPORTER_H
 #define OPENTELEMETRY_C_CUSTOM_LOG_EXPORTER_H
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The **API-owned global provider slot** and the internal registration ABI.
 //!
 //! This is the heart of the split. The single global provider slot lives in *this* (API)

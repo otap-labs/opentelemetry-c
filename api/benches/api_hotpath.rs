@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Hot-path FFI-overhead benchmarks for the **API-only, no-SDK** path.
 //!
 //! With no SDK installed the global provider resolves to the no-op default, so these

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Application-controlled Metrics reader.
 
 use std::fmt;

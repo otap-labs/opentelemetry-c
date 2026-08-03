@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

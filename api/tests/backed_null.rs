@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Backed-implementation failure propagation (contract for item 2 of the hardening spec).
 //!
 //! A *backed* provider/tracer (one with a real vtable) that fails — e.g. because a caller

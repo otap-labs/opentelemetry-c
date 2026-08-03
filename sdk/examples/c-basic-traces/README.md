@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # c-basic-traces (split API + SDK example)
 
 A C program that links against **both** `libopentelemetry_c_api` and
