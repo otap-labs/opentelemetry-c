@@ -4,6 +4,11 @@
 
 ### Added
 
+- General API-owned context parenting through a new append-only trace-vtable capability. The
+  SDK validates the versioned borrowed context view and converts its SpanContext into the
+  upstream Rust `Context` only for span construction; existing explicit SpanContext and
+  extended-start slots remain unchanged for mixed-version compatibility.
+
 - OTLP gRPC/tonic transport for Traces plus
   `otel_otlp_trace_exporter_builder_set_transport` and
   `otel_otlp_trace_exporter_builder_set_compression`, bringing Traces exporter selection to

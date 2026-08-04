@@ -17,6 +17,13 @@ otel_bound_histogram_f64_destroy
 otel_bound_histogram_f64_record
 otel_bound_histogram_u64_destroy
 otel_bound_histogram_u64_record
+otel_context_attach
+otel_context_clone
+otel_context_create
+otel_context_current
+otel_context_destroy
+otel_context_scope_detach
+otel_context_span_context
 otel_counter_f64_add
 otel_counter_f64_bind
 otel_counter_f64_destroy
@@ -42,6 +49,7 @@ otel_last_error_message
 otel_logger_destroy
 otel_logger_emit
 otel_logger_emit_with_context
+otel_logger_emit_with_current_context
 otel_logger_enabled
 otel_logger_provider_destroy
 otel_logger_provider_get_logger
@@ -105,6 +113,7 @@ otel_tracer_provider_get_tracer
 otel_tracer_start_span
 otel_tracer_start_span_ex
 otel_tracer_start_span_with_context
+otel_tracer_supports_context
 otel_up_down_counter_f64_add
 otel_up_down_counter_f64_destroy
 otel_up_down_counter_i64_add
