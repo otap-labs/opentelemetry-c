@@ -16,9 +16,9 @@ use std::thread;
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
+use opentelemetry_sdk::logs::{LogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider, SpanLimits};
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider, SpanLimits, SpanProcessor};
 use opentelemetry_sdk::Resource;
 
 use opentelemetry_c_abi::{
@@ -823,8 +823,12 @@ pub unsafe extern "C" fn otel_sdk_build(
                 provider_builder = provider_builder.with_span_limits(limits);
             }
         }
-        for processor in processors {
-            if !disabled {
+        if disabled {
+            for processor in processors {
+                let _ = processor.shutdown_with_timeout(Duration::from_secs(5));
+            }
+        } else {
+            for processor in processors {
                 provider_builder = provider_builder.with_span_processor(processor);
             }
         }
@@ -875,6 +879,10 @@ pub unsafe extern "C" fn otel_sdk_build(
         if !disabled {
             for processor in log_processors {
                 logger_provider_builder = processor.install(logger_provider_builder);
+            }
+        } else {
+            for processor in log_processors {
+                let _ = processor.shutdown_with_timeout(Duration::from_secs(5));
             }
         }
         let logger_provider = logger_provider_builder.build();

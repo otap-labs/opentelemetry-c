@@ -210,6 +210,11 @@ honor their standard environment variables when no programmatic override is supp
 `otel_sdk_builder_set_disabled`. See [`docs/ENVIRONMENT.md`](../docs/ENVIRONMENT.md) for the
 complete support and precedence table.
 
+Avoid configuring the same OTLP header key both programmatically and through the environment.
+The pinned Rust 0.32 exporter merges both sources but lets the environment value win a
+duplicate key, contrary to the general programmatic-over-environment precedence rule. Header
+values remain excluded from diagnostics.
+
 The existing header setter maps to HTTP headers or validated ASCII gRPC metadata. Duplicate
 keys are rejected case-insensitively. Binary `-bin` metadata is unsupported, and diagnostics
 name an invalid key without exposing its value. Compression must be compiled for the selected

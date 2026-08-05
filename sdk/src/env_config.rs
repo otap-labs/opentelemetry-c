@@ -5,6 +5,7 @@
 //! orchestration that the C wrapper must decide before selecting an upstream builder.
 
 use std::env;
+use std::io::Write;
 
 pub(crate) const OTEL_SDK_DISABLED: &str = "OTEL_SDK_DISABLED";
 pub(crate) const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
@@ -17,6 +18,12 @@ pub(crate) const OTEL_EXPORTER_OTLP_LOGS_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_LO
 pub(crate) enum OtlpProtocol {
     HttpProtobuf,
     Grpc,
+}
+
+fn warn(message: &str) {
+    // Diagnostics are best-effort until the SDK exposes a diagnostic callback. Never turn a
+    // harmless configuration warning into a failed C API call when stderr is closed/broken.
+    let _ = writeln!(std::io::stderr(), "OpenTelemetry C SDK warning: {message}");
 }
 
 fn nonempty_env(name: &str) -> Option<String> {
@@ -44,10 +51,9 @@ where
         if let Some(protocol) = parse_protocol(&value) {
             return protocol;
         }
-        eprintln!(
-            "OpenTelemetry C SDK warning: ignoring unrecognized {name} value; \
-             supported values are grpc and http/protobuf"
-        );
+        warn(&format!(
+            "ignoring unrecognized {name} value; supported values are grpc and http/protobuf"
+        ));
     }
     OtlpProtocol::HttpProtobuf
 }
@@ -67,10 +73,7 @@ where
         true
     } else {
         if !value.eq_ignore_ascii_case("false") {
-            eprintln!(
-                "OpenTelemetry C SDK warning: ignoring invalid OTEL_SDK_DISABLED value; \
-                 only true and false are valid"
-            );
+            warn("ignoring invalid OTEL_SDK_DISABLED value; only true and false are valid");
         }
         false
     }

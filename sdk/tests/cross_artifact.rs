@@ -525,12 +525,14 @@ int main(void){
     /* Build the pipeline: OTLP exporter -> batch processor -> SDK builder. */
     eb=otel_otlp_trace_exporter_builder_new();
     if (!eb){ result=2; goto cleanup; }
-    if (otel_otlp_trace_exporter_builder_set_endpoint(
-            eb,cs(getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")))!=0){
-        result=3; goto cleanup;
-    }
-    if (otel_otlp_trace_exporter_builder_set_timeout_millis(eb,5000)!=0){
-        result=4; goto cleanup;
+    if (getenv("OTEL_TEST_USE_ENV_CONFIG")==NULL){
+        if (otel_otlp_trace_exporter_builder_set_endpoint(
+                eb,cs(getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")))!=0){
+            result=3; goto cleanup;
+        }
+        if (otel_otlp_trace_exporter_builder_set_timeout_millis(eb,5000)!=0){
+            result=4; goto cleanup;
+        }
     }
     if (otel_otlp_trace_exporter_builder_build(eb,&exporter)!=0||!exporter){
         result=5; goto cleanup;
@@ -578,12 +580,14 @@ int main(void){
     processor=(void*)0;
     meb=otel_otlp_metric_exporter_builder_new();
     if (!meb){ result=12; goto cleanup; }
-    if (otel_otlp_metric_exporter_builder_set_endpoint(
-            meb,cs(getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")))!=0){
-        result=13; goto cleanup;
-    }
-    if (otel_otlp_metric_exporter_builder_set_timeout_millis(meb,5000)!=0){
-        result=78; goto cleanup;
+    if (getenv("OTEL_TEST_USE_ENV_CONFIG")==NULL){
+        if (otel_otlp_metric_exporter_builder_set_endpoint(
+                meb,cs(getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")))!=0){
+            result=13; goto cleanup;
+        }
+        if (otel_otlp_metric_exporter_builder_set_timeout_millis(meb,5000)!=0){
+            result=78; goto cleanup;
+        }
     }
     if (getenv("OTEL_TEST_METRICS_GRPC") &&
         otel_otlp_metric_exporter_builder_set_transport(meb,1)!=0){
@@ -672,7 +676,7 @@ int main(void){
     if (stage_status!=0){ result=60+stage_status; goto cleanup; }
     if (otel_sdk_force_flush(sdk,5000)!=0){ result=70; goto cleanup; }
     if (otel_sdk_metrics_force_flush(sdk,0)!=0){ result=71; goto cleanup; }
-    if (observable_calls==0){ result=72; goto cleanup; }
+    if (getenv("OTEL_SDK_DISABLED")==NULL && observable_calls==0){ result=72; goto cleanup; }
     result=0;
 
 cleanup:
@@ -1257,18 +1261,30 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     let collector = start_mock();
     let endpoint = format!("http://127.0.0.1:{}/v1/traces", collector.port);
     let metrics_endpoint = format!("http://127.0.0.1:{}/v1/metrics", collector.port);
+
+    let run_harness = |extra_env: &[(&str, &str)]| {
+        let mut command = Command::new(&out);
+        command
+            .env_remove("OTEL_SDK_DISABLED")
+            .env_remove("OTEL_TRACES_SAMPLER")
+            .env_remove("OTEL_BSP_MAX_QUEUE_SIZE")
+            .env("OTEL_TEST_USE_ENV_CONFIG", "1")
+            .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &endpoint)
+            .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+            .env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
+            .env("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf")
+            .env("OTEL_EXPORTER_OTLP_TIMEOUT", "5000")
+            .env("DYLD_LIBRARY_PATH", &lib_dir)
+            .env("LD_LIBRARY_PATH", &lib_dir);
+        for (name, value) in extra_env {
+            command.env(name, value);
+        }
+        command.output().expect("run harness")
+    };
+
     let runs = ["cumulative", "delta", "low-memory"]
         .into_iter()
-        .map(|temporality| {
-            Command::new(&out)
-                .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &endpoint)
-                .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
-                .env("OTEL_TEST_METRICS_TEMPORALITY", temporality)
-                .env("DYLD_LIBRARY_PATH", &lib_dir)
-                .env("LD_LIBRARY_PATH", &lib_dir)
-                .output()
-                .expect("run harness")
-        })
+        .map(|temporality| run_harness(&[("OTEL_TEST_METRICS_TEMPORALITY", temporality)]))
         .collect::<Vec<_>>();
     // Wait (bounded) for the collector to receive the export. This avoids a fixed sleep that can
     // stop the mock too early under slow CI while still failing promptly if no POST arrives.
@@ -1279,6 +1295,53 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
     {
         std::thread::sleep(Duration::from_millis(20));
     }
+
+    // The subprocesses above deliberately omit every corresponding C setter. They therefore
+    // prove real upstream environment parsing for endpoint, timeout, and protocol. Exercise
+    // three additional setup variables behaviorally while the same split-cdylib collector is
+    // alive: disabled exports nothing; AlwaysOff suppresses traces but not metrics; and a zero
+    // BSP queue drops spans while leaving the independent Metrics pipeline operational.
+    std::thread::sleep(Duration::from_millis(100));
+    let base_metrics = collector.metric_bodies.lock().unwrap().len();
+    let base_traces = collector.trace_bodies.lock().unwrap().len();
+
+    let disabled = run_harness(&[
+        ("OTEL_TEST_METRICS_TEMPORALITY", "cumulative"),
+        ("OTEL_SDK_DISABLED", "true"),
+    ]);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(collector.metric_bodies.lock().unwrap().len(), base_metrics);
+    assert_eq!(collector.trace_bodies.lock().unwrap().len(), base_traces);
+
+    let always_off = run_harness(&[
+        ("OTEL_TEST_METRICS_TEMPORALITY", "cumulative"),
+        ("OTEL_TRACES_SAMPLER", "always_off"),
+    ]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while collector.metric_bodies.lock().unwrap().len() == base_metrics
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let sampler_metrics = collector.metric_bodies.lock().unwrap().len();
+    assert!(sampler_metrics > base_metrics);
+    assert_eq!(collector.trace_bodies.lock().unwrap().len(), base_traces);
+
+    let zero_queue = run_harness(&[
+        ("OTEL_TEST_METRICS_TEMPORALITY", "cumulative"),
+        ("OTEL_BSP_MAX_QUEUE_SIZE", "0"),
+    ]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while collector.metric_bodies.lock().unwrap().len() == sampler_metrics
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(collector.metric_bodies.lock().unwrap().len() > sampler_metrics);
+    assert_eq!(collector.trace_bodies.lock().unwrap().len(), base_traces);
+
     collector.stop.store(true, Ordering::Release);
     collector.thread.join().expect("join mock collector");
 
@@ -1289,6 +1352,19 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         assert!(
             run.status.success(),
             "{scenario} harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
+            run.status.code(),
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr),
+        );
+    }
+    for (scenario, run) in [
+        ("OTEL_SDK_DISABLED", &disabled),
+        ("OTEL_TRACES_SAMPLER", &always_off),
+        ("OTEL_BSP_MAX_QUEUE_SIZE", &zero_queue),
+    ] {
+        assert!(
+            run.status.success(),
+            "{scenario} environment harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
             run.status.code(),
             String::from_utf8_lossy(&run.stdout),
             String::from_utf8_lossy(&run.stderr),

@@ -9,6 +9,7 @@
   settings. `otel_sdk_builder_set_disabled` provides the direct programmatic equivalent for
   `OTEL_SDK_DISABLED`; explicit builder settings override environment values except for the
   documented Rust 0.32 duplicate-header limitation.
+
 - OTLP gRPC/tonic transport for Traces plus
   `otel_otlp_trace_exporter_builder_set_transport` and
   `otel_otlp_trace_exporter_builder_set_compression`, bringing Traces exporter selection to
@@ -74,6 +75,12 @@
   deliberately no force-flush callback, because the pinned `LogExporter` trait has no
   force-flush operation, and a failing export callback is only observable to the C caller under
   the batch processor; see `LOGS_COMPLIANCE.md`.
+
+### Changed
+
+- When no transport setter is called, standard OTLP protocol variables now select the
+  transport. A configured transport that was not compiled in fails closed with
+  `OTEL_STATUS_INVALID_CONFIG` instead of silently retaining HTTP/protobuf.
 
 ### Fixed
 

@@ -29,6 +29,9 @@ highest `service.name` precedence.
 | --- | --- | --- |
 | `OTEL_TRACES_SAMPLER` | Supported | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, and `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | Supported | Ratio for the ratio-based samplers. |
+| `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT` | Supported | Maximum attributes retained on each span. Explicit `otel_span_limits_t` configuration wins. |
+| `OTEL_SPAN_EVENT_COUNT_LIMIT` | Supported | Maximum events retained on each span. Explicit `otel_span_limits_t` configuration wins. |
+| `OTEL_SPAN_LINK_COUNT_LIMIT` | Supported | Maximum links retained on each span. Explicit `otel_span_limits_t` configuration wins. |
 | `OTEL_BSP_MAX_QUEUE_SIZE` | Supported | Explicit batch-processor setter wins. |
 | `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | Supported | Explicit batch-processor setter wins. |
 | `OTEL_BSP_SCHEDULE_DELAY` | Supported | Milliseconds; explicit setter wins. |
@@ -49,6 +52,7 @@ highest `service.name` precedence.
 | --- | --- | --- |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Supported | Milliseconds; explicit periodic-reader interval wins. |
 | `OTEL_METRIC_EXPORT_TIMEOUT` | Async reader only | Supported by the optional async reader. The pinned blocking reader does not expose a cooperative export timeout. |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | Supported | `cumulative`, `delta`, or `lowmemory`; the explicit metric-exporter temporality setter wins. |
 
 ## OTLP exporters
 
@@ -75,6 +79,11 @@ features. `http/json` is not compiled into this SDK. A valid environment protoco
 transport is absent fails exporter construction with `OTEL_STATUS_INVALID_CONFIG`; it never
 silently selects a different transport.
 
+An invalid signal-specific protocol is warned about and treated as unset, after which the
+generic protocol is considered. For example, invalid `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` plus
+valid `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` selects gRPC. This is deliberate and matches the
+specification rule that invalid values are ignored.
+
 Header values may contain credentials and are never included in C SDK diagnostics. TLS
 certificate, client-certificate, client-key, and gRPC `insecure` environment variables are not
 implemented by the pinned OpenTelemetry Rust 0.32 exporters and are not claimed here.
@@ -83,6 +92,19 @@ The pinned exporter merges programmatic headers with environment headers. Avoid 
 same header key in both places: in Rust 0.32, the environment value wins that collision even
 though the general OpenTelemetry configuration rule gives programmatic configuration higher
 precedence. This is a documented pinned-dependency limitation, not a C FFI behavior.
+
+## Not supported
+
+These standard variables do not currently map to a C SDK capability:
+
+| Variable | Use instead / reason |
+| --- | --- |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | Export pipelines are assembled explicitly with C builders. Use `OTEL_SDK_DISABLED=true` to disable every signal, or omit a signal's processor/reader to disable only that signal. |
+| `OTEL_PROPAGATORS` | The current C API has no configurable propagator registry. |
+| `OTEL_ATTRIBUTE_COUNT_LIMIT`, `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`, `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT`, `OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT`, `OTEL_LINK_ATTRIBUTE_COUNT_LIMIT` | Not implemented by the pinned Rust SDK configuration. Count limits that have direct `otel_span_limits_t` fields can be set programmatically. |
+| `OTEL_METRICS_EXEMPLAR_FILTER` | The pinned Metrics SDK does not expose environment selection for exemplar filtering. |
+| `OTEL_BSP_MAX_CONCURRENT_EXPORTS` | The stable thread-based span processor exports serially; the upstream variable applies only to its experimental async processor. |
+| `OTEL_LOG_LEVEL` | The C SDK does not yet expose a diagnostic callback or configurable internal logger. |
 
 ## Snapshot timing
 
