@@ -47,6 +47,9 @@ otel_status_t otel_batch_span_processor_builder_set_exporter(
 
 /* ---- Batch options (0 => environment/default resolution) ----------------- */
 
+/* Setter value 0 means "not explicitly configured". By contrast, the literal environment
+ * value OTEL_BSP_MAX_QUEUE_SIZE=0 is an explicit zero-capacity queue and drops spans. */
+
 /*
  * Maximum queue size. Zero uses OTEL_BSP_MAX_QUEUE_SIZE and then the default 2048. Bounded: a
  * non-zero value larger than an internal maximum is rejected with

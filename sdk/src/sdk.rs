@@ -13,7 +13,7 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::logs::{LogProcessor, SdkLoggerProvider};
@@ -47,6 +47,9 @@ const MAX_METRIC_READERS: usize = 64;
 const MAX_METRIC_VIEWS: usize = 1024;
 const MAX_LOG_PROCESSORS: usize = 64;
 const MAX_RESOURCE_ATTRIBUTES: usize = 1024;
+// One total best-effort budget across every never-installed span/log processor. Disabled SDK
+// construction must remain fast even if a processor/exporter is unhealthy.
+const DISABLED_PIPELINE_SHUTDOWN_BUDGET: Duration = Duration::from_millis(250);
 
 /// Opaque builder handle (`otel_sdk_builder_t`). Not thread-safe; confine to one thread.
 #[repr(C)]
@@ -807,6 +810,9 @@ pub unsafe extern "C" fn otel_sdk_build(
         let sampler = builder.sampler.take();
         let span_limits = builder.span_limits.take();
         let disabled = builder.disabled.unwrap_or_else(env_config::sdk_disabled);
+        let disabled_shutdown_deadline =
+            disabled.then(|| Instant::now() + DISABLED_PIPELINE_SHUTDOWN_BUDGET);
+        let mut disabled_shutdown_failures = 0usize;
         let resource = if disabled {
             Resource::builder_empty().build()
         } else {
@@ -825,7 +831,12 @@ pub unsafe extern "C" fn otel_sdk_build(
         }
         if disabled {
             for processor in processors {
-                let _ = processor.shutdown_with_timeout(Duration::from_secs(5));
+                let timeout = disabled_shutdown_deadline
+                    .expect("disabled shutdown deadline")
+                    .saturating_duration_since(Instant::now());
+                if processor.shutdown_with_timeout(timeout).is_err() {
+                    disabled_shutdown_failures += 1;
+                }
             }
         } else {
             for processor in processors {
@@ -843,6 +854,7 @@ pub unsafe extern "C" fn otel_sdk_build(
         let mut metric_runtime_guards = Vec::new();
         for reader in metric_readers {
             if disabled {
+                // The pinned MetricReader API has no timeout-bearing shutdown method.
                 reader.shutdown();
                 continue;
             }
@@ -882,8 +894,19 @@ pub unsafe extern "C" fn otel_sdk_build(
             }
         } else {
             for processor in log_processors {
-                let _ = processor.shutdown_with_timeout(Duration::from_secs(5));
+                let timeout = disabled_shutdown_deadline
+                    .expect("disabled shutdown deadline")
+                    .saturating_duration_since(Instant::now());
+                if processor.shutdown_with_timeout(timeout).is_err() {
+                    disabled_shutdown_failures += 1;
+                }
             }
+        }
+        if disabled_shutdown_failures != 0 {
+            env_config::warn(&format!(
+                "{disabled_shutdown_failures} transferred processor(s) did not shut down within \
+                 the disabled-pipeline startup budget"
+            ));
         }
         let logger_provider = logger_provider_builder.build();
         let sdk = into_raw(OtelSdk {

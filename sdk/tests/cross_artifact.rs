@@ -17,9 +17,9 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 #[cfg(feature = "otlp-grpc")]
-use std::process::{Output, Stdio};
+use std::process::Stdio;
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -598,7 +598,8 @@ int main(void){
             meb,(uint32_t)atoi(getenv("OTEL_TEST_METRICS_COMPRESSION")))!=0){
         result=77; goto cleanup;
     }
-    if (getenv("OTEL_TEST_METRICS_TEMPORALITY")){
+    if (getenv("OTEL_TEST_USE_ENV_CONFIG")==NULL &&
+        getenv("OTEL_TEST_METRICS_TEMPORALITY")){
         const char* temporality=getenv("OTEL_TEST_METRICS_TEMPORALITY");
         uint32_t preference=strcmp(temporality,"cumulative")==0?1:
                             strcmp(temporality,"delta")==0?2:3;
@@ -915,6 +916,16 @@ fn has_string_attribute(attributes: &[KeyValue], key: &str, expected: &str) -> b
     })
 }
 
+fn assert_harness_success(scenario: &str, run: &Output) {
+    assert!(
+        run.status.success(),
+        "{scenario} harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+}
+
 fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
     let requests = bodies
         .iter()
@@ -945,6 +956,21 @@ fn assert_snapshot_child_trace_relationship(bodies: &[Vec<u8>]) {
     assert!(
         correlated,
         "no exported child preserved the snapshot parent's trace ID and span ID"
+    );
+}
+
+fn assert_parent_span_has_no_attributes(bodies: &[Vec<u8>]) {
+    let parent = bodies
+        .iter()
+        .map(|body| ExportTraceServiceRequest::decode(body.as_slice()).expect("decode OTLP traces"))
+        .flat_map(|request| request.resource_spans)
+        .flat_map(|resource| resource.scope_spans)
+        .flat_map(|scope| scope.spans)
+        .find(|span| span.name == "parent")
+        .expect("environment-limit run must export its parent span");
+    assert!(
+        parent.attributes.is_empty(),
+        "OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT=0 did not remove the parent's attribute"
     );
 }
 
@@ -1258,19 +1284,19 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         String::from_utf8_lossy(&compile.stderr)
     );
 
-    let collector = start_mock();
-    let endpoint = format!("http://127.0.0.1:{}/v1/traces", collector.port);
-    let metrics_endpoint = format!("http://127.0.0.1:{}/v1/metrics", collector.port);
-
-    let run_harness = |extra_env: &[(&str, &str)]| {
+    let run_harness = |collector: &MockCollector, extra_env: &[(&str, &str)]| {
+        let endpoint = format!("http://127.0.0.1:{}/v1/traces", collector.port);
+        let metrics_endpoint = format!("http://127.0.0.1:{}/v1/metrics", collector.port);
         let mut command = Command::new(&out);
         command
             .env_remove("OTEL_SDK_DISABLED")
             .env_remove("OTEL_TRACES_SAMPLER")
             .env_remove("OTEL_BSP_MAX_QUEUE_SIZE")
+            .env_remove("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT")
+            .env_remove("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE")
             .env("OTEL_TEST_USE_ENV_CONFIG", "1")
-            .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &endpoint)
-            .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &metrics_endpoint)
+            .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
+            .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", metrics_endpoint)
             .env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
             .env("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf")
             .env("OTEL_EXPORTER_OTLP_TIMEOUT", "5000")
@@ -1282,10 +1308,42 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         command.output().expect("run harness")
     };
 
+    let run_isolated = |extra_env: &[(&str, &str)]| {
+        let collector = start_mock();
+        let metric_bodies = Arc::clone(&collector.metric_bodies);
+        let trace_bodies = Arc::clone(&collector.trace_bodies);
+        let output = run_harness(&collector, extra_env);
+        collector.stop.store(true, Ordering::Release);
+        collector.thread.join().expect("join isolated collector");
+        let metrics = metric_bodies.lock().unwrap().clone();
+        let traces = trace_bodies.lock().unwrap().clone();
+        (output, metrics, traces)
+    };
+
+    let collector = start_mock();
     let runs = ["cumulative", "delta", "low-memory"]
         .into_iter()
-        .map(|temporality| run_harness(&[("OTEL_TEST_METRICS_TEMPORALITY", temporality)]))
+        .map(|temporality| {
+            let environment_value = if temporality == "low-memory" {
+                "lowmemory"
+            } else {
+                temporality
+            };
+            run_harness(
+                &collector,
+                &[
+                    ("OTEL_TEST_METRICS_TEMPORALITY", temporality),
+                    (
+                        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+                        environment_value,
+                    ),
+                ],
+            )
+        })
         .collect::<Vec<_>>();
+    for (scenario, run) in ["cumulative", "delta", "low-memory"].into_iter().zip(&runs) {
+        assert_harness_success(scenario, run);
+    }
     // Wait (bounded) for the collector to receive the export. This avoids a fixed sleep that can
     // stop the mock too early under slow CI while still failing promptly if no POST arrives.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -1296,80 +1354,46 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // The subprocesses above deliberately omit every corresponding C setter. They therefore
-    // prove real upstream environment parsing for endpoint, timeout, and protocol. Exercise
-    // three additional setup variables behaviorally while the same split-cdylib collector is
-    // alive: disabled exports nothing; AlwaysOff suppresses traces but not metrics; and a zero
-    // BSP queue drops spans while leaving the independent Metrics pipeline operational.
-    std::thread::sleep(Duration::from_millis(100));
-    let base_metrics = collector.metric_bodies.lock().unwrap().len();
-    let base_traces = collector.trace_bodies.lock().unwrap().len();
+    collector.stop.store(true, Ordering::Release);
+    collector.thread.join().expect("join mock collector");
 
-    let disabled = run_harness(&[
+    // Each negative/limiting scenario owns a collector. Process exit completes processor
+    // shutdown, so an empty body list is deterministic evidence of no export rather than a
+    // fixed-time absence check against traffic from another scenario.
+    let (disabled, disabled_metrics, disabled_traces) = run_isolated(&[
         ("OTEL_TEST_METRICS_TEMPORALITY", "cumulative"),
         ("OTEL_SDK_DISABLED", "true"),
     ]);
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(collector.metric_bodies.lock().unwrap().len(), base_metrics);
-    assert_eq!(collector.trace_bodies.lock().unwrap().len(), base_traces);
+    assert_harness_success("OTEL_SDK_DISABLED", &disabled);
+    assert!(disabled_metrics.is_empty());
+    assert!(disabled_traces.is_empty());
 
-    let always_off = run_harness(&[
+    let (always_off, sampler_metrics, sampler_traces) = run_isolated(&[
         ("OTEL_TEST_METRICS_TEMPORALITY", "cumulative"),
         ("OTEL_TRACES_SAMPLER", "always_off"),
     ]);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while collector.metric_bodies.lock().unwrap().len() == base_metrics
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    std::thread::sleep(Duration::from_millis(100));
-    let sampler_metrics = collector.metric_bodies.lock().unwrap().len();
-    assert!(sampler_metrics > base_metrics);
-    assert_eq!(collector.trace_bodies.lock().unwrap().len(), base_traces);
+    assert_harness_success("OTEL_TRACES_SAMPLER", &always_off);
+    assert!(!sampler_metrics.is_empty());
+    assert!(sampler_traces.is_empty());
 
-    let zero_queue = run_harness(&[
+    let (zero_queue, zero_queue_metrics, zero_queue_traces) = run_isolated(&[
         ("OTEL_TEST_METRICS_TEMPORALITY", "cumulative"),
         ("OTEL_BSP_MAX_QUEUE_SIZE", "0"),
     ]);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while collector.metric_bodies.lock().unwrap().len() == sampler_metrics
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(collector.metric_bodies.lock().unwrap().len() > sampler_metrics);
-    assert_eq!(collector.trace_bodies.lock().unwrap().len(), base_traces);
+    assert_harness_success("OTEL_BSP_MAX_QUEUE_SIZE", &zero_queue);
+    assert!(!zero_queue_metrics.is_empty());
+    assert!(zero_queue_traces.is_empty());
 
-    collector.stop.store(true, Ordering::Release);
-    collector.thread.join().expect("join mock collector");
+    let (span_limit, _, span_limit_traces) = run_isolated(&[
+        ("OTEL_TEST_METRICS_TEMPORALITY", "cumulative"),
+        ("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "0"),
+    ]);
+    assert_harness_success("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", &span_limit);
+    assert_parent_span_has_no_attributes(&span_limit_traces);
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
 
-    for (scenario, run) in ["cumulative", "delta", "low-memory"].into_iter().zip(&runs) {
-        assert!(
-            run.status.success(),
-            "{scenario} harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
-            run.status.code(),
-            String::from_utf8_lossy(&run.stdout),
-            String::from_utf8_lossy(&run.stderr),
-        );
-    }
-    for (scenario, run) in [
-        ("OTEL_SDK_DISABLED", &disabled),
-        ("OTEL_TRACES_SAMPLER", &always_off),
-        ("OTEL_BSP_MAX_QUEUE_SIZE", &zero_queue),
-    ] {
-        assert!(
-            run.status.success(),
-            "{scenario} environment harness exited with failure ({:?}):\nstdout: {}\nstderr: {}",
-            run.status.code(),
-            String::from_utf8_lossy(&run.stdout),
-            String::from_utf8_lossy(&run.stderr),
-        );
-    }
     let received = collector.bytes.load(Ordering::Relaxed);
     assert!(
         received > 0,

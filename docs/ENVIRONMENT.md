@@ -32,7 +32,7 @@ highest `service.name` precedence.
 | `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT` | Supported | Maximum attributes retained on each span. Explicit `otel_span_limits_t` configuration wins. |
 | `OTEL_SPAN_EVENT_COUNT_LIMIT` | Supported | Maximum events retained on each span. Explicit `otel_span_limits_t` configuration wins. |
 | `OTEL_SPAN_LINK_COUNT_LIMIT` | Supported | Maximum links retained on each span. Explicit `otel_span_limits_t` configuration wins. |
-| `OTEL_BSP_MAX_QUEUE_SIZE` | Supported | Explicit batch-processor setter wins. |
+| `OTEL_BSP_MAX_QUEUE_SIZE` | Supported | Explicit batch-processor setter wins. Environment value `0` creates a zero-capacity queue that drops spans; this differs from passing `0` to the C setter, which means environment/default resolution. |
 | `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | Supported | Explicit batch-processor setter wins. |
 | `OTEL_BSP_SCHEDULE_DELAY` | Supported | Milliseconds; explicit setter wins. |
 | `OTEL_BSP_EXPORT_TIMEOUT` | Limited | Parsed by the pinned upstream configuration, but its stable synchronous batch processor cannot enforce a per-export timeout. |

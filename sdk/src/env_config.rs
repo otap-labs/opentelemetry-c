@@ -20,7 +20,7 @@ pub(crate) enum OtlpProtocol {
     Grpc,
 }
 
-fn warn(message: &str) {
+pub(crate) fn warn(message: &str) {
     // Diagnostics are best-effort until the SDK exposes a diagnostic callback. Never turn a
     // harmless configuration warning into a failed C API call when stderr is closed/broken.
     let _ = writeln!(std::io::stderr(), "OpenTelemetry C SDK warning: {message}");
