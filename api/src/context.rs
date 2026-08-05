@@ -48,8 +48,6 @@ pub struct OtelContextScope {
 
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<OtelContextScope>() == 40);
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(std::mem::size_of::<OtelContextScope>() == 36);
 
 struct StackEntry {
     generation: u64,

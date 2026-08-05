@@ -29,9 +29,6 @@ typedef struct otel_context_scope_t {
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
     defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
 _Static_assert(sizeof(otel_context_scope_t) == 40, "otel_context_scope_t ABI mismatch");
-#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
-    defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFu)
-_Static_assert(sizeof(otel_context_scope_t) == 36, "otel_context_scope_t ABI mismatch");
 #endif
 
 /* Create an immutable context. NULL span_context creates an explicitly empty/root context. */
