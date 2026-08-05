@@ -27,6 +27,7 @@ use opentelemetry_c_abi::{
 };
 
 use crate::api_ffi;
+use crate::env_config;
 use crate::error::{clear_last_error, fail, fail_owned, status_from_export_pipeline_error};
 use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, take,
@@ -64,15 +65,26 @@ pub struct OtelSdkBuilder {
     // batch processor makes its worker exit without guaranteeing a queue drain or exporter
     // shutdown.
     log_processors: Vec<LogProcessorImpl>,
-    // Optional root sampler; `None` uses the SDK's spec default (ParentBased(AlwaysOn)).
+    // Optional root sampler; `None` uses the environment and then the spec default.
     sampler: Option<Sampler>,
-    // Optional span limits; `None` uses the SDK's spec defaults (128 for every bound).
+    // Optional span limits; `None` uses environment limits and then spec defaults.
     span_limits: Option<SpanLimits>,
+    // Programmatic override for OTEL_SDK_DISABLED. None resolves the environment at build time.
+    disabled: Option<bool>,
 }
 
 enum MetricReaderImpl {
     Periodic(PeriodicMetricReaderImpl),
     Manual(SharedManualMetricReader),
+}
+
+impl MetricReaderImpl {
+    fn shutdown(self) {
+        match self {
+            Self::Periodic(reader) => reader.shutdown(),
+            Self::Manual(reader) => reader.shutdown_unregistered(),
+        }
+    }
 }
 
 impl HasHandleHeader for OtelSdkBuilder {
@@ -88,10 +100,7 @@ impl HasHandleHeader for OtelSdkBuilder {
 impl Drop for OtelSdkBuilder {
     fn drop(&mut self) {
         for reader in self.metric_readers.drain(..) {
-            match reader {
-                MetricReaderImpl::Periodic(reader) => reader.shutdown(),
-                MetricReaderImpl::Manual(reader) => reader.shutdown_unregistered(),
-            }
+            reader.shutdown();
         }
     }
 }
@@ -197,7 +206,8 @@ fn optional_millis(millis: u64) -> Option<Duration> {
 
 // ---- Builder lifecycle -----------------------------------------------------
 
-/// Create a new SDK builder with spec-default settings. Release with `otel_sdk_builder_destroy()`.
+/// Create a new SDK builder with environment/default settings. Release with
+/// `otel_sdk_builder_destroy()`.
 #[no_mangle]
 pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
     guard_ptr(|| {
@@ -212,6 +222,7 @@ pub extern "C" fn otel_sdk_builder_new() -> *mut OtelSdkBuilder {
             log_processors: Vec::new(),
             sampler: None,
             span_limits: None,
+            disabled: None,
         })
     })
 }
@@ -381,6 +392,26 @@ pub unsafe extern "C" fn otel_sdk_builder_set_service_name(
     }
 }
 
+/// Override `OTEL_SDK_DISABLED` for this builder. Zero enables the SDK; non-zero disables it.
+///
+/// A disabled SDK builds valid no-export providers: transferred processors/readers are shut
+/// down and consumed, Traces uses `AlwaysOff`, and Metrics/Logs install no readers/processors.
+///
+/// # Safety
+/// `builder` must satisfy the handle contract.
+#[no_mangle]
+pub unsafe extern "C" fn otel_sdk_builder_set_disabled(
+    builder: *mut OtelSdkBuilder,
+    disabled: u32,
+) -> OtelStatus {
+    unsafe {
+        with_builder(builder, |builder| {
+            builder.disabled = Some(disabled != 0);
+            OtelStatus::Ok
+        })
+    }
+}
+
 /// Add an arbitrary resource attribute.
 ///
 /// # Safety
@@ -476,8 +507,8 @@ fn base_sampler(kind: u32, ratio: f64) -> Result<Sampler, OtelStatus> {
     }
 }
 
-/// Configure the SDK's root sampler. Passing NULL leaves the SDK's spec default in place
-/// (`ParentBased(AlwaysOn)`). Overrides any previously set sampler.
+/// Configure the SDK's root sampler. Passing NULL clears the programmatic override so
+/// `OTEL_TRACES_SAMPLER` and then the spec default apply.
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract; `config`, when non-NULL, must point to a valid
@@ -594,8 +625,8 @@ const _: () = {
 const OTEL_SPAN_LIMITS_REQUIRED_SIZE: usize =
     std::mem::offset_of!(OtelSpanLimits, reserved) + std::mem::size_of::<u32>();
 
-/// Configure the tracer provider's span limits. Passing NULL clears any override and restores
-/// the SDK defaults (128 for every bound). Overrides any previously set limits.
+/// Configure the tracer provider's span limits. Passing NULL clears the programmatic override
+/// so standard span-limit environment variables and then SDK defaults apply.
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract; `config`, when non-NULL, must point to a valid
@@ -732,11 +763,13 @@ fn vtable_to_key_value(kv: &OtelKeyValue) -> Result<KeyValue, OtelStatus> {
 
 fn build_resource(builder: &OtelSdkBuilder) -> Resource {
     let mut resource = Resource::builder();
-    if let Some(name) = &builder.service_name {
-        resource = resource.with_service_name(name.clone());
-    }
     if !builder.resource_attributes.is_empty() {
         resource = resource.with_attributes(builder.resource_attributes.iter().cloned());
+    }
+    // The dedicated programmatic service name has highest precedence, matching
+    // OTEL_SERVICE_NAME over service.name in OTEL_RESOURCE_ATTRIBUTES.
+    if let Some(name) = &builder.service_name {
+        resource = resource.with_service_name(name.clone());
     }
     resource.build()
 }
@@ -771,24 +804,44 @@ pub unsafe extern "C" fn otel_sdk_build(
         let metric_readers = std::mem::take(&mut builder.metric_readers);
         let metric_views = std::mem::take(&mut builder.metric_views);
         let log_processors = std::mem::take(&mut builder.log_processors);
-        let resource = build_resource(builder);
+        let sampler = builder.sampler.take();
+        let span_limits = builder.span_limits.take();
+        let disabled = builder.disabled.unwrap_or_else(env_config::sdk_disabled);
+        let resource = if disabled {
+            Resource::builder_empty().build()
+        } else {
+            build_resource(builder)
+        };
         let mut provider_builder = SdkTracerProvider::builder().with_resource(resource);
-        if let Some(sampler) = builder.sampler.take() {
+        if disabled {
+            provider_builder = provider_builder.with_sampler(Sampler::AlwaysOff);
+        } else if let Some(sampler) = sampler {
             provider_builder = provider_builder.with_sampler(sampler);
         }
-        if let Some(limits) = builder.span_limits.take() {
-            provider_builder = provider_builder.with_span_limits(limits);
+        if !disabled {
+            if let Some(limits) = span_limits {
+                provider_builder = provider_builder.with_span_limits(limits);
+            }
         }
         for processor in processors {
-            provider_builder = provider_builder.with_span_processor(processor);
+            if !disabled {
+                provider_builder = provider_builder.with_span_processor(processor);
+            }
         }
         let provider = provider_builder.build();
         #[allow(unused_mut)]
-        let mut meter_provider_builder =
-            SdkMeterProvider::builder().with_resource(build_resource(builder));
+        let mut meter_provider_builder = SdkMeterProvider::builder().with_resource(if disabled {
+            Resource::builder_empty().build()
+        } else {
+            build_resource(builder)
+        });
         #[cfg(feature = "metrics-async-runtime")]
         let mut metric_runtime_guards = Vec::new();
         for reader in metric_readers {
+            if disabled {
+                reader.shutdown();
+                continue;
+            }
             match reader {
                 MetricReaderImpl::Periodic(PeriodicMetricReaderImpl::Reader(reader)) => {
                     meter_provider_builder = meter_provider_builder.with_reader(reader);
@@ -807,15 +860,22 @@ pub unsafe extern "C" fn otel_sdk_build(
                 }
             }
         }
-        for view in metric_views {
-            meter_provider_builder =
-                meter_provider_builder.with_view(move |instrument| view.apply(instrument));
+        if !disabled {
+            for view in metric_views {
+                meter_provider_builder =
+                    meter_provider_builder.with_view(move |instrument| view.apply(instrument));
+            }
         }
         let meter_provider = meter_provider_builder.build();
-        let mut logger_provider_builder =
-            SdkLoggerProvider::builder().with_resource(build_resource(builder));
-        for processor in log_processors {
-            logger_provider_builder = processor.install(logger_provider_builder);
+        let mut logger_provider_builder = SdkLoggerProvider::builder().with_resource(if disabled {
+            Resource::builder_empty().build()
+        } else {
+            build_resource(builder)
+        });
+        if !disabled {
+            for processor in log_processors {
+                logger_provider_builder = processor.install(logger_provider_builder);
+            }
         }
         let logger_provider = logger_provider_builder.build();
         let sdk = into_raw(OtelSdk {
@@ -1493,6 +1553,44 @@ mod tests {
             assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
             wait_for_exporter_drop(&dropped);
             assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn explicitly_disabled_sdk_consumes_and_shuts_down_pipeline() {
+        unsafe {
+            let LifecycleReader {
+                handle: reader,
+                drops,
+                shutdowns,
+                dropped,
+            } = lifecycle_reader();
+            let builder = otel_sdk_builder_new();
+            assert_eq!(
+                otel_sdk_builder_add_metric_reader(builder, reader),
+                OtelStatus::Ok
+            );
+            assert_eq!(otel_sdk_builder_set_disabled(builder, 1), OtelStatus::Ok);
+
+            let mut sdk = std::ptr::null_mut();
+            assert_eq!(otel_sdk_build(builder, &mut sdk), OtelStatus::Ok);
+            assert!(!sdk.is_null());
+            assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+            wait_for_exporter_drop(&dropped);
+            assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
+
+            otel_sdk_builder_destroy(builder);
+            otel_sdk_destroy(sdk);
+        }
+    }
+
+    #[test]
+    fn disabled_programmatic_false_is_recorded_as_an_environment_override() {
+        unsafe {
+            let builder = otel_sdk_builder_new();
+            assert_eq!(otel_sdk_builder_set_disabled(builder, 0), OtelStatus::Ok);
+            assert_eq!((*builder).disabled, Some(false));
+            otel_sdk_builder_destroy(builder);
         }
     }
 

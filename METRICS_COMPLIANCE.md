@@ -13,6 +13,7 @@ experimental `0.x` C ABI.
 | Instrument validation | Implemented | Name, unit, UTF-8, options structure size, and explicit histogram boundary validation occurs before SDK dispatch. |
 | Instrumentation scope | Implemented | Versioned meter options carry name, version, schema URL, and uniquely keyed typed attributes into the upstream owned `InstrumentationScope`. |
 | SDK pipeline | Implemented | Independent `SdkMeterProvider`, multiple periodic/manual readers, resource/scope propagation, force flush, and shutdown. |
+| Environment configuration | Implemented | SDK disablement, resource/service variables, OTLP generic/signal-specific settings, and periodic export interval. Export timeout is supported by the optional async reader only; see `docs/ENVIRONMENT.md`. |
 | Custom export | Implemented | C callback-backed push exporter with complete resource/scope/metric/point/exemplar visitation, scalar/array attributes, exact callback-state destruction, and callback-scoped batch tokens. |
 | Manual collection | Implemented | Worker-free manual reader; `otel_sdk_metrics_force_flush` performs one synchronous collection/export cycle on the caller thread. |
 | Async periodic collection | Implemented | Optional SDK-owned single-worker Tokio runtime, upstream cooperative export-timeout mapping, multiple-reader support, and deterministic runtime disposal. Blocking remains the default. |

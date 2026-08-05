@@ -146,7 +146,7 @@ where
     })
 }
 
-/// Set the maximum queue size (`0` == spec default of 2048). An oversized non-zero value is
+/// Set the maximum queue size (`0` == environment/default). An oversized non-zero value is
 /// rejected with `OTEL_STATUS_INVALID_ARGUMENT` (never clamped).
 ///
 /// # Safety
@@ -173,7 +173,7 @@ pub unsafe extern "C" fn otel_batch_span_processor_builder_set_max_queue_size(
     }
 }
 
-/// Set the scheduled delay between exports in milliseconds (`0` == spec default).
+/// Set the scheduled delay between exports in milliseconds (`0` == environment/default).
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract.
@@ -190,7 +190,7 @@ pub unsafe extern "C" fn otel_batch_span_processor_builder_set_scheduled_delay_m
     }
 }
 
-/// Set the maximum export batch size (`0` == spec default of 512). Oversized values are
+/// Set the maximum export batch size (`0` == environment/default). Oversized values are
 /// rejected; the SDK also caps the effective value at the max queue size.
 ///
 /// # Safety
@@ -217,11 +217,10 @@ pub unsafe extern "C" fn otel_batch_span_processor_builder_set_max_export_batch_
     }
 }
 
-/// Set the per-export timeout in milliseconds (`0` == spec default of 30000).
+/// Set the per-export timeout in milliseconds.
 ///
-/// Note: the current stable synchronous batch span processor does not apply a programmatic
-/// per-export timeout; it uses the SDK default (overridable via the `OTEL_BSP_EXPORT_TIMEOUT`
-/// environment variable). This value is accepted and validated so the API shape is stable.
+/// Note: the current stable synchronous batch span processor does not enforce this value or
+/// `OTEL_BSP_EXPORT_TIMEOUT`. This value is accepted and validated so the API shape is stable.
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract.
@@ -252,8 +251,8 @@ fn build_processor(config: &BatchConfig, exporter: TraceExporterImpl) -> BatchSp
     // NOTE: the stable synchronous `BatchSpanProcessor` does not expose a programmatic
     // per-export timeout — `BatchConfigBuilder::with_max_export_timeout` is gated behind the
     // SDK's experimental async-runtime feature. The value is accepted and validated for a
-    // stable API shape; on the stable processor the export timeout uses the SDK default
-    // (30000 ms, overridable via the `OTEL_BSP_EXPORT_TIMEOUT` environment variable).
+    // stable API shape. The same upstream limitation means OTEL_BSP_EXPORT_TIMEOUT is parsed
+    // into the batch config but not enforced by this processor implementation.
     let _ = config.export_timeout;
     BatchSpanProcessor::builder(exporter)
         .with_batch_config(batch.build())

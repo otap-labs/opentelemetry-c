@@ -256,7 +256,7 @@ where
 }
 
 /// Set the maximum number of records buffered before new records are dropped
-/// (`0` == SDK default).
+/// (`0` == environment/default).
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract.
@@ -273,7 +273,7 @@ pub unsafe extern "C" fn otel_batch_log_processor_builder_set_max_queue_size(
     }
 }
 
-/// Set the maximum number of records exported per batch (`0` == SDK default).
+/// Set the maximum number of records exported per batch (`0` == environment/default).
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract.
@@ -291,7 +291,7 @@ pub unsafe extern "C" fn otel_batch_log_processor_builder_set_max_export_batch_s
     }
 }
 
-/// Set the delay between scheduled export cycles in milliseconds (`0` == SDK default).
+/// Set the delay between scheduled export cycles in milliseconds (`0` == environment/default).
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract.

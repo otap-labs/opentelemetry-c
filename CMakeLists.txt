@@ -348,6 +348,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/docs/PACKAGING.md")
         DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/opentelemetry-c")
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/docs/ENVIRONMENT.md")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/ENVIRONMENT.md"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/opentelemetry-c")
+endif()
+
 foreach(_compliance METRICS_COMPLIANCE LOGS_COMPLIANCE TRACES_COMPLIANCE)
     set(_cf "${CMAKE_CURRENT_SOURCE_DIR}/${_compliance}.md")
     if(EXISTS "${_cf}")

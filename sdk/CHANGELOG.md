@@ -4,6 +4,11 @@
 
 ### Added
 
+- Standard environment autoconfiguration for SDK disablement, resources, samplers, batch
+  processors, periodic Metrics readers, and OTLP exporter endpoint/protocol/header/timeout
+  settings. `otel_sdk_builder_set_disabled` provides the direct programmatic equivalent for
+  `OTEL_SDK_DISABLED`; explicit builder settings override environment values except for the
+  documented Rust 0.32 duplicate-header limitation.
 - OTLP gRPC/tonic transport for Traces plus
   `otel_otlp_trace_exporter_builder_set_transport` and
   `otel_otlp_trace_exporter_builder_set_compression`, bringing Traces exporter selection to

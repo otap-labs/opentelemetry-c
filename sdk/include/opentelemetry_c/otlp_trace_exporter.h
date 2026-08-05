@@ -29,7 +29,7 @@ typedef struct otel_otlp_trace_exporter_builder_t otel_otlp_trace_exporter_build
 
 typedef uint32_t otel_otlp_trace_transport_t;
 enum {
-    /* Default. Endpoint normally includes the signal path, e.g. /v1/traces. */
+    /* Default when no protocol environment variable is set. */
     OTEL_OTLP_TRACE_TRANSPORT_HTTP_PROTOBUF = 0,
     /* Endpoint is normally an authority, e.g. http://localhost:4317. */
     OTEL_OTLP_TRACE_TRANSPORT_GRPC = 1
@@ -56,9 +56,10 @@ otel_status_t otel_otlp_trace_exporter_builder_set_endpoint(
     otel_otlp_trace_exporter_builder_t* builder, otel_string_view_t endpoint);
 
 /*
- * Select the transport explicitly; HTTP/protobuf is the default. The requested transport must
- * be compiled into the SDK or build returns OTEL_STATUS_INVALID_CONFIG. Transport is never
- * inferred from endpoint syntax.
+ * Select the transport explicitly. Without this call, the builder reads
+ * OTEL_EXPORTER_OTLP_TRACES_PROTOCOL, then OTEL_EXPORTER_OTLP_PROTOCOL, and finally defaults
+ * to HTTP/protobuf. The requested transport must be compiled into the SDK or build returns
+ * OTEL_STATUS_INVALID_CONFIG. Transport is never inferred from endpoint syntax.
  */
 otel_status_t otel_otlp_trace_exporter_builder_set_transport(
     otel_otlp_trace_exporter_builder_t* builder, otel_otlp_trace_transport_t transport);
@@ -84,7 +85,9 @@ otel_status_t otel_otlp_trace_exporter_builder_add_header(
     otel_otlp_trace_exporter_builder_t* builder, otel_string_view_t key,
     otel_string_view_t value);
 
-/* Set the per-request export timeout in milliseconds (0 => exporter default). */
+/* Set the per-request export timeout in milliseconds. Zero leaves it unset so
+ * OTEL_EXPORTER_OTLP_TRACES_TIMEOUT, OTEL_EXPORTER_OTLP_TIMEOUT, and then the exporter default
+ * apply. */
 otel_status_t otel_otlp_trace_exporter_builder_set_timeout_millis(
     otel_otlp_trace_exporter_builder_t* builder, uint64_t timeout_millis);
 

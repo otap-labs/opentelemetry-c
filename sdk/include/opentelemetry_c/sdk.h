@@ -123,13 +123,19 @@ typedef struct otel_sdk_t otel_sdk_t;
 
 /* ---- Builder lifecycle ---------------------------------------------------- */
 
-/* Create a new SDK builder with spec-default settings. NULL only on allocation
+/* Create a new SDK builder with environment/default settings. NULL only on allocation
  * failure. Release with otel_sdk_builder_destroy(). */
 otel_sdk_builder_t* otel_sdk_builder_new(void);
 
 /* Destroy an SDK builder (no-op on NULL). Frees any span processors and Metrics readers
  * transferred to the builder but not yet consumed by otel_sdk_build(). */
 void otel_sdk_builder_destroy(otel_sdk_builder_t* builder);
+
+/* Override OTEL_SDK_DISABLED for this builder. Zero enables the SDK; non-zero disables it.
+ * Without this call, otel_sdk_build() reads OTEL_SDK_DISABLED at build time. A disabled SDK
+ * returns valid no-export providers and consumes/shuts down transferred pipeline components. */
+otel_status_t otel_sdk_builder_set_disabled(otel_sdk_builder_t* builder,
+                                            otel_bool_t disabled);
 
 /* ---- Resource ------------------------------------------------------------- */
 
@@ -187,8 +193,8 @@ _Static_assert(sizeof(otel_sampler_config_t) == 32, "otel_sampler_config_t ABI m
 
 /*
  * Configure the root sampler used by the tracer provider. Passing a NULL `config` clears any
- * override and restores the SDK default (ParentBased(AlwaysOn)). Calling this repeatedly
- * replaces the previously configured sampler.
+ * programmatic override so OTEL_TRACES_SAMPLER and then the SDK default
+ * (ParentBased(AlwaysOn)) apply. Calling this repeatedly replaces the previous override.
  *
  * Validation: `struct_size` must be at least offsetof(parent_based_root_type); reserved fields
  * must be zero; `ratio` must be within [0, 1] for ratio-based (root) samplers; the parent-based
@@ -236,8 +242,8 @@ _Static_assert(sizeof(otel_span_limits_t) == 32, "otel_span_limits_t ABI mismatc
 
 /*
  * Configure the span limits used by the tracer provider. Passing a NULL `config` clears any
- * override and restores the SDK defaults (128 for every bound). Calling this repeatedly
- * replaces the previously configured limits.
+ * programmatic override so standard span-limit environment variables and then SDK defaults
+ * (128 for every bound) apply. Calling this repeatedly replaces the previous override.
  *
  * Validation: `struct_size` must cover the full initial layout (through `reserved`) and the
  * `reserved` field must be zero.

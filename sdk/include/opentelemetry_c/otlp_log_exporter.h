@@ -42,9 +42,10 @@ otel_status_t otel_otlp_log_exporter_builder_set_endpoint(
     otel_otlp_log_exporter_builder_t* builder, otel_string_view_t endpoint);
 
 /*
- * Select the transport explicitly; HTTP/protobuf is the default. The requested transport must
- * be compiled into the SDK or build returns OTEL_STATUS_INVALID_CONFIG. Transport is never
- * inferred from endpoint syntax.
+ * Select the transport explicitly. Without this call, the builder reads
+ * OTEL_EXPORTER_OTLP_LOGS_PROTOCOL, then OTEL_EXPORTER_OTLP_PROTOCOL, and finally defaults to
+ * HTTP/protobuf. The requested transport must be compiled into the SDK or build returns
+ * OTEL_STATUS_INVALID_CONFIG. Transport is never inferred from endpoint syntax.
  */
 otel_status_t otel_otlp_log_exporter_builder_set_transport(
     otel_otlp_log_exporter_builder_t* builder, otel_otlp_log_transport_t transport);
@@ -69,7 +70,9 @@ otel_status_t otel_otlp_log_exporter_builder_add_header(
     otel_otlp_log_exporter_builder_t* builder,
     otel_string_view_t key, otel_string_view_t value);
 
-/* Per-request timeout in milliseconds (0 == exporter default). */
+/* Per-request timeout in milliseconds. Zero leaves it unset so
+ * OTEL_EXPORTER_OTLP_LOGS_TIMEOUT, OTEL_EXPORTER_OTLP_TIMEOUT, and then the exporter default
+ * apply. */
 otel_status_t otel_otlp_log_exporter_builder_set_timeout_millis(
     otel_otlp_log_exporter_builder_t* builder, uint64_t timeout_millis);
 

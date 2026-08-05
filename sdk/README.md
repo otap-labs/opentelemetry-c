@@ -197,11 +197,18 @@ tonic or gRPC exporter dependencies, and gRPC-only builds contain no reqwest dep
 Reqwest 0.13 itself still resolves Tokio transitively even for its blocking client; issue #13
 does not add or use an SDK-owned Tokio runtime on the HTTP path.
 
-Metrics transport is selected only by
-`otel_otlp_metric_exporter_builder_set_transport`; endpoint syntax never changes transport.
+Transport is selected explicitly by each OTLP exporter builder when its setter is called;
+otherwise the signal-specific and generic OTLP protocol environment variables are consulted.
+Endpoint syntax never changes transport.
 HTTP endpoints normally include `/v1/metrics`, while gRPC endpoints normally contain only
 scheme and authority, such as `http://localhost:4317`. Programmatic endpoints override the
 upstream OTLP environment endpoint.
+
+Resources, built-in samplers, batch processors, periodic Metrics readers, and OTLP exporters
+honor their standard environment variables when no programmatic override is supplied.
+`OTEL_SDK_DISABLED=true` produces valid no-export providers and can be overridden with
+`otel_sdk_builder_set_disabled`. See [`docs/ENVIRONMENT.md`](../docs/ENVIRONMENT.md) for the
+complete support and precedence table.
 
 The existing header setter maps to HTTP headers or validated ASCII gRPC metadata. Duplicate
 keys are rejected case-insensitively. Binary `-bin` metadata is unsupported, and diagnostics

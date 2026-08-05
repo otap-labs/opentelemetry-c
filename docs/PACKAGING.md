@@ -59,6 +59,7 @@ After `cmake --install`, the prefix contains:
         SECURITY.md
         LICENSE
         BUILDING.md
+        ENVIRONMENT.md
         PACKAGING.md
 ```
 

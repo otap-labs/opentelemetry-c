@@ -55,9 +55,9 @@ otel_status_t otel_simple_log_processor_create(otel_log_exporter_t* exporter,
 
 /* ---- Batch log processor -------------------------------------------------- */
 
-/* Create a batch log-processor builder with spec-default settings. NULL only on allocation
- * failure. A builder is NOT thread-safe; confine it to a single thread. Release with
- * otel_batch_log_processor_builder_destroy(). */
+/* Create a batch log-processor builder with environment/default settings. NULL only on
+ * allocation failure. A builder is NOT thread-safe; confine it to a single thread. Release
+ * with otel_batch_log_processor_builder_destroy(). */
 otel_batch_log_processor_builder_t* otel_batch_log_processor_builder_new(void);
 
 /* Destroy a batch log-processor builder (no-op on NULL). Frees an exporter that was
@@ -72,16 +72,19 @@ void otel_batch_log_processor_builder_destroy(otel_batch_log_processor_builder_t
 otel_status_t otel_batch_log_processor_builder_set_exporter(
     otel_batch_log_processor_builder_t* builder, otel_log_exporter_t* exporter);
 
-/* Maximum number of records buffered before new records are dropped (0 == SDK default). */
+/* Maximum number of records buffered before new records are dropped. Zero uses
+ * OTEL_BLRP_MAX_QUEUE_SIZE and then the SDK default. */
 otel_status_t otel_batch_log_processor_builder_set_max_queue_size(
     otel_batch_log_processor_builder_t* builder, size_t max_queue_size);
 
-/* Maximum records exported per batch (0 == SDK default). Must not exceed the queue size when
- * both are set explicitly, or build returns OTEL_STATUS_INVALID_CONFIG. */
+/* Maximum records exported per batch. Zero uses OTEL_BLRP_MAX_EXPORT_BATCH_SIZE and then the
+ * SDK default. Must not exceed the queue size when both are set explicitly, or build returns
+ * OTEL_STATUS_INVALID_CONFIG. */
 otel_status_t otel_batch_log_processor_builder_set_max_export_batch_size(
     otel_batch_log_processor_builder_t* builder, size_t max_export_batch_size);
 
-/* Delay between scheduled exports, in milliseconds (0 == SDK default). */
+/* Delay between scheduled exports, in milliseconds. Zero uses OTEL_BLRP_SCHEDULE_DELAY and
+ * then the SDK default. */
 otel_status_t otel_batch_log_processor_builder_set_scheduled_delay_millis(
     otel_batch_log_processor_builder_t* builder, uint64_t scheduled_delay_millis);
 

@@ -36,13 +36,16 @@ void otel_periodic_metric_reader_builder_destroy(otel_periodic_metric_reader_bui
  */
 otel_status_t otel_periodic_metric_reader_builder_set_runtime(
     otel_periodic_metric_reader_builder_t* builder, otel_metric_reader_runtime_t runtime);
+/* Override OTEL_METRIC_EXPORT_INTERVAL. Without this call the upstream reader reads the
+ * environment variable and otherwise uses its 60000 ms default. */
 otel_status_t otel_periodic_metric_reader_builder_set_interval_millis(
     otel_periodic_metric_reader_builder_t* builder, uint64_t interval_millis);
 /*
- * Configure the upstream cooperative per-export timeout for the ASYNC reader. Zero selects the
- * upstream default. It is enforced only while an exporter future yields; it does not preempt
- * synchronous custom callback execution. A non-zero timeout with the BLOCKING reader is rejected
- * at build time.
+ * Configure the upstream cooperative per-export timeout for the ASYNC reader, overriding
+ * OTEL_METRIC_EXPORT_TIMEOUT. Zero selects environment/default resolution. It is enforced only
+ * while an exporter future yields; it does not preempt synchronous custom callback execution.
+ * A non-zero timeout with the BLOCKING reader is rejected at build time. The blocking reader
+ * does not support OTEL_METRIC_EXPORT_TIMEOUT in the pinned Rust SDK.
  */
 otel_status_t otel_periodic_metric_reader_builder_set_timeout_millis(
     otel_periodic_metric_reader_builder_t* builder, uint64_t timeout_millis);

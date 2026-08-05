@@ -218,6 +218,7 @@ int main(void) {
     otel_batch_span_processor_builder_destroy(pb);
 
     otel_sdk_builder_t* sb = otel_sdk_builder_new();
+    otel_sdk_builder_set_disabled(sb, OTEL_FALSE);
     otel_sdk_builder_set_service_name(sb, otel_cstr("hdr-check"));
     otel_sdk_builder_add_span_processor(sb, processor);
 

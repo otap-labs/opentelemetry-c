@@ -45,33 +45,35 @@ void otel_batch_span_processor_builder_destroy(otel_batch_span_processor_builder
 otel_status_t otel_batch_span_processor_builder_set_exporter(
     otel_batch_span_processor_builder_t* builder, otel_trace_exporter_t* exporter);
 
-/* ---- Batch options (0 => spec default) ------------------------------------ */
+/* ---- Batch options (0 => environment/default resolution) ----------------- */
 
 /*
- * Maximum queue size (default 2048). Bounded: a non-zero value larger than an internal
- * maximum is rejected with OTEL_STATUS_INVALID_ARGUMENT (not silently clamped), since the
- * processor preallocates a channel of this capacity.
+ * Maximum queue size. Zero uses OTEL_BSP_MAX_QUEUE_SIZE and then the default 2048. Bounded: a
+ * non-zero value larger than an internal maximum is rejected with
+ * OTEL_STATUS_INVALID_ARGUMENT (not silently clamped), since the processor preallocates a
+ * channel of this capacity.
  */
 otel_status_t otel_batch_span_processor_builder_set_max_queue_size(
     otel_batch_span_processor_builder_t* builder, size_t max_queue_size);
 
-/* Scheduled delay between exports, milliseconds (default 5000). */
+/* Scheduled delay between exports, milliseconds. Zero uses OTEL_BSP_SCHEDULE_DELAY and then
+ * the default 5000. */
 otel_status_t otel_batch_span_processor_builder_set_scheduled_delay_millis(
     otel_batch_span_processor_builder_t* builder, uint64_t delay_millis);
 
 /*
- * Maximum spans per export batch (default 512). Bounded like the queue size above: an
- * oversized non-zero value is rejected with OTEL_STATUS_INVALID_ARGUMENT. The effective
- * value is additionally capped by the SDK at the max queue size.
+ * Maximum spans per export batch. Zero uses OTEL_BSP_MAX_EXPORT_BATCH_SIZE and then the
+ * default 512. Bounded like the queue size above: an oversized non-zero value is rejected
+ * with OTEL_STATUS_INVALID_ARGUMENT. The effective value is additionally capped by the SDK
+ * at the max queue size.
  */
 otel_status_t otel_batch_span_processor_builder_set_max_export_batch_size(
     otel_batch_span_processor_builder_t* builder, size_t max_export_batch_size);
 
 /*
- * Per-export timeout, milliseconds (default 30000). Accepted and validated for a stable API
- * shape. Note: the current stable synchronous batch span processor does not apply a
- * programmatic per-export timeout; it uses the SDK default (overridable via the
- * OTEL_BSP_EXPORT_TIMEOUT environment variable).
+ * Per-export timeout, milliseconds. Accepted and validated for a stable API shape. The
+ * current stable synchronous batch span processor does not enforce either this value or
+ * OTEL_BSP_EXPORT_TIMEOUT. Configure the exporter request timeout to bound transport work.
  */
 otel_status_t otel_batch_span_processor_builder_set_export_timeout_millis(
     otel_batch_span_processor_builder_t* builder, uint64_t timeout_millis);

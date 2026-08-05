@@ -17,6 +17,7 @@ use opentelemetry_c_abi::{
     OtelHandleHeader, OtelStatus, OtelStringView, OTEL_HANDLE_KIND_OTLP_TRACE_EXPORTER_BUILDER,
 };
 
+use crate::env_config::{otlp_protocol, OtlpProtocol, OTEL_EXPORTER_OTLP_TRACES_PROTOCOL};
 use crate::error::{clear_last_error, fail, fail_abi, fail_owned};
 use crate::handle::{
     checked_mut, checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw,
@@ -56,6 +57,7 @@ struct OtlpExporterConfig {
     headers: Vec<(String, String)>,
     timeout: Option<Duration>,
     transport: Transport,
+    transport_set: bool,
     compression: Compression,
 }
 
@@ -182,7 +184,7 @@ pub unsafe extern "C" fn otel_otlp_trace_exporter_builder_add_header(
     }
 }
 
-/// Set the OTLP export request timeout in milliseconds (`0` == exporter default).
+/// Set the OTLP export request timeout in milliseconds (`0` == environment/default).
 ///
 /// # Safety
 /// `builder` must satisfy the handle contract.
@@ -220,6 +222,7 @@ pub unsafe extern "C" fn otel_otlp_trace_exporter_builder_set_transport(
                     )
                 }
             };
+            config.transport_set = true;
             OtelStatus::Ok
         })
     }
@@ -430,9 +433,17 @@ fn validate_compression_available(
 }
 
 fn build_exporter(config: &OtlpExporterConfig) -> Result<TraceExporterImpl, OtelStatus> {
-    validate_transport_available(config.transport)?;
-    validate_compression_available(config.transport, config.compression)?;
-    match config.transport {
+    let transport = if config.transport_set {
+        config.transport
+    } else {
+        match otlp_protocol(OTEL_EXPORTER_OTLP_TRACES_PROTOCOL) {
+            OtlpProtocol::HttpProtobuf => Transport::HttpProtobuf,
+            OtlpProtocol::Grpc => Transport::Grpc,
+        }
+    };
+    validate_transport_available(transport)?;
+    validate_compression_available(transport, config.compression)?;
+    match transport {
         Transport::HttpProtobuf => build_http_exporter(config),
         Transport::Grpc => build_grpc_exporter(config),
     }
@@ -537,11 +548,13 @@ mod tests {
     fn transport_and_compression_selectors_are_validated() {
         unsafe {
             let builder = otel_otlp_trace_exporter_builder_new();
+            assert!(!(*builder).config.transport_set);
             assert_eq!(
                 otel_otlp_trace_exporter_builder_set_transport(builder, 1),
                 OtelStatus::Ok
             );
             assert_eq!((*builder).config.transport, Transport::Grpc);
+            assert!((*builder).config.transport_set);
             assert_eq!(
                 otel_otlp_trace_exporter_builder_set_transport(builder, 0),
                 OtelStatus::Ok

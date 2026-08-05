@@ -29,7 +29,8 @@ artifacts from different tags must not be mixed. Linux and macOS shared-library 
 supported; Windows shared-library use and static deployment are unsupported.
 
 Build and install from source using [docs/BUILDING.md](docs/BUILDING.md) and
-[docs/PACKAGING.md](docs/PACKAGING.md). See
+[docs/PACKAGING.md](docs/PACKAGING.md). Runtime SDK configuration through standard
+OpenTelemetry variables is documented in [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md). See
 [VERSIONING.md](VERSIONING.md), [RELEASING.md](RELEASING.md),
 [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and the
 [examples](sdk/examples).
@@ -118,6 +119,8 @@ constraints.
   `event_name`/`target` omissions.
 - [Performance](docs/PERFORMANCE.md) — hot-path contract and opt-in benchmarks.
 - [Packaging](docs/PACKAGING.md) — CMake installation and consumer integration.
+- [Environment configuration](docs/ENVIRONMENT.md) — supported standard variables,
+  precedence, and pinned-SDK limitations.
 - [Versioning](VERSIONING.md) and [releasing](RELEASING.md) — compatibility and source-only
   release policy.
 - [Contributing](CONTRIBUTING.md) and [security](SECURITY.md).
