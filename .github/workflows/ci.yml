@@ -114,8 +114,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Build API and SDK shared libraries
-        run: cargo build --locked -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
+      - name: Build and verify exports, dependency, and local-scope loading
+        run: scripts/verify-macos-shared-libraries.sh
       - name: Test split artifacts
         env:
           CI: "1"
@@ -140,7 +140,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Build
-        run: cargo build --workspace --all-targets
+        run: |
+          cargo build -p opentelemetry-c-api
+          cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace --all-targets
       - name: Test SDK core (no default features)
@@ -154,5 +156,6 @@ jobs:
         run: cargo test -p opentelemetry-c-sdk --lib --all-features
       - name: Test split artifacts with OTLP gRPC Metrics
         run: |
-          cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
+          cargo build -p opentelemetry-c-api
+          cargo build -p opentelemetry-c-sdk --all-features
           cargo test -p opentelemetry-c-sdk --test cross_artifact --all-features

@@ -22,7 +22,7 @@ compare_symbols() {
   local actual
   actual="$(mktemp)"
   if [[ "$mode" == "defined" ]]; then
-    nm -D --defined-only "$library" | awk '{print $3}' | grep '^otel_' | sort > "$actual"
+    nm -D --defined-only "$library" | awk 'NF >= 3 {print $3}' | grep '^otel_' | sort > "$actual"
   else
     nm -D --undefined-only "$library" | awk '{print $2}' | grep '^otel_api_' | sort > "$actual"
   fi
@@ -46,7 +46,9 @@ verify_profile() {
   local sdk="$lib_dir/libopentelemetry_c_sdk.so"
 
   CARGO_TARGET_DIR="$target_dir" cargo build --locked \
-    -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features "${cargo_profile[@]}"
+    -p opentelemetry-c-api "${cargo_profile[@]}"
+  OTEL_C_API_LINK_DIR="$lib_dir" CARGO_TARGET_DIR="$target_dir" cargo build --locked \
+    -p opentelemetry-c-sdk --all-features "${cargo_profile[@]}"
 
   compare_symbols "$api" api/exported-symbols.txt defined
   compare_symbols "$sdk" sdk/exported-symbols.txt defined
@@ -66,13 +68,13 @@ verify_profile() {
   objdump -T "$sdk" | grep -q 'otel_sdk_set_logs_as_global'
   ldd "$api"
   ldd "$sdk"
+  readelf -d "$sdk" | grep -q 'NEEDED.*libopentelemetry_c_api.so'
 
   API_LIBRARY="$api" SDK_LIBRARY="$sdk" python3 - <<'PY'
 import ctypes
 import os
 
-ctypes.CDLL(os.environ["API_LIBRARY"], mode=ctypes.RTLD_GLOBAL)
-ctypes.CDLL(os.environ["SDK_LIBRARY"], mode=ctypes.RTLD_GLOBAL)
+ctypes.CDLL(os.environ["SDK_LIBRARY"], mode=ctypes.RTLD_LOCAL)
 PY
 
   CI=1 CARGO_TARGET_DIR="$target_dir" cargo test --locked \

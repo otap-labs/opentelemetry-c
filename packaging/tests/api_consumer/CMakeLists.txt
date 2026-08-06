@@ -6,7 +6,12 @@ project(otelc_api_consumer C)
 find_package(OpenTelemetryC CONFIG REQUIRED)
 
 add_executable(api_consumer main.c)
-target_compile_options(api_consumer PRIVATE -std=c11 -Wall -Wextra -Werror)
+target_compile_features(api_consumer PRIVATE c_std_11)
+if(MSVC)
+    target_compile_options(api_consumer PRIVATE /W4 /WX)
+else()
+    target_compile_options(api_consumer PRIVATE -Wall -Wextra -Werror)
+endif()
 target_link_libraries(api_consumer PRIVATE OpenTelemetryC::api)
 
 # Verify API consumer does NOT link SDK

@@ -21,7 +21,8 @@ endif
 all: $(BINARY)
 
 build-rust:
-	@cd ../../.. && cargo build --release -p opentelemetry-c-api -p opentelemetry-c-sdk
+	@cd ../../.. && cargo build --release -p opentelemetry-c-api
+	@cd ../../.. && cargo build --release -p opentelemetry-c-sdk
 
 $(BINARY): main.c build-rust
 	@$(CC) $(CSTD) $(CFLAGS) -o $(BINARY) main.c \

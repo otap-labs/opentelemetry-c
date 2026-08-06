@@ -50,6 +50,11 @@ mod imp {
         ) -> *mut c_void;
         pub fn otel_api_set_last_error(ptr: *const c_char, len: usize);
         pub fn otel_api_clear_last_error();
+        pub fn otel_api_report_diagnostic(
+            severity: u32,
+            message: *const c_char,
+            message_len: usize,
+        );
     }
 }
 
@@ -185,6 +190,14 @@ mod imp {
     pub unsafe fn otel_api_clear_last_error() {
         LAST_ERROR.with(|slot| slot.borrow_mut().clear());
     }
+    /// # Safety
+    /// Test stub mirroring the real ABI. Unit tests do not install the API callback.
+    pub unsafe fn otel_api_report_diagnostic(
+        _severity: u32,
+        _message: *const c_char,
+        _message_len: usize,
+    ) {
+    }
 }
 
 /// Install `vtable`/`provider_ctx` as the process-global provider (API-owned slot).
@@ -263,6 +276,11 @@ pub(crate) fn set_last_error(message: &str) {
 /// Clear the API-owned thread-local error slot.
 pub(crate) fn clear_last_error() {
     unsafe { imp::otel_api_clear_last_error() };
+}
+
+/// Report an asynchronous or advisory diagnostic through the API-owned callback.
+pub(crate) fn report_diagnostic(severity: u32, message: &str) {
+    unsafe { imp::otel_api_report_diagnostic(severity, message.as_ptr().cast(), message.len()) }
 }
 
 #[cfg(test)]

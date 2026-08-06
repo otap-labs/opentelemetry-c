@@ -177,6 +177,62 @@ otel_string_view_t otel_version_string(void);
  */
 otel_string_view_t otel_last_error_message(void);
 
+/* ---- Process diagnostics ------------------------------------------------- */
+
+/* Severity of an asynchronous or advisory library diagnostic. */
+typedef uint32_t otel_diagnostic_severity_t;
+enum {
+    OTEL_DIAGNOSTIC_SEVERITY_INFO = 1,
+    OTEL_DIAGNOSTIC_SEVERITY_WARN = 2,
+    OTEL_DIAGNOSTIC_SEVERITY_ERROR = 3
+};
+
+/* A callback-scoped diagnostic record. Future fields are appended. */
+typedef struct otel_diagnostic_record_t {
+    size_t struct_size;
+    otel_diagnostic_severity_t severity;
+    uint32_t reserved;
+    otel_string_view_t message;
+} otel_diagnostic_record_t;
+
+typedef void (*otel_diagnostic_emit_fn)(void* user_data,
+                                        const otel_diagnostic_record_t* record);
+typedef void (*otel_diagnostic_state_destroy_fn)(void* user_data);
+
+/*
+ * Versioned callback table for process-wide asynchronous diagnostics.
+ * `emit` is required. `state_destroy` is optional and runs exactly once after replacement
+ * or clearing, after all in-flight callbacks using the old state have returned.
+ */
+typedef struct otel_diagnostic_callbacks_t {
+    size_t struct_size;
+    otel_diagnostic_emit_fn emit;
+    otel_diagnostic_state_destroy_fn state_destroy;
+} otel_diagnostic_callbacks_t;
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
+    defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
+_Static_assert(sizeof(otel_diagnostic_record_t) == 32,
+               "otel_diagnostic_record_t ABI mismatch");
+_Static_assert(sizeof(otel_diagnostic_callbacks_t) == 24,
+               "otel_diagnostic_callbacks_t ABI mismatch");
+#endif
+
+/*
+ * Replace the process-wide diagnostic callback. Ownership of `user_data` transfers only
+ * on OTEL_STATUS_OK. Passing NULL clears the callback and ignores `user_data`.
+ *
+ * The callback may run concurrently on application or SDK worker threads and may call back
+ * into OpenTelemetry C. A diagnostic produced by such a nested call on the same thread is
+ * suppressed to prevent recursive reporting. The callback must not unwind, throw, or retain
+ * `record` or its message view.
+ * Diagnostics produced before registration are intentionally dropped. This channel is for
+ * asynchronous/advisory events; immediate failures continue to use
+ * otel_last_error_message().
+ */
+otel_status_t otel_set_diagnostic_callback(const otel_diagnostic_callbacks_t* callbacks,
+                                           void* user_data);
+
 /* ---- Helpers -------------------------------------------------------------- */
 
 #if defined(__cplusplus) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)

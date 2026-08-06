@@ -115,21 +115,32 @@ The supported deployment model is:
 - exactly one shared API library owns the process-global trace and Metrics provider slots;
 - the matching SDK library registers providers through that API library;
 - API and SDK are built from the same release;
-- the API library is already present in the process's global symbol scope before the SDK is
-  loaded, through normal application linking or platform-appropriate global loading;
+- the SDK shared library records an ordinary native dependency on the matching API shared
+  library; no process-global symbol lookup or special load order is required;
 - both libraries remain loaded for the lifetime of every provider, tracer, span, meter,
   instrument, observable callback, global registration, and other handle that may call
   their code or vtables;
 - neither library is unloaded after use; `dlclose` after API or SDK use is unsupported.
 
-Linux and macOS shared-library use are supported. Windows shared-library use is currently
-unsupported because the SDK-to-API cross-library link mechanism has no Windows
-implementation.
+Linux and macOS shared-library use are supported. Windows DLL/import-library packaging is
+implemented but remains experimental until it is continuously exercised on Windows CI.
+
+## Static and mixed-link composition
+
+An eventual supported all-static deployment must link exactly one API archive and one SDK
+archive into the final executable. Every instrumentation object must resolve API calls to that
+single API instance. A Cargo dependency from the SDK to the API crate is forbidden because it
+can embed a private API rlib and duplicate the global provider slots.
+
+The following mixed model is unsupported: an API archive embedded in an executable or plugin
+combined with a dynamically loaded SDK shared library. It can either fail to load or silently
+install into a different API instance. Exporting executable symbols does not make this a
+supported composition.
 
 The following configurations are unsupported:
 
 - multiple statically linked API copies, which create independent global provider slots;
-- a static API in an executable combined with a dynamically loaded SDK;
+- a static API in an executable or plugin combined with a dynamically loaded SDK;
 - any static deployment as a supported distribution model. Static libraries may remain
   buildable from source, but deployment is experimental and unsupported.
 

@@ -6,6 +6,12 @@
 
 ### Added
 
+- Portable SDK-to-API native shared-library linkage replaces process-global symbol lookup.
+  The SDK now records the API as a normal shared dependency on Linux/macOS and uses the API
+  import library on Windows, without adding a Rust crate dependency or duplicating API state.
+- SDK panic containment reports through the API-owned process diagnostic callback in addition
+  to preserving synchronous last-error behavior.
+
 - OTLP gRPC/tonic transport for Traces plus
   `otel_otlp_trace_exporter_builder_set_transport` and
   `otel_otlp_trace_exporter_builder_set_compression`, bringing Traces exporter selection to

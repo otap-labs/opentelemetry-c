@@ -6,6 +6,11 @@
 
 ### Added
 
+- API-owned process diagnostic callback for asynchronous and advisory events. Callback state
+  replacement is race-safe, reentrant callbacks are supported, and optional state destruction
+  waits for in-flight reports. Immediate call failures continue to use the thread-local
+  `otel_last_error_message()` channel.
+
 - Extended span start: `otel_tracer_start_span_ex` accepts a versioned
   `otel_span_start_options_ex_t` (a `struct_size`-first descriptor) carrying span links
   (`otel_span_link_t`: a borrowed `otel_span_context_t` plus optional link attributes), an

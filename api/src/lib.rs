@@ -23,6 +23,7 @@
 // wrapped in `unsafe(...)`; this is standard, sound FFI boilerplate.
 #![allow(unsafe_attr_outside_unsafe)]
 
+mod diagnostic;
 mod error;
 mod global;
 mod handle;
@@ -42,6 +43,10 @@ pub use opentelemetry_c_abi::{
     OtelSpanKind, OtelSpanStatusCode, OtelStatus, OtelStringView,
 };
 
+pub use diagnostic::{
+    otel_api_report_diagnostic, otel_set_diagnostic_callback, OtelDiagnosticCallbacks,
+    OtelDiagnosticRecord,
+};
 pub use error::{otel_api_clear_last_error, otel_api_set_last_error, otel_last_error_message};
 pub use global::{
     otel_api_provider_new, otel_api_register_global_provider, otel_global_tracer_provider,

@@ -308,7 +308,7 @@ cmake -S . -B build \
 |----------|--------|
 | Linux (x86_64, aarch64) | ✅ Supported |
 | macOS (x86_64, arm64)   | ✅ Supported |
-| Windows                 | ❌ Not supported (shared-library ABI not implemented) |
+| Windows (MSVC only)     | ⚠️ Experimental DLL/import-library packaging |
 
 ---
 
