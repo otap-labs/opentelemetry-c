@@ -93,3 +93,10 @@ path = "fuzz_targets/context_scopes.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "baggage_propagation"
+path = "fuzz_targets/baggage_propagation.rs"
+test = false
+doc = false
+bench = false

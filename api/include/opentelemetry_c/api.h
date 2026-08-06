@@ -42,6 +42,7 @@
 #define OPENTELEMETRY_C_API_H
 
 #include "common.h"
+#include "baggage.h"
 #include "context.h"
 #include "logs.h"
 #include "metrics.h"

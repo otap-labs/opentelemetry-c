@@ -47,6 +47,11 @@ vtable call. Context attach/detach is request-scope work: its bounded TLS `Vec` 
 growing, but recording does not allocate merely to read the current context. The API benchmark
 suite compares no-SDK explicit and ambient span start plus attach/detach.
 
+Baggage is immutable and stored in context through a shared `Arc`. Attaching, snapshotting, and
+reading a context with baggage do not copy or traverse its entries. Builder mutation and W3C
+header extraction/injection are request-boundary operations and may allocate; ordinary span,
+metric, and log recording does not inspect baggage.
+
 `otel_span_destroy` may call both `span_end` and `span_free` to preserve best-effort
 end-before-free semantics. Converting borrowed C string, key, and value views currently
 requires owned allocations because C memory must not outlive the call.

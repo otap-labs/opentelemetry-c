@@ -48,6 +48,13 @@ stack. `OTEL_PARENT_AMBIENT` opts extended span start into one current-context l
 not consult TLS. `otel_logger_emit_with_current_context()` is the opt-in ambient log-correlation
 path. C ambient context is intentionally independent from opentelemetry-rust's ambient TLS.
 
+Immutable `otel_baggage_t` values can be composed into that context and propagate across
+independently instrumented C libraries without an installed SDK. The API includes bounded W3C
+`baggage` header extraction and injection. Baggage is not automatically copied into span,
+metric, or log attributes; applications must explicitly select any values they record. Do not
+place secrets or personal information in baggage, and clear it before crossing an untrusted
+boundary.
+
 `logs.h` is a **log bridge**, meant for a logging library to route records through
 OpenTelemetry. Records are described by a borrowed, one-shot `otel_log_record_view_t`;
 structured values live in a flat node pool addressed by index range rather than a pointer

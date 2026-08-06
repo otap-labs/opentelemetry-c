@@ -8,6 +8,7 @@
 #define OPENTELEMETRY_C_CONTEXT_H
 
 #include "trace.h"
+#include "baggage.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,7 +32,8 @@ typedef struct otel_context_scope_t {
 _Static_assert(sizeof(otel_context_scope_t) == 40, "otel_context_scope_t ABI mismatch");
 #endif
 
-/* Create an immutable context. NULL span_context creates an explicitly empty/root context. */
+/* Create an immutable context starting from empty state. NULL span_context creates an
+ * explicitly empty/root context. This does not preserve baggage or any current context. */
 otel_context_t* otel_context_create(const otel_span_context_t* span_context);
 otel_context_t* otel_context_clone(const otel_context_t* context);
 void otel_context_destroy(otel_context_t* context);
@@ -42,6 +44,18 @@ otel_context_t* otel_context_current(void);
 
 /* Return a new owned SpanContext handle, or NULL when this context is empty. */
 otel_span_context_t* otel_context_span_context(const otel_context_t* context);
+
+/* Return a new immutable copy of base with one component replaced. NULL clears that component.
+ * On success *out is an owned handle. On failure *out is NULL and base is unchanged. */
+otel_status_t otel_context_with_span_context(const otel_context_t* base,
+                                             const otel_span_context_t* span_context,
+                                             otel_context_t** out);
+otel_status_t otel_context_with_baggage(const otel_context_t* base,
+                                        const otel_baggage_t* baggage,
+                                        otel_context_t** out);
+
+/* Return a new owned baggage handle, or NULL when this context has no baggage. */
+otel_baggage_t* otel_context_baggage(const otel_context_t* context);
 
 /* Attach context on the current thread. On success the TLS stack owns a retained context until
  * the matching detach. At most 64 contexts may be nested. When scope has a compatible

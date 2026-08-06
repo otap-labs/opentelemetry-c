@@ -21,6 +21,7 @@
 // wrapped in `unsafe(...)`; this is standard, sound FFI boilerplate.
 #![allow(unsafe_attr_outside_unsafe)]
 
+mod baggage;
 mod context;
 mod error;
 mod global;
@@ -41,10 +42,18 @@ pub use opentelemetry_c_abi::{
     OtelSpanKind, OtelSpanStatusCode, OtelStatus, OtelStringView,
 };
 
+pub use baggage::{
+    otel_baggage_builder_build, otel_baggage_builder_create, otel_baggage_builder_destroy,
+    otel_baggage_builder_remove, otel_baggage_builder_set, otel_baggage_clone, otel_baggage_count,
+    otel_baggage_destroy, otel_baggage_get, otel_baggage_propagation_extract,
+    otel_baggage_propagation_inject, otel_baggage_visit, OtelBaggage, OtelBaggageBuilder,
+    OtelBaggageEntryView, OtelBaggageVisitor,
+};
 pub use context::{
-    otel_context_attach, otel_context_clone, otel_context_create, otel_context_current,
-    otel_context_destroy, otel_context_scope_detach, otel_context_span_context, OtelContext,
-    OtelContextScope,
+    otel_context_attach, otel_context_baggage, otel_context_clone, otel_context_create,
+    otel_context_current, otel_context_destroy, otel_context_scope_detach,
+    otel_context_span_context, otel_context_with_baggage, otel_context_with_span_context,
+    OtelContext, OtelContextScope,
 };
 pub use error::{otel_api_clear_last_error, otel_api_set_last_error, otel_last_error_message};
 pub use global::{
