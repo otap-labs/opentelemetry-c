@@ -4,6 +4,13 @@
 
 ### Added
 
+- API-owned immutable `otel_context_t` with clone/current/SpanContext access, a bounded
+  thread-local attachment stack, caller-owned non-owning scope tokens, and same-thread LIFO
+  detach validation. Extended span start adds explicit/ambient/root parent modes through an
+  append-only general-context vtable capability; older SDKs retain explicit parenting and fail
+  ambient requests closed. Logs gain an opt-in current-context correlation entry point while
+  existing emit and explicit-parent hot paths remain TLS-free.
+
 - Extended span start: `otel_tracer_start_span_ex` accepts a versioned
   `otel_span_start_options_ex_t` (a `struct_size`-first descriptor) carrying span links
   (`otel_span_link_t`: a borrowed `otel_span_context_t` plus optional link attributes), an

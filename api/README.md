@@ -42,6 +42,12 @@ parent a later span with `otel_tracer_start_span_with_context()`, and are borrow
 `otel_logger_emit_with_context()`. W3C `traceparent` and `tracestate` can be extracted into and
 injected from these API-owned contexts.
 
+The API also owns an immutable cross-signal `otel_context_t` and a bounded thread-local scope
+stack. `OTEL_PARENT_AMBIENT` opts extended span start into one current-context lookup;
+`OTEL_PARENT_ROOT` suppresses ambient parenting. Existing explicit span and log operations do
+not consult TLS. `otel_logger_emit_with_current_context()` is the opt-in ambient log-correlation
+path. C ambient context is intentionally independent from opentelemetry-rust's ambient TLS.
+
 `logs.h` is a **log bridge**, meant for a logging library to route records through
 OpenTelemetry. Records are described by a borrowed, one-shot `otel_log_record_view_t`;
 structured values live in a flat node pool addressed by index range rather than a pointer

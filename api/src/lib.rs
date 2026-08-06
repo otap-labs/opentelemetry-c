@@ -21,6 +21,7 @@
 // wrapped in `unsafe(...)`; this is standard, sound FFI boilerplate.
 #![allow(unsafe_attr_outside_unsafe)]
 
+mod context;
 mod error;
 mod global;
 mod handle;
@@ -40,15 +41,20 @@ pub use opentelemetry_c_abi::{
     OtelSpanKind, OtelSpanStatusCode, OtelStatus, OtelStringView,
 };
 
+pub use context::{
+    otel_context_attach, otel_context_clone, otel_context_create, otel_context_current,
+    otel_context_destroy, otel_context_scope_detach, otel_context_span_context, OtelContext,
+    OtelContextScope,
+};
 pub use error::{otel_api_clear_last_error, otel_api_set_last_error, otel_last_error_message};
 pub use global::{
     otel_api_provider_new, otel_api_register_global_provider, otel_global_tracer_provider,
 };
 pub use logs::{
-    otel_logger_destroy, otel_logger_emit, otel_logger_emit_with_context, otel_logger_enabled,
-    otel_logger_provider_destroy, otel_logger_provider_get_logger,
-    otel_logger_provider_get_logger_with_options, OtelLogger, OtelLoggerOptions,
-    OtelLoggerProvider,
+    otel_logger_destroy, otel_logger_emit, otel_logger_emit_with_context,
+    otel_logger_emit_with_current_context, otel_logger_enabled, otel_logger_provider_destroy,
+    otel_logger_provider_get_logger, otel_logger_provider_get_logger_with_options, OtelLogger,
+    OtelLoggerOptions, OtelLoggerProvider,
 };
 pub use logs_global::{
     otel_api_logger_provider_new, otel_api_register_global_logger_provider_with_token,
@@ -73,8 +79,9 @@ pub use trace::{
     otel_span_set_int64_attribute, otel_span_set_status, otel_span_set_string_attribute,
     otel_span_update_name, otel_tracer_destroy, otel_tracer_provider_destroy,
     otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_ex,
-    otel_tracer_start_span_with_context, OtelSpan, OtelSpanContext, OtelSpanLink,
-    OtelSpanStartOptions, OtelSpanStartOptionsEx, OtelTracer, OtelTracerProvider,
+    otel_tracer_start_span_with_context, otel_tracer_supports_context, OtelSpan, OtelSpanContext,
+    OtelSpanLink, OtelSpanStartOptions, OtelSpanStartOptionsEx, OtelTracer, OtelTracerProvider,
+    OTEL_PARENT_AMBIENT, OTEL_PARENT_EXPLICIT, OTEL_PARENT_ROOT,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -16,7 +16,7 @@ All three signals are available, but the C API and ABI remain experimental.
 
 | Signal | C API | Native ABI | C SDK | OTLP exporter | Current scope |
 | --- | --- | --- | --- | --- | --- |
-| **Traces** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Spans, context propagation, sampling, processors, OTLP export, and custom C export. See [TRACES_COMPLIANCE.md](TRACES_COMPLIANCE.md). |
+| **Traces** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Spans, API-owned ambient and propagated context, sampling, processors, OTLP export, and custom C export. See [TRACES_COMPLIANCE.md](TRACES_COMPLIANCE.md). |
 | **Metrics** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Synchronous and observable instruments, readers, views, OTLP export, and custom C export. See [METRICS_COMPLIANCE.md](METRICS_COMPLIANCE.md). |
 | **Logs** | Experimental | Experimental | Experimental | HTTP/protobuf and optional gRPC | Structured log bridge, trace correlation, processors, OTLP export, and custom C export. See [LOGS_COMPLIANCE.md](LOGS_COMPLIANCE.md). |
 

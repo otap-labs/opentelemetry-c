@@ -90,6 +90,11 @@ fn api_umbrella_header_compiles() {
         &include_dir(),
         "#include <opentelemetry_c/common.h>\n#include <opentelemetry_c/trace.h>\nint main(void){return 0;}\n",
     );
+    syntax_check(
+        &cc,
+        &include_dir(),
+        "#include <opentelemetry_c/context.h>\nint main(void){otel_context_scope_t s=OTEL_CONTEXT_SCOPE_INIT; return (int)s.generation;}\n",
+    );
 }
 
 #[test]

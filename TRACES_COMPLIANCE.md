@@ -21,6 +21,7 @@ Traces remain **experimental / Alpha**: the surface and ABI may change incompati
 | Span kinds | Implemented | All stable kinds (`Internal`/`Server`/`Client`/`Producer`/`Consumer`); unknown values fall back to `Internal`. |
 | Live local parent | Implemented | `otel_tracer_start_span` with an optional live parent span handle; a foreign-implementation parent is treated as a root span. |
 | Context parent | Implemented | `otel_tracer_start_span_with_context` starts a span from an immutable, implementation-neutral `otel_span_context_t`. Mutually exclusive with a live parent handle. |
+| API-owned ambient context | Implemented | Immutable `otel_context_t`, owned current-context snapshots, bounded thread-local attach/detach scopes, and explicit/ambient/root parenting modes. Scope tokens are caller-owned POD; the TLS stack owns retained contexts and enforces same-thread LIFO detach. |
 | Immutable SpanContext snapshot | Implemented | `otel_span_get_context` copies a live SDK-backed span's context into an API-owned handle; `clone`/`destroy` supported. Shared in-process by Traces and Logs. |
 | SpanContext value operations | Implemented | Validity, 16-byte trace ID, 8-byte span ID, opaque `uint8_t` trace flags, `is_remote`, borrowed tracestate view, and construction from raw parts. Reserved/unknown trace-flag bits are preserved opaque. See "SpanContext value API" below. |
 | W3C Trace Context propagation | Implemented | Bounded direct `traceparent`/`tracestate` extract and inject (`otel_trace_propagation_*`); remote=true preserved on extraction; malformed length/separators/IDs, version `ff`, uppercase hex, and forbidden trailing data reject the whole call. `tracestate` is validated against the W3C key/value grammar (unique keys, blank list members tolerated); a malformed `tracestate` does not fail extraction — it is discarded and the context is still returned (W3C requirement). Baggage deferred (see below). |
@@ -97,8 +98,10 @@ Rust type or the SDK's internal `SpanContext` layout.
 - **Baggage is deferred.** W3C Trace Context (`traceparent`/`tracestate`) is in scope for this
   epic; Baggage is a separate cross-signal context concern and is intentionally not part of this
   PR. It can be added later as an additive module without destabilizing Trace Context.
-- **No ambient/current-span context.** The C API does not add a global or thread-local
-  "current span"; parenting is always explicit via a live span handle or a `SpanContext`.
+- **C and Rust ambient contexts are independent.** Attaching `otel_context_t` does not change
+  `opentelemetry::Context::current()` in Rust code, and a Rust context attachment does not
+  change the C current context. The SDK performs an explicit conversion only when a C operation
+  requests ambient parenting. A future opt-in bridge may connect the two models.
 - **Array-valued span attributes are deferred.** Public C span recording exposes scalar
   string/bool/int64/double attributes. Array attributes may be observable through export
   visitation when they originate upstream, but there is no C recording API for array-valued span

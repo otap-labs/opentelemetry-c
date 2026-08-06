@@ -8,15 +8,17 @@
 
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use opentelemetry_c_abi::{
-    trace_vtable_supports_span_context, trace_vtable_supports_span_start_ex, OtelAttributeType,
-    OtelBool, OtelHandleHeader, OtelImplVtable, OtelKeyValue, OtelSpanContextView,
-    OtelSpanLinkView, OtelSpanStartConfig, OtelSpanStatusCode, OtelStringView,
-    OTEL_HANDLE_KIND_SPAN, OTEL_HANDLE_KIND_SPAN_CONTEXT, OTEL_HANDLE_KIND_TRACER,
-    OTEL_HANDLE_KIND_TRACER_PROVIDER,
+    trace_vtable_supports_context, trace_vtable_supports_span_context,
+    trace_vtable_supports_span_start_ex, OtelAttributeType, OtelBool, OtelContextView,
+    OtelHandleHeader, OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelSpanLinkView,
+    OtelSpanStartConfig, OtelSpanStatusCode, OtelStringView, OTEL_HANDLE_KIND_SPAN,
+    OTEL_HANDLE_KIND_SPAN_CONTEXT, OTEL_HANDLE_KIND_TRACER, OTEL_HANDLE_KIND_TRACER_PROVIDER,
 };
 
+use crate::context::current_data;
 use crate::error::{clear_last_error, fail, set_last_error, OtelStatus};
 use crate::global::{retain_global, GlobalRetain};
 use crate::handle::{
@@ -92,11 +94,32 @@ pub struct OtelSpan {
 #[repr(C)]
 pub struct OtelSpanContext {
     header: OtelHandleHeader,
-    trace_id: [u8; 16],
-    span_id: [u8; 8],
-    trace_flags: u8,
-    is_remote: bool,
-    trace_state: String,
+    pub(crate) data: Arc<SpanContextData>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SpanContextData {
+    pub(crate) trace_id: [u8; 16],
+    pub(crate) span_id: [u8; 8],
+    pub(crate) trace_flags: u8,
+    pub(crate) is_remote: bool,
+    pub(crate) trace_state: String,
+}
+
+impl SpanContextData {
+    pub(crate) fn view(&self) -> OtelSpanContextView {
+        OtelSpanContextView {
+            trace_id: self.trace_id,
+            span_id: self.span_id,
+            trace_flags: self.trace_flags,
+            reserved: [0; 3],
+            is_remote: u32::from(self.is_remote),
+            trace_state: OtelStringView {
+                ptr: self.trace_state.as_ptr().cast(),
+                len: self.trace_state.len(),
+            },
+        }
+    }
 }
 
 impl HasHandleHeader for OtelSpanContext {
@@ -124,30 +147,29 @@ impl OtelSpanContext {
     ) -> Self {
         Self {
             header: OtelHandleHeader::new(Self::KIND),
-            trace_id,
-            span_id,
-            trace_flags,
-            is_remote,
-            trace_state,
+            data: Arc::new(SpanContextData {
+                trace_id,
+                span_id,
+                trace_flags,
+                is_remote,
+                trace_state,
+            }),
+        }
+    }
+
+    pub(crate) fn from_data(data: Arc<SpanContextData>) -> Self {
+        Self {
+            header: OtelHandleHeader::new(Self::KIND),
+            data,
         }
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        self.trace_id != [0; 16] && self.span_id != [0; 8]
+        self.data.trace_id != [0; 16] && self.data.span_id != [0; 8]
     }
 
     pub(crate) fn view(&self) -> OtelSpanContextView {
-        OtelSpanContextView {
-            trace_id: self.trace_id,
-            span_id: self.span_id,
-            trace_flags: self.trace_flags,
-            reserved: [0; 3],
-            is_remote: u32::from(self.is_remote),
-            trace_state: OtelStringView {
-                ptr: self.trace_state.as_ptr().cast(),
-                len: self.trace_state.len(),
-            },
-        }
+        self.data.view()
     }
 }
 
@@ -260,11 +282,16 @@ pub struct OtelSpanStartOptionsEx {
     /// Optional span links, or NULL when `link_count == 0`. Borrowed for the call.
     pub links: *const OtelSpanLink,
     pub link_count: usize,
+    /// Parenting policy. 0 = explicit fields/current behavior, 1 = ambient C context,
+    /// 2 = force root. Read only when `struct_size` covers this appended field.
+    pub parent_mode: u32,
+    /// Reserved; must be zero when `parent_mode` is present.
+    pub reserved2: u32,
 }
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<OtelSpanStartOptionsEx>() == 72);
+    assert!(std::mem::size_of::<OtelSpanStartOptionsEx>() == 80);
     assert!(std::mem::align_of::<OtelSpanStartOptionsEx>() == 8);
 };
 
@@ -272,6 +299,12 @@ const _: () = {
 /// `start_time_unix_nanos`. Attributes and links are read only when `struct_size` covers them.
 const OTEL_SPAN_START_OPTIONS_EX_REQUIRED_SIZE: usize =
     std::mem::offset_of!(OtelSpanStartOptionsEx, attributes);
+const OTEL_SPAN_START_OPTIONS_EX_V1_SIZE: usize =
+    std::mem::offset_of!(OtelSpanStartOptionsEx, parent_mode);
+
+pub const OTEL_PARENT_EXPLICIT: u32 = 0;
+pub const OTEL_PARENT_AMBIENT: u32 = 1;
+pub const OTEL_PARENT_ROOT: u32 = 2;
 
 /// Upper bound on span links accepted in a single start-span call.
 const OTEL_SPAN_START_MAX_LINKS: usize = 1 << 16;
@@ -301,6 +334,22 @@ fn vtable_has_span_context(vtable: *const OtelImplVtable) -> bool {
 fn vtable_has_span_start_ex(vtable: *const OtelImplVtable) -> bool {
     // SAFETY: callers pass a live registered trace vtable, whose stable header is readable.
     unsafe { trace_vtable_supports_span_start_ex(vtable) }
+}
+
+fn vtable_has_context(vtable: *const OtelImplVtable) -> bool {
+    unsafe { trace_vtable_supports_context(vtable) }
+}
+
+/// Whether this tracer's installed implementation supports ambient/general context parenting.
+///
+/// # Safety
+/// `tracer` must be a live handle not destroyed concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn otel_tracer_supports_context(tracer: *const OtelTracer) -> OtelBool {
+    guard_value(0, || match unsafe { checked_ref::<OtelTracer>(tracer) } {
+        Some(tracer) if !tracer.vtable.is_null() && vtable_has_context(tracer.vtable) => 1,
+        _ => 0,
+    })
 }
 
 struct SnapshotReceiver {
@@ -428,7 +477,7 @@ pub unsafe extern "C" fn otel_span_context_clone(
         };
         let mut trace_state = String::new();
         if trace_state
-            .try_reserve_exact(context.trace_state.len())
+            .try_reserve_exact(context.data.trace_state.len())
             .is_err()
         {
             fail(
@@ -437,15 +486,14 @@ pub unsafe extern "C" fn otel_span_context_clone(
             );
             return std::ptr::null_mut();
         }
-        trace_state.push_str(&context.trace_state);
-        into_raw(OtelSpanContext {
-            header: OtelHandleHeader::new(OtelSpanContext::KIND),
-            trace_id: context.trace_id,
-            span_id: context.span_id,
-            trace_flags: context.trace_flags,
-            is_remote: context.is_remote,
+        trace_state.push_str(&context.data.trace_state);
+        into_raw(OtelSpanContext::from_parts(
+            context.data.trace_id,
+            context.data.span_id,
+            context.data.trace_flags,
+            context.data.is_remote,
             trace_state,
-        })
+        ))
     })
 }
 
@@ -492,7 +540,7 @@ pub unsafe extern "C" fn otel_span_context_is_remote(context: *const OtelSpanCon
         clear_last_error();
         // SAFETY: forwarded to the caller's contract.
         match unsafe { checked_ref::<OtelSpanContext>(context) } {
-            Some(c) => u32::from(c.is_remote),
+            Some(c) => u32::from(c.data.is_remote),
             None => 0,
         }
     })
@@ -524,7 +572,7 @@ pub unsafe extern "C" fn otel_span_context_trace_id(
         };
         // SAFETY: caller guarantees `out` is writable for at least 16 bytes; the source is a
         // fixed 16-byte array, and the two regions do not overlap.
-        unsafe { std::ptr::copy_nonoverlapping(context.trace_id.as_ptr(), out, 16) };
+        unsafe { std::ptr::copy_nonoverlapping(context.data.trace_id.as_ptr(), out, 16) };
         OtelStatus::Ok
     })
 }
@@ -552,7 +600,7 @@ pub unsafe extern "C" fn otel_span_context_span_id(
         };
         // SAFETY: caller guarantees `out` is writable for at least 8 bytes; the source is a
         // fixed 8-byte array, and the two regions do not overlap.
-        unsafe { std::ptr::copy_nonoverlapping(context.span_id.as_ptr(), out, 8) };
+        unsafe { std::ptr::copy_nonoverlapping(context.data.span_id.as_ptr(), out, 8) };
         OtelStatus::Ok
     })
 }
@@ -583,7 +631,7 @@ pub unsafe extern "C" fn otel_span_context_trace_flags(
             None => return OtelStatus::InvalidArgument,
         };
         // SAFETY: caller guarantees `out` is writable for 1 byte.
-        unsafe { *out = context.trace_flags };
+        unsafe { *out = context.data.trace_flags };
         OtelStatus::Ok
     })
 }
@@ -602,9 +650,9 @@ pub unsafe extern "C" fn otel_span_context_tracestate(
         clear_last_error();
         // SAFETY: forwarded to the caller's contract.
         match unsafe { checked_ref::<OtelSpanContext>(context) } {
-            Some(c) if !c.trace_state.is_empty() => OtelStringView {
-                ptr: c.trace_state.as_ptr().cast(),
-                len: c.trace_state.len(),
+            Some(c) if !c.data.trace_state.is_empty() => OtelStringView {
+                ptr: c.data.trace_state.as_ptr().cast(),
+                len: c.data.trace_state.len(),
             },
             _ => OtelStringView::empty(),
         }
@@ -997,7 +1045,8 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
         // Fields present only when `struct_size` covers them fully (through the end of the
         // field). Offsets are computed from the struct layout so newer/older headers agree.
         let has_attributes = struct_size >= std::mem::offset_of!(OtelSpanStartOptionsEx, links);
-        let has_links = struct_size >= std::mem::size_of::<OtelSpanStartOptionsEx>();
+        let has_links = struct_size >= OTEL_SPAN_START_OPTIONS_EX_V1_SIZE;
+        let has_parent_mode = struct_size >= std::mem::size_of::<OtelSpanStartOptionsEx>();
         // SAFETY: each tail field is read only when `struct_size` proves it is fully present.
         let (attributes, attribute_count) = if has_attributes {
             unsafe {
@@ -1019,6 +1068,30 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
         } else {
             (std::ptr::null(), 0)
         };
+        let (parent_mode, reserved2) = if has_parent_mode {
+            unsafe {
+                (
+                    std::ptr::addr_of!((*options).parent_mode).read(),
+                    std::ptr::addr_of!((*options).reserved2).read(),
+                )
+            }
+        } else {
+            (OTEL_PARENT_EXPLICIT, 0)
+        };
+        if reserved2 != 0 || parent_mode > OTEL_PARENT_ROOT {
+            fail(
+                OtelStatus::InvalidArgument,
+                "parent mode or its reserved field is invalid",
+            );
+            return std::ptr::null_mut();
+        }
+        if parent_mode != OTEL_PARENT_EXPLICIT && (!parent.is_null() || !parent_context.is_null()) {
+            fail(
+                OtelStatus::InvalidArgument,
+                "ambient/root parent mode cannot include an explicit parent",
+            );
+            return std::ptr::null_mut();
+        }
 
         if attributes.is_null() && attribute_count != 0 {
             fail(
@@ -1147,14 +1220,38 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
         };
 
         // SAFETY: the feature-size check above proves the extended entry is readable.
-        let Some(vtable_ref) = (unsafe { vtable.as_ref() }) else {
-            fail(
-                OtelStatus::InvalidConfig,
-                "trace implementation vtable is NULL",
-            );
-            return std::ptr::null_mut();
+        let ambient_data = if parent_mode == OTEL_PARENT_AMBIENT {
+            current_data()
+        } else {
+            None
         };
-        let span_ctx = (vtable_ref.tracer_start_span_ex)(tracer.ctx, name, &config);
+        let ambient_span_view = ambient_data
+            .as_ref()
+            .and_then(|data| data.span_context.as_ref())
+            .map(|data| data.view());
+        let ambient_view = OtelContextView {
+            struct_size: std::mem::size_of::<OtelContextView>(),
+            span_context: ambient_span_view
+                .as_ref()
+                .map_or(std::ptr::null(), |view| view),
+            flags: ambient_data.as_ref().map_or(0, |data| data.flags),
+            reserved: 0,
+        };
+        let span_ctx = if parent_mode == OTEL_PARENT_AMBIENT {
+            if !vtable_has_context(vtable) {
+                fail(
+                    OtelStatus::InvalidConfig,
+                    "installed trace implementation does not support ambient context",
+                );
+                return std::ptr::null_mut();
+            }
+            let start =
+                unsafe { std::ptr::addr_of!((*vtable).tracer_start_span_ex_with_context).read() };
+            start(tracer.ctx, name, &config, &ambient_view)
+        } else {
+            let start = unsafe { std::ptr::addr_of!((*vtable).tracer_start_span_ex).read() };
+            start(tracer.ctx, name, &config)
+        };
         // `link_views` and `parent_view_storage` are owned locals borrowed by `config` through
         // raw pointers; they remain live until the end of this scope, i.e. across the call.
         if span_ctx.is_null() {

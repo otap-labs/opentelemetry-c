@@ -248,6 +248,8 @@ fuzz_target!(|input: Input| {
         attribute_count: attr_count,
         links: links_ptr,
         link_count,
+        parent_mode: 0,
+        reserved2: 0,
     };
 
     // SAFETY: every pointer in `opts` is NULL or a live owned buffer/handle for this call.
