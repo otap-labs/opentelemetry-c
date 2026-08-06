@@ -95,6 +95,35 @@ fn api_umbrella_header_compiles() {
         &include_dir(),
         "#include <opentelemetry_c/context.h>\nint main(void){otel_context_scope_t s=OTEL_CONTEXT_SCOPE_INIT; return (int)s.generation;}\n",
     );
+    syntax_check(
+        &cc,
+        &include_dir(),
+        r#"#include <opentelemetry_c/api.h>
+static otel_status_t visit(void* state, const otel_baggage_entry_view_t* entry) {
+    (void)state; return entry->struct_size ? OTEL_STATUS_OK : OTEL_STATUS_INVALID_CONFIG;
+}
+int main(void) {
+    otel_baggage_builder_t* builder = otel_baggage_builder_create();
+    otel_baggage_t* baggage = NULL;
+    otel_context_t* empty = otel_context_create(NULL);
+    otel_context_t* combined = NULL;
+    size_t len = 0;
+    otel_baggage_entry_view_t entry = OTEL_BAGGAGE_ENTRY_VIEW_INIT;
+    (void)otel_baggage_builder_set(builder, otel_cstr("tenant.id"), otel_cstr("acme"), otel_cstr(""));
+    (void)otel_baggage_builder_build(builder, &baggage);
+    (void)otel_baggage_visit(baggage, visit, NULL);
+    (void)otel_baggage_get(baggage, otel_cstr("tenant.id"), &entry);
+    (void)otel_baggage_propagation_inject(baggage, NULL, 0, &len);
+    (void)otel_context_with_baggage(empty, baggage, &combined);
+    otel_baggage_destroy(otel_context_baggage(combined));
+    otel_context_destroy(combined);
+    otel_context_destroy(empty);
+    otel_baggage_destroy(baggage);
+    otel_baggage_builder_destroy(builder);
+    return 0;
+}
+"#,
+    );
 }
 
 #[test]

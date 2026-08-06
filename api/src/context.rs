@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use opentelemetry_c_abi::{OtelHandleHeader, OTEL_HANDLE_KIND_CONTEXT};
 
+use crate::baggage::{baggage_from_data, BaggageData, OtelBaggage};
 use crate::error::{clear_last_error, fail, OtelStatus};
 use crate::handle::{
     checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw, HasHandleHeader,
@@ -18,6 +19,7 @@ const SCOPE_SIZE: usize = std::mem::size_of::<OtelContextScope>();
 #[derive(Default)]
 pub(crate) struct ContextData {
     pub(crate) span_context: Option<Arc<SpanContextData>>,
+    pub(crate) baggage: Option<Arc<BaggageData>>,
     pub(crate) flags: u32,
 }
 
@@ -136,8 +138,118 @@ pub unsafe extern "C" fn otel_context_create(
         };
         new_handle(Arc::new(ContextData {
             span_context,
+            baggage: None,
             flags: 0,
         }))
+    })
+}
+
+#[no_mangle]
+/// Return a copy of `base` with its SpanContext replaced. A NULL SpanContext clears it.
+///
+/// # Safety
+/// `base` must be a live context; `span_context` must be NULL or live; `out` must be writable.
+pub unsafe extern "C" fn otel_context_with_span_context(
+    base: *const OtelContext,
+    span_context: *const OtelSpanContext,
+    out: *mut *mut OtelContext,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        if out.is_null() {
+            return fail(OtelStatus::InvalidArgument, "context output is NULL");
+        }
+        unsafe {
+            *out = std::ptr::null_mut();
+        }
+        let Some(base) = (unsafe { checked_ref::<OtelContext>(base) }) else {
+            return OtelStatus::InvalidArgument;
+        };
+        let span_context = if span_context.is_null() {
+            None
+        } else {
+            let Some(span) = (unsafe { checked_ref::<OtelSpanContext>(span_context) }) else {
+                return OtelStatus::InvalidArgument;
+            };
+            if !span.is_valid() {
+                return fail(
+                    OtelStatus::InvalidArgument,
+                    "context span context is invalid",
+                );
+            }
+            Some(Arc::clone(&span.data))
+        };
+        let data = ContextData {
+            span_context,
+            baggage: base.data.baggage.as_ref().map(Arc::clone),
+            flags: base.data.flags,
+        };
+        unsafe {
+            *out = new_handle(Arc::new(data));
+        }
+        OtelStatus::Ok
+    })
+}
+
+#[no_mangle]
+/// Return a copy of `base` with baggage replaced. A NULL baggage handle clears it.
+///
+/// # Safety
+/// `base` must be live; `baggage` must be NULL or live; `out` must be writable.
+pub unsafe extern "C" fn otel_context_with_baggage(
+    base: *const OtelContext,
+    baggage: *const OtelBaggage,
+    out: *mut *mut OtelContext,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        if out.is_null() {
+            return fail(OtelStatus::InvalidArgument, "context output is NULL");
+        }
+        unsafe {
+            *out = std::ptr::null_mut();
+        }
+        let Some(base) = (unsafe { checked_ref::<OtelContext>(base) }) else {
+            return OtelStatus::InvalidArgument;
+        };
+        let baggage = if baggage.is_null() {
+            None
+        } else {
+            let Some(baggage) = (unsafe { checked_ref::<OtelBaggage>(baggage) }) else {
+                return OtelStatus::InvalidArgument;
+            };
+            Some(Arc::clone(&baggage.data))
+        };
+        let data = ContextData {
+            span_context: base.data.span_context.as_ref().map(Arc::clone),
+            baggage,
+            flags: base.data.flags,
+        };
+        unsafe {
+            *out = new_handle(Arc::new(data));
+        }
+        OtelStatus::Ok
+    })
+}
+
+#[no_mangle]
+/// Return a new owned baggage handle, or NULL when this context has no baggage.
+///
+/// # Safety
+/// `context` must be a live handle not destroyed concurrently.
+pub unsafe extern "C" fn otel_context_baggage(context: *const OtelContext) -> *mut OtelBaggage {
+    guard_ptr(|| {
+        clear_last_error();
+        let Some(context) = (unsafe { checked_ref::<OtelContext>(context) }) else {
+            return std::ptr::null_mut();
+        };
+        context
+            .data
+            .baggage
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |data| {
+                baggage_from_data(Arc::clone(data))
+            })
     })
 }
 
@@ -307,6 +419,10 @@ pub unsafe extern "C" fn otel_context_destroy(context: *mut OtelContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::baggage::{
+        otel_baggage_builder_build, otel_baggage_builder_create, otel_baggage_builder_destroy,
+        otel_baggage_builder_set, otel_baggage_count, otel_baggage_destroy,
+    };
     use crate::trace::{otel_span_context_create, otel_span_context_destroy};
     use opentelemetry_c_abi::OtelStringView;
 
@@ -321,6 +437,75 @@ mod tests {
                 0,
                 OtelStringView::empty(),
             )
+        }
+    }
+
+    fn sv(value: &str) -> OtelStringView {
+        OtelStringView {
+            ptr: value.as_ptr().cast(),
+            len: value.len(),
+        }
+    }
+
+    #[test]
+    fn composition_preserves_baggage_and_span_context_across_ambient_snapshot() {
+        unsafe {
+            let builder = otel_baggage_builder_create();
+            assert_eq!(
+                otel_baggage_builder_set(builder, sv("tenant.id"), sv("acme"), sv("")),
+                OtelStatus::Ok
+            );
+            let mut baggage = std::ptr::null_mut();
+            assert_eq!(
+                otel_baggage_builder_build(builder, &mut baggage),
+                OtelStatus::Ok
+            );
+            let empty = otel_context_create(std::ptr::null());
+            let mut with_baggage = std::ptr::null_mut();
+            assert_eq!(
+                otel_context_with_baggage(empty, baggage, &mut with_baggage),
+                OtelStatus::Ok
+            );
+            let span = span_context();
+            let mut combined = std::ptr::null_mut();
+            assert_eq!(
+                otel_context_with_span_context(with_baggage, span, &mut combined),
+                OtelStatus::Ok
+            );
+            let mut scope = OtelContextScope {
+                struct_size: SCOPE_SIZE,
+                thread_token: 0,
+                generation: 0,
+                reserved: [0; 2],
+            };
+            assert_eq!(otel_context_attach(combined, &mut scope), OtelStatus::Ok);
+            let current = otel_context_current();
+            let current_baggage = otel_context_baggage(current);
+            let current_span = otel_context_span_context(current);
+            assert_eq!(otel_baggage_count(current_baggage), 1);
+            assert!(!current_span.is_null());
+            assert_eq!(otel_context_scope_detach(&mut scope), OtelStatus::Ok);
+
+            let mut cleared = std::ptr::null_mut();
+            assert_eq!(
+                otel_context_with_baggage(combined, std::ptr::null(), &mut cleared),
+                OtelStatus::Ok
+            );
+            assert!(otel_context_baggage(cleared).is_null());
+            let cleared_span = otel_context_span_context(cleared);
+            assert!(!cleared_span.is_null());
+
+            otel_span_context_destroy(current_span);
+            otel_span_context_destroy(cleared_span);
+            otel_baggage_destroy(current_baggage);
+            otel_context_destroy(current);
+            otel_context_destroy(cleared);
+            otel_context_destroy(combined);
+            otel_context_destroy(with_baggage);
+            otel_context_destroy(empty);
+            otel_span_context_destroy(span);
+            otel_baggage_destroy(baggage);
+            otel_baggage_builder_destroy(builder);
         }
     }
 

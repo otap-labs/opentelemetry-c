@@ -29,6 +29,7 @@ After `cmake --install`, the prefix contains:
     opentelemetry_c/
       api.h            ← umbrella API header
       common.h
+      baggage.h
       context.h
       trace.h
       metrics.h

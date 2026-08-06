@@ -4,6 +4,11 @@
 
 ### Added
 
+- API-owned immutable Baggage with builder, lookup/visitor access, context composition, ambient
+  preservation, and bounded W3C `baggage` header extraction/injection. Invalid remote members
+  are skipped independently; baggage is never promoted automatically into telemetry attributes
+  and does not cross the API-to-SDK ABI until a real SDK consumer exists.
+
 - API-owned immutable `otel_context_t` with clone/current/SpanContext access, a bounded
   thread-local attachment stack, caller-owned non-owning scope tokens, and same-thread LIFO
   detach validation. Extended span start adds explicit/ambient/root parent modes through an
@@ -29,7 +34,7 @@
   bounded before allocation. `tracestate` is validated against the W3C key/value grammar
   (unique keys; blank list members tolerated); per the specification a malformed `tracestate`
   never invalidates a valid `traceparent` — it is discarded and the context is still extracted.
-  Baggage remains deferred. See `TRACES_COMPLIANCE.md`.
+  See `TRACES_COMPLIANCE.md`.
 - SpanContext value operations over the immutable `otel_span_context_t`:
   `otel_span_context_is_valid`, `otel_span_context_is_remote`, `otel_span_context_trace_id`
   (16-byte big-endian), `otel_span_context_span_id` (8-byte big-endian),
