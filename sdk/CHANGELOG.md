@@ -167,6 +167,9 @@
 
 ### Changed
 
+- Allocation contracts now fail CI on no-SDK, bound-Metrics, attributed-Metrics, or Logs
+  regressions. Small log records keep validation roots and decoded keys on the stack, and bound
+  Metrics are documented as the preferred hot-loop path for stable attributes.
 - Ownership-transfer documentation now states the actual uniform contract: a successful
   transfer consumes the handle and immediately invalidates its original pointer. Tests no
   longer access or destroy consumed pointers.

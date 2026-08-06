@@ -349,6 +349,32 @@ fn rust_body(shape: BodyShape) -> Option<AnyValue> {
     }
 }
 
+fn allocation_ceiling(name: &str) -> Option<u64> {
+    if name.starts_with("noop/") {
+        return Some(0);
+    }
+    let rest = name.strip_prefix("c_sdk/")?;
+    if rest == "trace_correlated/1" {
+        return Some(12);
+    }
+    let (shape, count) = rest.rsplit_once('/')?;
+    let count = count.parse::<usize>().ok()?;
+    let index = ATTRIBUTE_COUNTS
+        .iter()
+        .position(|candidate| *candidate == count)?;
+    // These ceilings intentionally leave modest headroom over the checked-in baseline while
+    // still failing meaningful bridge regressions. Update them only with reviewed benchmark
+    // evidence and an explanation in docs/PERFORMANCE.md.
+    let ceilings = match shape {
+        "no_body" => [3, 9, 17, 26, 31],
+        "string_body" => [8, 13, 22, 30, 35],
+        "bytes_body" => [10, 15, 24, 32, 36],
+        "nested_body" => [32, 38, 48, 56, 61],
+        _ => return None,
+    };
+    Some(ceilings[index])
+}
+
 fn measure(name: &str, mut operation: impl FnMut()) {
     for _ in 0..WARMUP_ITERATIONS {
         operation();
@@ -369,6 +395,13 @@ fn measure(name: &str, mut operation: impl FnMut()) {
         allocations as f64 / ITERATIONS as f64,
         bytes as f64 / ITERATIONS as f64
     );
+    if let Some(per_operation) = allocation_ceiling(name) {
+        let ceiling = per_operation * ITERATIONS;
+        assert!(
+            allocations <= ceiling,
+            "allocation contract exceeded for {name}: {allocations} total allocations, ceiling {ceiling}"
+        );
+    }
 }
 
 struct CLogger {

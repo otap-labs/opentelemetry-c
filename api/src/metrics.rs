@@ -625,7 +625,6 @@ macro_rules! define_sync_instrument {
             attribute_count: usize,
         ) -> OtelStatus {
             guard_status(|| {
-                clear_last_error();
                 let instrument = match unsafe { checked_ref(instrument) } {
                     Some(instrument) => instrument,
                     None => return OtelStatus::InvalidArgument,
@@ -633,6 +632,7 @@ macro_rules! define_sync_instrument {
                 if instrument.vtable.is_null() {
                     return OtelStatus::Ok;
                 }
+                clear_last_error();
                 unsafe {
                     ((*instrument.vtable).$vtable_record)(
                         instrument.ctx,
@@ -885,7 +885,6 @@ macro_rules! define_bound_instrument {
             value: $value,
         ) -> OtelStatus {
             guard_status(|| {
-                clear_last_error();
                 let instrument = match unsafe { checked_ref(instrument) } {
                     Some(instrument) => instrument,
                     None => return OtelStatus::InvalidArgument,
@@ -893,6 +892,7 @@ macro_rules! define_bound_instrument {
                 if instrument.vtable.is_null() {
                     return OtelStatus::Ok;
                 }
+                clear_last_error();
                 unsafe { ((*instrument.vtable).$vtable_record)(instrument.ctx, value) }
             })
         }

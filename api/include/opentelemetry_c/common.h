@@ -172,6 +172,8 @@ otel_string_view_t otel_version_string(void);
  * Valid until the next OpenTelemetry C call on the same thread. If no error has been
  * recorded the returned view has a NULL `ptr` and zero `len`. The pointer is
  * NUL-terminated (so it may also be used as a C string), but `len` excludes the NUL.
+ * Query this only immediately after a function reports failure. Successful no-op recording
+ * calls may retain an older message rather than paying to clear thread-local state.
  */
 otel_string_view_t otel_last_error_message(void);
 
