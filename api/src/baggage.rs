@@ -468,6 +468,25 @@ fn percent_decode(input: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&decoded).into_owned())
 }
 
+fn has_valid_percent_encoding(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len()
+                || !(bytes[i + 1] as char).is_ascii_hexdigit()
+                || !(bytes[i + 2] as char).is_ascii_hexdigit()
+            {
+                return false;
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    true
+}
+
 fn parse_member(member: &str) -> Option<BaggageEntry> {
     let mut parts = member.split(';');
     let pair = parts.next()?.trim();
@@ -498,7 +517,8 @@ fn parse_member(member: &str) -> Option<BaggageEntry> {
             if !v.bytes().all(|b| {
                 b == b'%'
                     || matches!(b, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e)
-            }) {
+            }) || !has_valid_percent_encoding(v)
+            {
                 return None;
             }
         }
@@ -742,6 +762,25 @@ mod tests {
     }
 
     #[test]
+    fn extraction_replaces_non_utf8_percent_sequences_as_w3c_requires() {
+        unsafe {
+            let mut baggage = std::ptr::null_mut();
+            assert_eq!(
+                otel_baggage_propagation_extract(s("key=%FF"), &mut baggage),
+                OtelStatus::Ok
+            );
+            let mut entry: OtelBaggageEntryView = std::mem::zeroed();
+            entry.struct_size = BAGGAGE_ENTRY_VIEW_V1_SIZE;
+            assert_eq!(otel_baggage_get(baggage, s("key"), &mut entry), 1);
+            assert_eq!(
+                std::slice::from_raw_parts(entry.value.ptr.cast::<u8>(), entry.value.len),
+                "�".as_bytes()
+            );
+            otel_baggage_destroy(baggage);
+        }
+    }
+
+    #[test]
     fn oversized_remote_header_becomes_empty_baggage() {
         unsafe {
             let header = "a".repeat(MAX_BAGGAGE_BYTES + 1);
@@ -779,6 +818,37 @@ mod tests {
                 OtelStatus::InvalidArgument
             );
             assert!(baggage.is_null());
+        }
+    }
+
+    #[test]
+    fn logical_baggage_accepts_utf8_keys_but_inject_omits_unrepresentable_members() {
+        unsafe {
+            let builder = otel_baggage_builder_create();
+            assert_eq!(
+                otel_baggage_builder_set(builder, s("tenant id"), s("acme"), s("")),
+                OtelStatus::Ok
+            );
+            assert_eq!(
+                otel_baggage_builder_set(builder, s("valid"), s("kept"), s("prop=%GG")),
+                OtelStatus::Ok
+            );
+            let mut baggage = std::ptr::null_mut();
+            assert_eq!(
+                otel_baggage_builder_build(builder, &mut baggage),
+                OtelStatus::Ok
+            );
+            assert_eq!(otel_baggage_count(baggage), 2);
+
+            let mut len = usize::MAX;
+            assert_eq!(
+                otel_baggage_propagation_inject(baggage, std::ptr::null_mut(), 0, &mut len),
+                OtelStatus::Ok
+            );
+            assert_eq!(len, 0);
+
+            otel_baggage_destroy(baggage);
+            otel_baggage_builder_destroy(builder);
         }
     }
 }
