@@ -224,8 +224,10 @@ measured emit performs the complete validate-convert-handoff and is then dropped
 That is deliberate: an unbounded queue would fold amortized queue reallocation into the
 per-record figures, and allowing an export to run would let background-thread allocations be
 charged to whichever emit happened to be in flight, since the counting allocator is global.
-It hard-fails when a no-SDK shape allocates or an SDK-backed shape exceeds its reviewed ceiling.
-Change a ceiling only with repeatable measurements and a written explanation.
+It hard-fails when a no-SDK shape allocates. SDK-backed ceilings are enforced by the optimized
+`cargo bench` executable; `cargo test --all-targets` also runs the bench harness in the debug
+profile but does not compare those profile-dependent SDK counts with release baselines. Change a
+ceiling only with repeatable optimized measurements and a written explanation.
 
 `logs_export_conversion` measures the opposite direction: what the callback-based custom
 exporter costs to hand a finished batch back to C. It needs no transport feature and no
