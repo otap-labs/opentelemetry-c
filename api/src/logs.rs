@@ -366,7 +366,6 @@ pub unsafe extern "C" fn otel_logger_emit(
     record: *const OtelLogRecordView,
 ) -> OtelStatus {
     guard_status(|| {
-        clear_last_error();
         let logger = match unsafe { checked_ref::<OtelLogger>(logger) } {
             Some(logger) => logger,
             None => return OtelStatus::InvalidArgument,
@@ -389,6 +388,7 @@ pub unsafe extern "C" fn otel_logger_emit(
             // No SDK: allocation-free success. Nothing nested is read.
             return OtelStatus::Ok;
         }
+        clear_last_error();
         unsafe { ((*logger.vtable).logger_emit)(logger.ctx, record) }
     })
 }

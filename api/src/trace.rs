@@ -175,7 +175,12 @@ impl OtelSpanContext {
 
 impl OtelSpan {
     fn end(&self) {
-        if !self.ended.swap(true, Ordering::AcqRel) && !self.vtable.is_null() {
+        // The API-only path returns one immutable process-wide no-op sentinel. Avoid touching
+        // its shared `ended` flag so independent callers cannot affect one another.
+        if self.vtable.is_null() {
+            return;
+        }
+        if !self.ended.swap(true, Ordering::AcqRel) {
             // SAFETY: `vtable` is a live registered vtable; `ctx` its span context.
             unsafe { ((*self.vtable).span_end)(self.ctx) };
         }
@@ -317,7 +322,29 @@ fn new_tracer(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelTrace
     })
 }
 
+/// Shared backing for API-only spans. The wrapper is `Sync` because no operation mutates the
+/// sentinel: [`OtelSpan::end`] returns before touching `ended` when the vtable is NULL, and
+/// destruction recognizes this address and never forms a mutable reference to it.
+struct SharedNoopSpan(OtelSpan);
+
+// SAFETY: explained above; all fields are immutable on the no-op path.
+unsafe impl Sync for SharedNoopSpan {}
+
+static NOOP_SPAN: SharedNoopSpan = SharedNoopSpan(OtelSpan {
+    header: OtelHandleHeader::new(OTEL_HANDLE_KIND_SPAN),
+    vtable: std::ptr::null(),
+    ctx: std::ptr::null_mut(),
+    ended: AtomicBool::new(false),
+});
+
+fn noop_span_ptr() -> *mut OtelSpan {
+    std::ptr::from_ref(&NOOP_SPAN.0).cast_mut()
+}
+
 fn new_span(vtable: *const OtelImplVtable, ctx: *mut c_void) -> *mut OtelSpan {
+    if vtable.is_null() {
+        return noop_span_ptr();
+    }
     into_raw(OtelSpan {
         header: OtelHandleHeader::new(OtelSpan::KIND),
         vtable,
@@ -855,7 +882,6 @@ pub unsafe extern "C" fn otel_tracer_start_span(
     options: *const OtelSpanStartOptions,
 ) -> *mut OtelSpan {
     guard_ptr(|| {
-        clear_last_error();
         // SAFETY: forwarded to the caller's contract.
         let tracer = match unsafe { checked_ref(tracer) } {
             Some(t) => t,
@@ -869,6 +895,7 @@ pub unsafe extern "C" fn otel_tracer_start_span(
             // Unbacked (no-op) tracer: a valid no-op span, as the spec expects.
             return new_span(std::ptr::null(), std::ptr::null_mut());
         }
+        clear_last_error();
 
         let mut kind: u32 = 0;
         let mut parent_ctx: *mut c_void = std::ptr::null_mut();
@@ -914,7 +941,6 @@ pub unsafe extern "C" fn otel_tracer_start_span_with_context(
     parent: *const OtelSpanContext,
 ) -> *mut OtelSpan {
     guard_ptr(|| {
-        clear_last_error();
         let tracer = match unsafe { checked_ref(tracer) } {
             Some(tracer) => tracer,
             None => return std::ptr::null_mut(),
@@ -945,6 +971,7 @@ pub unsafe extern "C" fn otel_tracer_start_span_with_context(
         if tracer.vtable.is_null() {
             return new_span(std::ptr::null(), std::ptr::null_mut());
         }
+        clear_last_error();
         let vtable = tracer.vtable;
         if !vtable_has_span_context(vtable) {
             fail(
@@ -996,7 +1023,6 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
     options: *const OtelSpanStartOptionsEx,
 ) -> *mut OtelSpan {
     guard_ptr(|| {
-        clear_last_error();
         let tracer = match unsafe { checked_ref(tracer) } {
             Some(t) => t,
             None => return std::ptr::null_mut(),
@@ -1120,6 +1146,7 @@ pub unsafe extern "C" fn otel_tracer_start_span_ex(
             // Unbacked (no-op) tracer: a valid no-op span.
             return new_span(std::ptr::null(), std::ptr::null_mut());
         }
+        clear_last_error();
         if !vtable_has_span_start_ex(vtable) {
             fail(
                 OtelStatus::InvalidConfig,
@@ -1293,12 +1320,14 @@ where
     F: FnOnce(&OtelImplVtable, *mut c_void) -> OtelStatus,
 {
     guard_status(|| {
-        clear_last_error();
         // SAFETY: forwarded to the caller's contract (single-thread span use).
         match unsafe { checked_ref::<OtelSpan>(span) } {
             Some(s) if s.vtable.is_null() => OtelStatus::Ok,
             // SAFETY: `s.vtable` is a live registered vtable.
-            Some(s) => f(unsafe { &*s.vtable }, s.ctx),
+            Some(s) => {
+                clear_last_error();
+                f(unsafe { &*s.vtable }, s.ctx)
+            }
             None => OtelStatus::InvalidArgument,
         }
     })
@@ -1452,10 +1481,12 @@ pub unsafe extern "C" fn otel_span_update_name(
 #[no_mangle]
 pub unsafe extern "C" fn otel_span_end(span: *mut OtelSpan) -> OtelStatus {
     guard_status(|| {
-        clear_last_error();
         // SAFETY: forwarded to the caller's contract.
         match unsafe { checked_ref::<OtelSpan>(span) } {
             Some(s) => {
+                if !s.vtable.is_null() {
+                    clear_last_error();
+                }
                 s.end();
                 OtelStatus::Ok
             }
@@ -1471,6 +1502,9 @@ pub unsafe extern "C" fn otel_span_end(span: *mut OtelSpan) -> OtelStatus {
 #[no_mangle]
 pub unsafe extern "C" fn otel_span_destroy(span: *mut OtelSpan) {
     guard_unit(|| {
+        if span == noop_span_ptr() {
+            return;
+        }
         // SAFETY: forwarded to the caller's contract.
         if let Some(s) = unsafe { checked_ref::<OtelSpan>(span) } {
             s.end_and_free_ctx();

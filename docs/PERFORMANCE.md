@@ -10,6 +10,16 @@ Setup and cold paths may allocate and use locks. These include SDK, exporter, pr
 reader, view, and resource builders; OTLP and batch configuration; `otel_sdk_build`;
 global-provider installation; force-flush and shutdown coordination; tests; and examples.
 
+Steady-state telemetry recording with no SDK installed performs **no heap allocation**. This
+guarantee covers metric `add`/`record`, log `emit`, and no-op span start/use/end/destroy. Setup,
+propagation, context composition, and owned-handle acquisition are outside the guarantee.
+
+SDK-backed calls convert borrowed C payloads into owned SDK data at most once when the SDK must
+retain them. This is an ownership-conversion guarantee, not a one-allocation guarantee: copying
+multiple string attributes can require multiple allocations. Hot loops with stable attributes
+must have a reusable owned representation; bound Metrics instruments are that representation
+for counters and histograms today.
+
 Span, tracer, and synchronous Metrics hot paths must not add, at the C layer:
 
 - new locks, `OnceLock`s, registries, or global maps;
@@ -24,7 +34,8 @@ SDK-backed Metrics handles own the concrete Rust instrument, so synchronous reco
 performs no provider lookup, global lock, registry lookup, exporter access, or callback
 dispatch.
 
-Experimental bound counter and histogram handles move C attribute validation, copying, and
+Bound counter and histogram handles are the recommended Metrics path for hot loops with stable
+attributes. They move C attribute validation, copying, and
 SDK binding to the one-time bind call. Their steady-state C recording path performs opaque
 handle validation, clears the thread-local error slot, makes one API-to-SDK vtable call, and
 invokes the upstream bound `add` or `record`; it passes no attribute pointer, converts no
@@ -59,8 +70,9 @@ requires owned allocations because C memory must not outlive the call.
 The global-provider `RwLock` read and `Arc` clone occur only when resolving a tracer from the
 global provider with `otel_tracer_provider_get_tracer`, never per span, attribute, or event.
 Cache and reuse the returned tracer. Span operations take no global lock at the C API/vtable
-layer. Entry points that report failures clear the thread-local last-error slot at entry;
-that clear takes no global lock and allocates no heap memory.
+layer. SDK-backed entry points clear the thread-local last-error slot before dispatch when
+needed for reliable failure diagnostics. Successful API-only recording calls may leave an
+older error in place; callers query `otel_last_error_message()` only after a failure result.
 
 Observable Metrics callbacks are collection-path work rather than synchronous recording.
 Observer dispatch uses callback-thread-local registrations rather than a process-global
@@ -72,20 +84,22 @@ to guard this property. Callback and observer-lifetime rules are documented in
 
 ## Benchmarks
 
-Two [Criterion](https://crates.io/crates/criterion) suites measure trace and Metrics
-recording. They run explicitly, are not part of `cargo test` or a required CI gate, and do
-not require a collector:
+Criterion suites measure latency and remain informational. Allocation executables use a
+counting global allocator and enforce the contract in CI:
 
 ```sh
 cargo bench -p opentelemetry-c-api
+cargo bench -p opentelemetry-c-api --bench api_allocations
 cargo bench -p opentelemetry-c-sdk
 cargo bench -p opentelemetry-c-sdk --bench metrics_allocations
+cargo bench -p opentelemetry-c-sdk --bench logs_allocations
 ```
 
 - `api_hotpath` measures the API-only, no-SDK path. It isolates opaque-handle,
   panic-guard, and no-op dispatch costs. Its Metrics matrix records counter, gauge, and
   histogram operations with 0, 1, 4, 8, and 16 preconstructed integer/bool, mixed-numeric,
   and string attributes.
+- `api_allocations` hard-fails unless no-SDK span start/use/end/destroy remains allocation-free.
 - `sdk_hotpath` installs a real exporter and SDK pipeline through the public C API and
   measures the C boundary plus Rust SDK processing. It repeats the same attribute matrix and
   includes direct OpenTelemetry Rust calls with equivalent preconstructed attributes, so C
@@ -110,7 +124,8 @@ each case before enabling a process-local counting
 allocator and uses a custom exporter plus manual reader for the C SDK path, so no worker,
 collection, export, or network activity can contaminate the measurements. The counters cover
 allocations made by all threads while a sample is active; this benchmark intentionally creates
-no background worker threads.
+no background worker threads. It hard-fails if API-only or bound recording allocates, or if
+SDK-backed attribute conversion exceeds its documented linear ceiling.
 
 Run the repeatable Linux VM protocol with:
 
@@ -209,6 +224,10 @@ measured emit performs the complete validate-convert-handoff and is then dropped
 That is deliberate: an unbounded queue would fold amortized queue reallocation into the
 per-record figures, and allowing an export to run would let background-thread allocations be
 charged to whichever emit happened to be in flight, since the counting allocator is global.
+It hard-fails when a no-SDK shape allocates. SDK-backed ceilings are enforced by the optimized
+`cargo bench` executable; `cargo test --all-targets` also runs the bench harness in the debug
+profile but does not compare those profile-dependent SDK counts with release baselines. Change a
+ceiling only with repeatable optimized measurements and a written explanation.
 
 `logs_export_conversion` measures the opposite direction: what the callback-based custom
 exporter costs to hand a finished batch back to C. It needs no transport feature and no
