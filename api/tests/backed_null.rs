@@ -17,6 +17,7 @@ use std::os::raw::{c_char, c_void};
 use opentelemetry_c_abi::{
     OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelStatus, OtelStringView,
     OTEL_IMPL_VTABLE_REQUIRED_SIZE, OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE,
+    OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE,
 };
 
 use opentelemetry_c_api::{
@@ -24,8 +25,8 @@ use opentelemetry_c_api::{
     otel_last_error_message, otel_span_context_destroy, otel_span_destroy, otel_span_end,
     otel_span_get_context, otel_tracer_destroy, otel_tracer_provider_destroy,
     otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_ex,
-    otel_tracer_start_span_with_context, OtelSpan, OtelSpanContext, OtelSpanStartOptions,
-    OtelSpanStartOptionsEx,
+    otel_tracer_start_span_with_context, otel_tracer_supports_context, OtelSpan, OtelSpanContext,
+    OtelSpanStartOptions, OtelSpanStartOptionsEx, OTEL_PARENT_AMBIENT,
 };
 
 // ---- A minimal backed vtable that validates the name like the real SDK ----
@@ -154,6 +155,14 @@ extern "C" fn vt_start_span_ex(
     }
     dummy()
 }
+extern "C" fn vt_start_span_ex_with_context(
+    ctx: *mut c_void,
+    name: OtelStringView,
+    config: *const opentelemetry_c_abi::OtelSpanStartConfig,
+    _: *const opentelemetry_c_abi::OtelContextView,
+) -> *mut c_void {
+    vt_start_span_ex(ctx, name, config)
+}
 extern "C" fn vt_span_context_skip(
     _c: *mut c_void,
     _visitor: opentelemetry_c_abi::OtelSpanContextVisitor,
@@ -182,6 +191,7 @@ static BACKED_VTABLE: OtelImplVtable = OtelImplVtable {
     span_context_visit: vt_span_context_visit,
     tracer_start_span_with_context: vt_start_with_context,
     tracer_start_span_ex: vt_start_span_ex,
+    tracer_start_span_ex_with_context: vt_start_span_ex_with_context,
 };
 
 fn good(s: &'static str) -> OtelStringView {
@@ -405,6 +415,8 @@ fn opts_ex() -> OtelSpanStartOptionsEx {
         attribute_count: 0,
         links: std::ptr::null(),
         link_count: 0,
+        parent_mode: 0,
+        reserved2: 0,
     }
 }
 
@@ -561,6 +573,26 @@ fn start_span_ex_requires_ex_support() {
     let opts = opts_ex();
     assert!(unsafe { otel_tracer_start_span_ex(tracer, good("ex"), &opts) }.is_null());
     assert!(last_error().contains("does not support extended span start"));
+    unsafe {
+        otel_tracer_destroy(tracer);
+        otel_tracer_provider_destroy(provider);
+    }
+}
+
+#[test]
+fn ambient_context_fails_closed_with_pre_context_vtable() {
+    let old_vtable = OtelImplVtable {
+        struct_size: OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE,
+        ..BACKED_VTABLE
+    };
+    let provider = unsafe { otel_api_provider_new(&old_vtable, dummy()) };
+    let tracer =
+        unsafe { otel_tracer_provider_get_tracer(provider, good("old"), empty(), empty()) };
+    assert_eq!(unsafe { otel_tracer_supports_context(tracer) }, 0);
+    let mut options = opts_ex();
+    options.parent_mode = OTEL_PARENT_AMBIENT;
+    assert!(unsafe { otel_tracer_start_span_ex(tracer, good("ambient"), &options) }.is_null());
+    assert!(last_error().contains("does not support ambient context"));
     unsafe {
         otel_tracer_destroy(tracer);
         otel_tracer_provider_destroy(provider);

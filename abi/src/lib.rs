@@ -68,6 +68,9 @@ pub const OTEL_HANDLE_KIND_TRACER_PROVIDER: u64 = 0x0101;
 pub const OTEL_HANDLE_KIND_TRACER: u64 = 0x0102;
 pub const OTEL_HANDLE_KIND_SPAN: u64 = 0x0103;
 pub const OTEL_HANDLE_KIND_SPAN_CONTEXT: u64 = 0x0104;
+pub const OTEL_HANDLE_KIND_CONTEXT: u64 = 0x0105;
+pub const OTEL_HANDLE_KIND_BAGGAGE: u64 = 0x0106;
+pub const OTEL_HANDLE_KIND_BAGGAGE_BUILDER: u64 = 0x0107;
 pub const OTEL_HANDLE_KIND_METER_PROVIDER: u64 = 0x0110;
 pub const OTEL_HANDLE_KIND_METER: u64 = 0x0111;
 pub const OTEL_HANDLE_KIND_COUNTER_U64: u64 = 0x0120;
@@ -477,6 +480,29 @@ pub struct OtelSpanContextView {
     pub trace_state: OtelStringView,
 }
 
+/// Borrowed, versioned view of the API-owned cross-signal context.
+///
+/// The view and all nested pointers remain valid only for the synchronous vtable call.
+/// Fields may be appended; implementations must gate reads on `struct_size`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OtelContextView {
+    pub struct_size: usize,
+    pub span_context: *const OtelSpanContextView,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+/// Internal context flag reserved for SDK telemetry-suppression propagation.
+pub const OTEL_CONTEXT_FLAG_SUPPRESSED: u32 = 1 << 0;
+/// Flags understood by this ABI revision. Suppression is reserved but not yet accepted.
+pub const OTEL_CONTEXT_SUPPORTED_FLAGS: u32 = 0;
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<OtelContextView>() == 24);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(std::mem::size_of::<OtelContextView>() == 16);
+
 pub type OtelSpanContextVisitor = Option<
     extern "C" fn(user_data: *mut c_void, context: *const OtelSpanContextView) -> OtelStatus,
 >;
@@ -624,6 +650,13 @@ pub struct OtelImplVtable {
         name: OtelStringView,
         config: *const OtelSpanStartConfig,
     ) -> *mut c_void,
+    /// Start an extended span using a general API-owned context view. Optional appended entry.
+    pub tracer_start_span_ex_with_context: extern "C" fn(
+        tracer_ctx: *mut c_void,
+        name: OtelStringView,
+        config: *const OtelSpanStartConfig,
+        context: *const OtelContextView,
+    ) -> *mut c_void,
 }
 
 /// Current trace implementation ABI kind/version identifier.
@@ -658,6 +691,12 @@ pub const OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE: usize = 72;
 pub const OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE: usize = 152;
 #[cfg(target_pointer_width = "32")]
 pub const OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE: usize = 76;
+
+/// Trace vtable prefix through general context parenting support.
+#[cfg(target_pointer_width = "64")]
+pub const OTEL_IMPL_VTABLE_CONTEXT_SIZE: usize = 160;
+#[cfg(target_pointer_width = "32")]
+pub const OTEL_IMPL_VTABLE_CONTEXT_SIZE: usize = 80;
 
 /// Internal Metrics implementation vtable. Metrics uses a distinct ABI identifier,
 /// provider context, and API-owned global slot from traces.
@@ -848,6 +887,18 @@ pub unsafe fn trace_vtable_supports_span_start_ex(vtable: *const OtelImplVtable)
         && header.struct_size >= OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE
 }
 
+/// Whether a compatible trace vtable includes general context parenting.
+///
+/// # Safety
+/// `vtable` must be non-NULL, correctly aligned, and readable for [`OtelVtableHeader`].
+pub unsafe fn trace_vtable_supports_context(vtable: *const OtelImplVtable) -> bool {
+    let Some(header) = (unsafe { vtable.cast::<OtelVtableHeader>().as_ref() }) else {
+        return false;
+    };
+    header.abi_version == OTEL_TRACE_IMPL_ABI_VERSION
+        && header.struct_size >= OTEL_IMPL_VTABLE_CONTEXT_SIZE
+}
+
 /// Validate the stable prefix of a Metrics implementation vtable.
 ///
 /// The ABI identifier selects both the Metrics signal kind and its compatible version.
@@ -908,7 +959,11 @@ const _: () = {
         OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE
             == std::mem::offset_of!(OtelImplVtable, tracer_start_span_ex)
     );
-    assert!(OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE == std::mem::size_of::<OtelImplVtable>());
+    assert!(
+        OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE
+            == std::mem::offset_of!(OtelImplVtable, tracer_start_span_ex_with_context)
+    );
+    assert!(OTEL_IMPL_VTABLE_CONTEXT_SIZE == std::mem::size_of::<OtelImplVtable>());
     assert!(
         OTEL_IMPL_VTABLE_SPAN_START_EX_SIZE
             == OTEL_IMPL_VTABLE_SPAN_CONTEXT_SIZE
@@ -1335,6 +1390,9 @@ mod tests {
             OTEL_HANDLE_KIND_TRACER,
             OTEL_HANDLE_KIND_SPAN,
             OTEL_HANDLE_KIND_SPAN_CONTEXT,
+            OTEL_HANDLE_KIND_CONTEXT,
+            OTEL_HANDLE_KIND_BAGGAGE,
+            OTEL_HANDLE_KIND_BAGGAGE_BUILDER,
             OTEL_HANDLE_KIND_METER_PROVIDER,
             OTEL_HANDLE_KIND_METER,
             OTEL_HANDLE_KIND_COUNTER_U64,

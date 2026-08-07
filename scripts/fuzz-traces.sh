@@ -36,7 +36,7 @@ for value in "$seconds" "$long_seconds"; do
   fi
 done
 
-targets=(trace_propagation span_start_ex sampler_config span_limits trace_exporter_callbacks)
+targets=(trace_propagation span_start_ex sampler_config span_limits trace_exporter_callbacks context_scopes)
 
 cargo +nightly fuzz build
 for target in "${targets[@]}"; do

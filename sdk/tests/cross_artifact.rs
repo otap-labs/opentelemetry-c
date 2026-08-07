@@ -202,6 +202,7 @@ typedef struct otel_tracer_provider_t otel_tracer_provider_t;
 typedef struct otel_tracer_t otel_tracer_t;
 typedef struct otel_span_t otel_span_t;
 typedef struct otel_span_context_t otel_span_context_t;
+typedef struct otel_context_t otel_context_t;
 typedef struct otel_meter_provider_t otel_meter_provider_t;
 typedef struct otel_meter_t otel_meter_t;
 typedef struct otel_counter_u64_t otel_counter_u64_t;
@@ -215,6 +216,16 @@ typedef struct otel_observer_u64_t otel_observer_u64_t;
 typedef struct otel_metric_view_builder_t otel_metric_view_builder_t;
 typedef struct otel_metric_view_t otel_metric_view_t;
 typedef struct { uint32_t kind; const otel_span_t* parent; } otel_span_start_options_t;
+typedef struct {
+    size_t struct_size; uint32_t kind; uint32_t reserved;
+    const otel_span_t* parent; const otel_span_context_t* parent_context;
+    uint64_t start_time_unix_nanos; const otel_key_value_t* attributes;
+    size_t attribute_count; const void* links; size_t link_count;
+    uint32_t parent_mode; uint32_t reserved2;
+} otel_span_start_options_ex_t;
+typedef struct {
+    size_t struct_size; uint64_t thread_token; uint64_t generation; uint64_t reserved[2];
+} otel_context_scope_t;
 extern otel_tracer_provider_t* otel_global_tracer_provider(void);
 extern otel_tracer_t* otel_tracer_provider_get_tracer(const otel_tracer_provider_t*, otel_string_view_t, otel_string_view_t, otel_string_view_t);
 extern otel_span_t* otel_tracer_start_span(const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*);
@@ -223,6 +234,12 @@ extern void otel_span_context_destroy(otel_span_context_t*);
 extern otel_span_t* otel_tracer_start_span_with_context(
     const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*,
     const otel_span_context_t*);
+extern otel_context_t* otel_context_create(const otel_span_context_t*);
+extern void otel_context_destroy(otel_context_t*);
+extern int otel_context_attach(const otel_context_t*, otel_context_scope_t*);
+extern int otel_context_scope_detach(otel_context_scope_t*);
+extern otel_span_t* otel_tracer_start_span_ex(
+    const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_ex_t*);
 extern int otel_span_set_string_attribute(otel_span_t*, otel_string_view_t, otel_string_view_t);
 extern int otel_span_end(otel_span_t*);
 extern void otel_span_destroy(otel_span_t*);
@@ -356,8 +373,14 @@ static void work(void){
     if (otel_span_get_context(parent, &parent_context) == 0 && parent_context != (void*)0) {
         otel_span_end(parent); otel_span_destroy(parent);
         parent=(void*)0;
-        child=otel_tracer_start_span_with_context(t, cs("child"), &o, parent_context);
+        otel_context_t* context=otel_context_create(parent_context);
+        otel_context_scope_t scope={sizeof(scope),0,0,{0,0}};
+        if (!context || otel_context_attach(context,&scope)!=0) abort();
+        otel_context_destroy(context);
+        otel_span_start_options_ex_t ex={sizeof(ex),2,0,0,0,0,0,0,0,0,1,0};
+        child=otel_tracer_start_span_ex(t, cs("child"), &ex);
         if (child == (void*)0) abort();
+        if (otel_context_scope_detach(&scope)!=0) abort();
     } else {
         o.parent=parent;
         child=otel_tracer_start_span(t, cs("child"), &o);

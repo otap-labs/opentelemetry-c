@@ -19,6 +19,7 @@ use std::os::raw::c_char;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use opentelemetry_c_api::{
+    otel_context_attach, otel_context_create, otel_context_destroy, otel_context_scope_detach,
     otel_counter_u64_add, otel_counter_u64_destroy, otel_gauge_f64_destroy, otel_gauge_f64_record,
     otel_global_meter_provider, otel_global_tracer_provider, otel_histogram_f64_destroy,
     otel_histogram_f64_record, otel_meter_create_f64_gauge, otel_meter_create_f64_histogram,
@@ -26,8 +27,9 @@ use opentelemetry_c_api::{
     otel_meter_provider_get_meter, otel_span_destroy, otel_span_end, otel_span_set_bool_attribute,
     otel_span_set_double_attribute, otel_span_set_int64_attribute, otel_span_set_string_attribute,
     otel_tracer_destroy, otel_tracer_provider_destroy, otel_tracer_provider_get_tracer,
-    otel_tracer_start_span, OtelAttributeType, OtelAttributeValue, OtelCounterU64, OtelGaugeF64,
-    OtelHistogramF64, OtelKeyValue, OtelSpan, OtelStatus, OtelStringView, OtelTracer,
+    otel_tracer_start_span, otel_tracer_start_span_ex, OtelAttributeType, OtelAttributeValue,
+    OtelContextScope, OtelCounterU64, OtelGaugeF64, OtelHistogramF64, OtelKeyValue, OtelSpan,
+    OtelSpanStartOptionsEx, OtelStatus, OtelStringView, OtelTracer, OTEL_PARENT_AMBIENT,
 };
 
 fn sv(s: &str) -> OtelStringView {
@@ -184,6 +186,47 @@ fn bench_api_no_sdk(c: &mut Criterion) {
             unsafe { otel_span_destroy(s) };
         });
         unsafe { otel_tracer_destroy(tracer) };
+    });
+
+    g.bench_function("start_end_span_ambient_no_sdk", |b| {
+        let tracer = cached_tracer();
+        let options = OtelSpanStartOptionsEx {
+            struct_size: std::mem::size_of::<OtelSpanStartOptionsEx>(),
+            kind: 0,
+            reserved: 0,
+            parent: std::ptr::null(),
+            parent_context: std::ptr::null(),
+            start_time_unix_nanos: 0,
+            attributes: std::ptr::null(),
+            attribute_count: 0,
+            links: std::ptr::null(),
+            link_count: 0,
+            parent_mode: OTEL_PARENT_AMBIENT,
+            reserved2: 0,
+        };
+        b.iter(|| {
+            let s = unsafe { otel_tracer_start_span_ex(tracer, sv("op"), &options) };
+            unsafe {
+                otel_span_end(s);
+                otel_span_destroy(s);
+            }
+        });
+        unsafe { otel_tracer_destroy(tracer) };
+    });
+
+    g.bench_function("context_attach_detach", |b| {
+        let context = unsafe { otel_context_create(std::ptr::null()) };
+        b.iter(|| {
+            let mut scope = OtelContextScope {
+                struct_size: std::mem::size_of::<OtelContextScope>(),
+                thread_token: 0,
+                generation: 0,
+                reserved: [0; 2],
+            };
+            black_box(unsafe { otel_context_attach(context, &mut scope) });
+            black_box(unsafe { otel_context_scope_detach(&mut scope) });
+        });
+        unsafe { otel_context_destroy(context) };
     });
 
     g.bench_function("set_string_attribute", |b| {

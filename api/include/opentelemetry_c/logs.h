@@ -348,6 +348,12 @@ otel_status_t otel_logger_emit_with_context(const otel_logger_t* logger,
                                             const otel_log_record_view_t* record,
                                             const otel_span_context_t* context);
 
+/* Opt-in ambient correlation. Explicit record trace context wins without a TLS lookup.
+ * Otherwise the current API-owned C context is injected for this call. With no active
+ * SpanContext this is equivalent to otel_logger_emit(). */
+otel_status_t otel_logger_emit_with_current_context(const otel_logger_t* logger,
+                                                    const otel_log_record_view_t* record);
+
 /* ---- Helpers -------------------------------------------------------------- */
 
 #if defined(__cplusplus) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)

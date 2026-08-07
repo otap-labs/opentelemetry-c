@@ -55,6 +55,27 @@ pub(crate) unsafe fn checked_ref<'a, T: HasHandleHeader>(ptr: *const T) -> Optio
     Some(handle)
 }
 
+/// Mutably borrow a live handle after validating its common prefix.
+///
+/// # Safety
+/// `ptr` must be NULL or point to a live, uniquely accessible project handle of `T`.
+pub(crate) unsafe fn checked_mut<'a, T: HasHandleHeader>(ptr: *mut T) -> Option<&'a mut T> {
+    if ptr.is_null() {
+        set_last_error("null handle passed to OpenTelemetry C API");
+        return None;
+    }
+    let header = unsafe { read_header(ptr) };
+    if !header.is_live() {
+        set_last_error("handle failed validation: not a live OpenTelemetry C handle");
+        return None;
+    }
+    if header.kind() != T::KIND {
+        set_last_error("handle failed validation: wrong OpenTelemetry C handle type");
+        return None;
+    }
+    Some(unsafe { &mut *ptr })
+}
+
 /// Allocate a handle on the heap and return an owning raw pointer for C.
 pub(crate) fn into_raw<T>(value: T) -> *mut T {
     Box::into_raw(Box::new(value))

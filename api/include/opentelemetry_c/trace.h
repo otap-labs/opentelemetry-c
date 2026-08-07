@@ -162,6 +162,12 @@ typedef struct otel_span_link_t {
     size_t attribute_count;
 } otel_span_link_t;
 
+typedef enum otel_parent_mode_t {
+    OTEL_PARENT_EXPLICIT = 0, /* Existing explicit parent fields; no ambient lookup. */
+    OTEL_PARENT_AMBIENT = 1,  /* Parent from the current API-owned C context. */
+    OTEL_PARENT_ROOT = 2      /* Ignore the current context and force a root span. */
+} otel_parent_mode_t;
+
 /*
  * Versioned options for otel_tracer_start_span_ex().
  *
@@ -185,15 +191,17 @@ typedef struct otel_span_start_options_ex_t {
     size_t attribute_count;
     const otel_span_link_t* links;             /* Optional links; NULL when link_count == 0. */
     size_t link_count;
+    otel_parent_mode_t parent_mode;            /* Appended parenting policy. */
+    uint32_t reserved2;                        /* Must be 0 when present. */
 } otel_span_start_options_ex_t;
 
 /* Initializer setting struct_size and zeroing every other field. */
 #define OTEL_SPAN_START_OPTIONS_EX_INIT \
-    { sizeof(otel_span_start_options_ex_t), OTEL_SPAN_KIND_INTERNAL, 0, NULL, NULL, 0, NULL, 0, NULL, 0 }
+    { sizeof(otel_span_start_options_ex_t), OTEL_SPAN_KIND_INTERNAL, 0, NULL, NULL, 0, NULL, 0, NULL, 0, OTEL_PARENT_EXPLICIT, 0 }
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && \
     defined(UINTPTR_MAX) && (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu)
-_Static_assert(sizeof(otel_span_start_options_ex_t) == 72,
+_Static_assert(sizeof(otel_span_start_options_ex_t) == 80,
                "otel_span_start_options_ex_t ABI mismatch");
 #endif
 
@@ -212,6 +220,10 @@ _Static_assert(sizeof(otel_span_start_options_ex_t) == 72,
 otel_span_t* otel_tracer_start_span_ex(const otel_tracer_t* tracer,
                                        otel_string_view_t name,
                                        const otel_span_start_options_ex_t* options);
+
+/* Query once during setup when an application needs ambient context. An unbacked tracer and
+ * an older SDK return OTEL_FALSE. Explicit SpanContext parenting remains available separately. */
+otel_bool_t otel_tracer_supports_context(const otel_tracer_t* tracer);
 
 /* Destroy a tracer handle (no-op on NULL). */
 void otel_tracer_destroy(otel_tracer_t* tracer);

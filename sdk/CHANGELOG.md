@@ -11,6 +11,10 @@
   import library on Windows, without adding a Rust crate dependency or duplicating API state.
 - SDK panic containment reports through the API-owned process diagnostic callback in addition
   to preserving synchronous last-error behavior.
+- General API-owned context parenting through a new append-only trace-vtable capability. The
+  SDK validates the versioned borrowed context view and converts its SpanContext into the
+  upstream Rust `Context` only for span construction; existing explicit SpanContext and
+  extended-start slots remain unchanged for mixed-version compatibility.
 
 - OTLP gRPC/tonic transport for Traces plus
   `otel_otlp_trace_exporter_builder_set_transport` and

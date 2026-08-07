@@ -15,6 +15,7 @@ use opentelemetry_c_abi::{
     OTEL_HANDLE_KIND_LOGGER_PROVIDER, OTEL_LOG_FIELD_TRACE_CONTEXT,
 };
 
+use crate::context::current_data;
 use crate::error::{clear_last_error, fail, has_last_error, set_last_error, OtelStatus};
 use crate::handle::HasHandleHeader;
 use crate::handle::{checked_ref, destroy, guard_ptr, guard_status, guard_unit, into_raw};
@@ -450,6 +451,44 @@ pub unsafe extern "C" fn otel_logger_emit_with_context(
     })
 }
 
+/// Emit with correlation from the current API-owned C context when the record does not
+/// already carry explicit trace context. Existing `otel_logger_emit` never consults TLS.
+///
+/// # Safety
+/// `logger` must be live and `record` plus nested borrowed data must remain readable for the call.
+#[no_mangle]
+pub unsafe extern "C" fn otel_logger_emit_with_current_context(
+    logger: *const OtelLogger,
+    record: *const OtelLogRecordView,
+) -> OtelStatus {
+    guard_status(|| {
+        clear_last_error();
+        let Some(logger_ref) = (unsafe { checked_ref::<OtelLogger>(logger) }) else {
+            return OtelStatus::InvalidArgument;
+        };
+        if record.is_null() {
+            return fail(OtelStatus::InvalidArgument, "log record is NULL");
+        }
+        let struct_size = unsafe { record.cast::<u64>().read() };
+        if struct_size < OTEL_LOG_RECORD_VIEW_V1_SIZE {
+            return fail(
+                OtelStatus::InvalidConfig,
+                "log record struct_size is too small",
+            );
+        }
+        let present_fields = unsafe { std::ptr::addr_of!((*record).present_fields).read() };
+        if logger_ref.vtable.is_null() || present_fields & OTEL_LOG_FIELD_TRACE_CONTEXT != 0 {
+            return unsafe { otel_logger_emit(logger, record) };
+        }
+        let Some(data) = current_data().and_then(|context| context.span_context.as_ref().cloned())
+        else {
+            return unsafe { otel_logger_emit(logger, record) };
+        };
+        let context = OtelSpanContext::from_data(data);
+        unsafe { otel_logger_emit_with_context(logger, record, &context) }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,6 +590,26 @@ mod tests {
             record.trace_context.trace_flags,
             original_trace_context.trace_flags
         );
+        let ambient = unsafe { crate::context::otel_context_create(context) };
+        let mut scope = crate::context::OtelContextScope {
+            struct_size: std::mem::size_of::<crate::context::OtelContextScope>(),
+            thread_token: 0,
+            generation: 0,
+            reserved: [0; 2],
+        };
+        assert_eq!(
+            unsafe { crate::context::otel_context_attach(ambient, &mut scope) },
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            unsafe { otel_logger_emit_with_current_context(logger, &record) },
+            OtelStatus::Ok
+        );
+        assert_eq!(
+            unsafe { crate::context::otel_context_scope_detach(&mut scope) },
+            OtelStatus::Ok
+        );
+        unsafe { crate::context::otel_context_destroy(ambient) };
         record.present_fields |= OTEL_LOG_FIELD_TRACE_CONTEXT;
         assert_eq!(
             unsafe { otel_logger_emit_with_context(logger, &record, context) },

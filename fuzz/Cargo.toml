@@ -88,3 +88,17 @@ path = "fuzz_targets/trace_exporter_callbacks.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "context_scopes"
+path = "fuzz_targets/context_scopes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "baggage_propagation"
+path = "fuzz_targets/baggage_propagation.rs"
+test = false
+doc = false
+bench = false

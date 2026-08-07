@@ -23,6 +23,8 @@
 // wrapped in `unsafe(...)`; this is standard, sound FFI boilerplate.
 #![allow(unsafe_attr_outside_unsafe)]
 
+mod baggage;
+mod context;
 mod diagnostic;
 mod error;
 mod global;
@@ -43,6 +45,19 @@ pub use opentelemetry_c_abi::{
     OtelSpanKind, OtelSpanStatusCode, OtelStatus, OtelStringView,
 };
 
+pub use baggage::{
+    otel_baggage_builder_build, otel_baggage_builder_create, otel_baggage_builder_destroy,
+    otel_baggage_builder_remove, otel_baggage_builder_set, otel_baggage_clone, otel_baggage_count,
+    otel_baggage_destroy, otel_baggage_get, otel_baggage_propagation_extract,
+    otel_baggage_propagation_inject, otel_baggage_visit, OtelBaggage, OtelBaggageBuilder,
+    OtelBaggageEntryView, OtelBaggageVisitor,
+};
+pub use context::{
+    otel_context_attach, otel_context_baggage, otel_context_clone, otel_context_create,
+    otel_context_current, otel_context_destroy, otel_context_scope_detach,
+    otel_context_span_context, otel_context_with_baggage, otel_context_with_span_context,
+    OtelContext, OtelContextScope,
+};
 pub use diagnostic::{
     otel_api_report_diagnostic, otel_set_diagnostic_callback, OtelDiagnosticCallbacks,
     OtelDiagnosticRecord,
@@ -52,10 +67,10 @@ pub use global::{
     otel_api_provider_new, otel_api_register_global_provider, otel_global_tracer_provider,
 };
 pub use logs::{
-    otel_logger_destroy, otel_logger_emit, otel_logger_emit_with_context, otel_logger_enabled,
-    otel_logger_provider_destroy, otel_logger_provider_get_logger,
-    otel_logger_provider_get_logger_with_options, OtelLogger, OtelLoggerOptions,
-    OtelLoggerProvider,
+    otel_logger_destroy, otel_logger_emit, otel_logger_emit_with_context,
+    otel_logger_emit_with_current_context, otel_logger_enabled, otel_logger_provider_destroy,
+    otel_logger_provider_get_logger, otel_logger_provider_get_logger_with_options, OtelLogger,
+    OtelLoggerOptions, OtelLoggerProvider,
 };
 pub use logs_global::{
     otel_api_logger_provider_new, otel_api_register_global_logger_provider_with_token,
@@ -80,8 +95,9 @@ pub use trace::{
     otel_span_set_int64_attribute, otel_span_set_status, otel_span_set_string_attribute,
     otel_span_update_name, otel_tracer_destroy, otel_tracer_provider_destroy,
     otel_tracer_provider_get_tracer, otel_tracer_start_span, otel_tracer_start_span_ex,
-    otel_tracer_start_span_with_context, OtelSpan, OtelSpanContext, OtelSpanLink,
-    OtelSpanStartOptions, OtelSpanStartOptionsEx, OtelTracer, OtelTracerProvider,
+    otel_tracer_start_span_with_context, otel_tracer_supports_context, OtelSpan, OtelSpanContext,
+    OtelSpanLink, OtelSpanStartOptions, OtelSpanStartOptionsEx, OtelTracer, OtelTracerProvider,
+    OTEL_PARENT_AMBIENT, OTEL_PARENT_EXPLICIT, OTEL_PARENT_ROOT,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");

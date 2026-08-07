@@ -18,7 +18,7 @@ All three signals are available, but the C API and ABI remain experimental.
 
 | Signal | C API | Native ABI | C SDK | OTLP exporter | Current scope |
 | --- | --- | --- | --- | --- | --- |
-| **Traces** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Spans, context propagation, sampling, processors, OTLP export, and custom C export. See [TRACES_COMPLIANCE.md](TRACES_COMPLIANCE.md). |
+| **Traces** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Spans, API-owned ambient and propagated context, W3C Baggage, sampling, processors, OTLP export, and custom C export. See [TRACES_COMPLIANCE.md](TRACES_COMPLIANCE.md). |
 | **Metrics** | Alpha | Alpha | Alpha | HTTP/protobuf and optional gRPC | Synchronous and observable instruments, readers, views, OTLP export, and custom C export. See [METRICS_COMPLIANCE.md](METRICS_COMPLIANCE.md). |
 | **Logs** | Experimental | Experimental | Experimental | HTTP/protobuf and optional gRPC | Structured log bridge, trace correlation, processors, OTLP export, and custom C export. See [LOGS_COMPLIANCE.md](LOGS_COMPLIANCE.md). |
 
@@ -102,6 +102,8 @@ Then start with a complete, buildable example:
 - [C custom trace exporter](sdk/examples/c-custom-trace-exporter) — receive finished span
   batches in your own C code, with no OTLP transport: callback registration, span-batch-view
   traversal (attributes, events, links), and callback-state ownership.
+- [C baggage](sdk/examples/c-baggage) — API-only W3C baggage extraction, ambient attachment,
+  and access from a separate C translation unit.
 
 See [Building from a source release](docs/BUILDING.md) for feature selection and platform
 constraints.

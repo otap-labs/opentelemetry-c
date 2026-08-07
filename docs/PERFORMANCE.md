@@ -42,6 +42,18 @@ Accepted and required hot-path costs include:
 - allocation of the real OpenTelemetry objects and C handles; and
 - the Rust SDK's own processing.
 
+Ambient context is opt-in. Existing explicit-parent span starts, `otel_logger_emit`, explicit
+log correlation, and every Metrics operation perform no current-context lookup. Ambient span
+start snapshots one `Arc` from TLS before entering the SDK and never holds a TLS borrow across a
+vtable call. Context attach/detach is request-scope work: its bounded TLS `Vec` may allocate when
+growing, but recording does not allocate merely to read the current context. The API benchmark
+suite compares no-SDK explicit and ambient span start plus attach/detach.
+
+Baggage is immutable and stored in context through a shared `Arc`. Attaching, snapshotting, and
+reading a context with baggage do not copy or traverse its entries. Builder mutation and W3C
+header extraction/injection are request-boundary operations and may allocate; ordinary span,
+metric, and log recording does not inspect baggage.
+
 `otel_span_destroy` may call both `span_end` and `span_free` to preserve best-effort
 end-before-free semantics. Converting borrowed C string, key, and value views currently
 requires owned allocations because C memory must not outlive the call.

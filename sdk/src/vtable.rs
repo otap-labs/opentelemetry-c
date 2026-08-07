@@ -31,9 +31,9 @@ use opentelemetry::{Context, InstrumentationScope, Key, KeyValue, StringValue, V
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider, Span as SdkOtelSpan};
 
 use opentelemetry_c_abi::{
-    OtelAttributeType, OtelImplVtable, OtelKeyValue, OtelSpanContextView, OtelSpanKind,
-    OtelSpanStartConfig, OtelSpanStatusCode, OtelStatus, OtelStringView,
-    OTEL_TRACE_IMPL_ABI_VERSION,
+    OtelAttributeType, OtelContextView, OtelImplVtable, OtelKeyValue, OtelSpanContextView,
+    OtelSpanKind, OtelSpanStartConfig, OtelSpanStatusCode, OtelStatus, OtelStringView,
+    OTEL_CONTEXT_SUPPORTED_FLAGS, OTEL_TRACE_IMPL_ABI_VERSION,
 };
 
 use crate::error::{fail, fail_abi};
@@ -603,6 +603,45 @@ extern "C" fn vt_tracer_start_span_ex(
     })
 }
 
+extern "C" fn vt_tracer_start_span_ex_with_context(
+    ctx: *mut c_void,
+    name: OtelStringView,
+    config: *const OtelSpanStartConfig,
+    context: *const OtelContextView,
+) -> *mut c_void {
+    guard_ptr(|| {
+        if config.is_null() || context.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "span config or context view is NULL",
+            );
+            return std::ptr::null_mut();
+        }
+        let struct_size = unsafe { context.cast::<usize>().read() };
+        if struct_size < std::mem::size_of::<OtelContextView>() {
+            fail(OtelStatus::InvalidConfig, "context view is incompatible");
+            return std::ptr::null_mut();
+        }
+        let span_context = unsafe { std::ptr::addr_of!((*context).span_context).read() };
+        let flags = unsafe { std::ptr::addr_of!((*context).flags).read() };
+        let reserved = unsafe { std::ptr::addr_of!((*context).reserved).read() };
+        if reserved != 0 || flags & !OTEL_CONTEXT_SUPPORTED_FLAGS != 0 {
+            fail(OtelStatus::InvalidConfig, "context view is incompatible");
+            return std::ptr::null_mut();
+        }
+        let mut local = unsafe { *config };
+        if !local.parent_span_ctx.is_null() || !local.parent_context.is_null() {
+            fail(
+                OtelStatus::InvalidArgument,
+                "general context cannot be combined with an explicit parent",
+            );
+            return std::ptr::null_mut();
+        }
+        local.parent_context = span_context;
+        vt_tracer_start_span_ex(ctx, name, &local)
+    })
+}
+
 extern "C" fn vt_tracer_free(ctx: *mut c_void) {
     guard_unit(|| {
         if !ctx.is_null() {
@@ -801,6 +840,7 @@ pub(crate) static SDK_VTABLE: OtelImplVtable = OtelImplVtable {
     span_context_visit: vt_span_context_visit,
     tracer_start_span_with_context: vt_tracer_start_span_with_context,
     tracer_start_span_ex: vt_tracer_start_span_ex,
+    tracer_start_span_ex_with_context: vt_tracer_start_span_ex_with_context,
 };
 
 /// Pointer to the SDK vtable (installed via the API registration ABI).
@@ -984,6 +1024,60 @@ mod tests {
             snapshot.trace_state
         );
 
+        (vt.tracer_free)(tctx);
+        (vt.provider_free)(pctx);
+    }
+
+    #[test]
+    fn general_context_view_parents_span() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let vt = &SDK_VTABLE;
+        let pctx = provider_ctx(provider);
+        let tctx = (vt.provider_get_tracer)(pctx, sv("scope"), empty(), empty());
+        let parent = OtelSpanContextView {
+            trace_id: [0x41; 16],
+            span_id: [0x42; 8],
+            trace_flags: 1,
+            reserved: [0; 3],
+            is_remote: 1,
+            trace_state: sv("vendor=context"),
+        };
+        let context = OtelContextView {
+            struct_size: std::mem::size_of::<OtelContextView>(),
+            span_context: &parent,
+            flags: 0,
+            reserved: 0,
+        };
+        let config = OtelSpanStartConfig {
+            kind: 0,
+            reserved: 0,
+            parent_span_ctx: std::ptr::null_mut(),
+            parent_context: std::ptr::null(),
+            start_time_unix_nanos: 0,
+            attributes: std::ptr::null(),
+            attribute_count: 0,
+            links: std::ptr::null(),
+            link_count: 0,
+        };
+        let child =
+            (vt.tracer_start_span_ex_with_context)(tctx, sv("ambient-child"), &config, &context);
+        assert!(!child.is_null());
+        (vt.span_end)(child);
+        let spans = exporter.get_finished_spans().unwrap();
+        let child_data = spans
+            .iter()
+            .find(|span| span.name == "ambient-child")
+            .unwrap();
+        assert_eq!(
+            child_data.span_context.trace_id().to_bytes(),
+            parent.trace_id
+        );
+        assert_eq!(child_data.parent_span_id.to_bytes(), parent.span_id);
+        assert!(child_data.parent_span_is_remote);
+        (vt.span_free)(child);
         (vt.tracer_free)(tctx);
         (vt.provider_free)(pctx);
     }
