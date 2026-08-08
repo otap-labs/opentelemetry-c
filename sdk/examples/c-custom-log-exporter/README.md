@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Custom C Logs exporter
 
 Receives finished log batches in plain C, with no OTLP transport and no networking.

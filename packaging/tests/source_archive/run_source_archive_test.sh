@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 # source_archive/run_source_archive_test.sh
 #
 # Creates a git archive of HEAD, extracts it outside the repository checkout,

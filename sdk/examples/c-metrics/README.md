@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # C Metrics example (all-in-one)
 
 This original all-in-one example builds an OTLP metric exporter, a periodic reader, and an

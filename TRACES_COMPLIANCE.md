@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Experimental Traces compliance
 
 This ledger records the implemented OpenTelemetry Traces surface for the current

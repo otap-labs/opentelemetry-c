@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Hot-path FFI-overhead benchmarks for the experimental Logs bridge.
 //!
 //! Requires the `otlp-http` cargo feature (part of default features); the `[[bench]]` target

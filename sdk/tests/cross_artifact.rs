@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-artifact proof: the API and SDK are **separate** dynamic libraries that share the
 //! API-owned global provider slot.
 //!
@@ -9,7 +11,8 @@
 //! that API-only calls dispatch to it across the artifact boundary.
 //!
 //! The test **self-skips** when a C compiler is unavailable or the cdylibs have not been
-//! built yet (run `cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk` first).
+//! built yet (run `cargo build -p opentelemetry-c-api` and then
+//! `cargo build -p opentelemetry-c-sdk` first).
 //! Self-skipping is a **local developer convenience only**: when `CI` is set the test
 //! instead **fails hard** if either prerequisite is missing, so the cross-artifact proof
 //! can never silently no-op in CI.
@@ -1233,11 +1236,12 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
                 panic!(
                     "CI=true but the cdylibs are not built: the cross-artifact global-provider \
                      proof cannot run. Build them first with: \
-                     `cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk`."
+                     `cargo build -p opentelemetry-c-api`, then \
+                     `cargo build -p opentelemetry-c-sdk`."
                 );
             }
             eprintln!(
-                "skipping: cdylibs not built. Run: cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk"
+                "skipping: cdylibs not built. Run API and SDK cargo build commands sequentially"
             );
             return;
         }

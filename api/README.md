@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # opentelemetry-c-api
 
 [![Apache License][license-image]][license-url]
@@ -133,9 +135,9 @@ Applications additionally link `libopentelemetry_c_sdk` — see that crate's REA
 `c-basic-traces` example.
 
 **Static-linking caveat.** The static library is emitted, but supported static deployment
-has not been designed or validated. Multiple API copies create independent global provider
-slots, and a static API in an executable combined with a dynamically loaded SDK is
-unsupported.
+has not been validated. An eventual all-static deployment must resolve every instrumentation
+call to exactly one API archive in the final executable. Multiple API copies create independent
+global provider slots, and a static API combined with a dynamically loaded SDK is unsupported.
 
 ## Platform support
 
@@ -143,10 +145,9 @@ The dynamic API/SDK split (instrumentation links the API only; the SDK registers
 API-owned global slot) is supported and continuously verified on **Unix-like dynamic
 linking — Linux and macOS**. The cross-artifact proof test runs on both platforms in CI.
 
-**Windows shared-library use is unsupported.** The SDK cdylib references the API cdylib's `otel_api_*`
-symbols, which on Windows requires linking against the API's generated import library
-(`.dll.lib`) rather than the load-time dynamic-lookup resolution used on Unix. Producing and
-wiring that import library is follow-up work.
+**Windows DLL packaging is experimental.** The CMake build installs each DLL plus its generated
+MSVC import library. It remains experimental until split-artifact tests run continuously on
+Windows CI.
 
 After either shared library has been used, unloading it with `dlclose` is unsupported.
 Using `fork()` without an immediate `exec()` after SDK background workers start is also

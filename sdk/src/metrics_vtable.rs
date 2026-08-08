@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! SDK implementation of the internal Metrics vtable.
 
 use std::os::raw::c_void;

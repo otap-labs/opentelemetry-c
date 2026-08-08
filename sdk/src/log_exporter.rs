@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Opaque Logs exporter handle.
 //!
 //! Mirrors [`crate::metric_exporter`]: an internal enum of concrete exporter kinds behind one

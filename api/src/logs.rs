@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Public OpenTelemetry Logs Bridge API.
 //!
 //! This module owns the C-visible logger provider and logger handles and the no-op default

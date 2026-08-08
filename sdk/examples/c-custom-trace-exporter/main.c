@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * Callback-backed Traces exporter: receive finished span batches in your own C code.
  *

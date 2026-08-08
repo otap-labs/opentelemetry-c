@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 # Sanitizer runs for the experimental Logs bridge.
@@ -67,8 +69,8 @@ run_rust_sanitizer() {
     -p opentelemetry-c-sdk --lib --no-default-features
   # The cross-artifact test is the only one that exercises the real two-cdylib layout with a C
   # caller owning the record buffers, so it is where a stale borrow would actually show up.
-  cargo +nightly build -Zbuild-std --target "$target" \
-    -p opentelemetry-c-api -p opentelemetry-c-sdk
+  cargo +nightly build -Zbuild-std --target "$target" -p opentelemetry-c-api
+  cargo +nightly build -Zbuild-std --target "$target" -p opentelemetry-c-sdk
   cargo +nightly test -Zbuild-std --target "$target" \
     -p opentelemetry-c-sdk --test logs_cross_artifact
   # The custom exporter is the only path where the SDK hands borrowed pointers *out* to C, so
@@ -98,7 +100,8 @@ case "$mode" in
   undefined)
     unset RUSTFLAGS RUSTDOCFLAGS
     export CFLAGS="-fsanitize=undefined -fno-sanitize-recover=all"
-    cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
+    cargo build -p opentelemetry-c-api
+    cargo build -p opentelemetry-c-sdk --all-features
     cargo test -p opentelemetry-c-sdk --test logs_cross_artifact
     cargo test -p opentelemetry-c-sdk --test custom_log_exporter_cross_artifact --all-features
     ;;

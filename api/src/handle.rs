@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Opaque handle plumbing: raw-prefix validation, allocation helpers, and
 //! panic-catching wrappers used by every FFI entry point in the API crate.
 //!

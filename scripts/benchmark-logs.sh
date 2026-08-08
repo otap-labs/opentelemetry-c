@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 # Repeatable benchmark protocol for the experimental Logs bridge, matching the Metrics script so

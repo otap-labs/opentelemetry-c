@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Opaque Metrics exporter handle.
 
 use std::time::Duration;

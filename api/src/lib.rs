@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # opentelemetry-c-api
 //!
 //! The **C API facade** of the `opentelemetry-c` split. This library exposes the public
@@ -23,6 +25,7 @@
 
 mod baggage;
 mod context;
+mod diagnostic;
 mod error;
 mod global;
 mod handle;
@@ -54,6 +57,10 @@ pub use context::{
     otel_context_current, otel_context_destroy, otel_context_scope_detach,
     otel_context_span_context, otel_context_with_baggage, otel_context_with_span_context,
     OtelContext, OtelContextScope,
+};
+pub use diagnostic::{
+    otel_api_report_diagnostic, otel_set_diagnostic_callback, OtelDiagnosticCallbacks,
+    OtelDiagnosticRecord,
 };
 pub use error::{otel_api_clear_last_error, otel_api_set_last_error, otel_last_error_message};
 pub use global::{

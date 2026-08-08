@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! C callback-backed Logs exporter.
 //!
 //! The pinned `LogExporter::export` returns a return-position `impl Future`, so the trait is

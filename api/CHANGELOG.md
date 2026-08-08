@@ -1,9 +1,15 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Changelog
 
 ## Unreleased
 
 ### Added
 
+- API-owned process diagnostic callback for asynchronous and advisory events. Callback state
+  replacement is race-safe, reentrant callbacks are supported, and optional state destruction
+  waits for in-flight reports. Immediate call failures continue to use the thread-local
+  `otel_last_error_message()` channel.
 - API-owned immutable Baggage with builder, lookup/visitor access, context composition, ambient
   preservation, and bounded W3C `baggage` header extraction/injection. Invalid remote members
   are skipped independently; baggage is never promoted automatically into telemetry attributes

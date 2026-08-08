@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Callback-scoped traversal of aggregated Metrics export data.
 
 use std::cell::RefCell;
