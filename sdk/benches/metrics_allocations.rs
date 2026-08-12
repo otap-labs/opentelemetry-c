@@ -215,6 +215,29 @@ fn rust_attributes(shape: AttributeShape, count: usize) -> Vec<KeyValue> {
         .collect()
 }
 
+fn allocation_ceiling(name: &str) -> u64 {
+    if name.starts_with("api_no_sdk/")
+        || name.starts_with("rust_sdk/")
+        || name.contains("/bound_counter_")
+        || name.contains("/bound_histogram_")
+    {
+        return 0;
+    }
+    if let Some(rest) = name.strip_prefix("c_sdk/") {
+        let count = rest
+            .rsplit('/')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("benchmark name ends in an attribute count");
+        return if rest.contains("/string/") {
+            2 * count + 1
+        } else {
+            count + 1
+        };
+    }
+    panic!("missing allocation contract for {name}");
+}
+
 fn measure(name: &str, mut operation: impl FnMut()) {
     for _ in 0..WARMUP_ITERATIONS {
         operation();
@@ -234,6 +257,11 @@ fn measure(name: &str, mut operation: impl FnMut()) {
         "{name},{ITERATIONS},{allocations},{bytes},{:.6},{:.6}",
         allocations as f64 / ITERATIONS as f64,
         bytes as f64 / ITERATIONS as f64
+    );
+    let ceiling = allocation_ceiling(name) * ITERATIONS;
+    assert!(
+        allocations <= ceiling,
+        "allocation contract exceeded for {name}: {allocations} total allocations, ceiling {ceiling}"
     );
 }
 

@@ -37,6 +37,7 @@ use opentelemetry_c_abi::{
     OTEL_LOG_MAX_VALUE_DEPTH, OTEL_LOG_MAX_VALUE_NODES, OTEL_LOG_TRACE_FLAGS_SUPPORTED_MASK,
 };
 use opentelemetry_sdk::logs::{SdkLogger, SdkLoggerProvider};
+use smallvec::SmallVec;
 
 use crate::error::{fail, fail_abi, fail_owned};
 
@@ -681,7 +682,9 @@ fn emit_record(logger: &SdkLogger, view: &OtelLogRecordView) -> OtelStatus {
     };
 
     let body_present = view.body.value_type != OtelLogValueType::Empty as u32;
-    let mut roots: Vec<&OtelLogValue> = Vec::new();
+    // Keep the common small record on the stack. Larger records spill while preserving the
+    // same bounded validation and one owned C-to-SDK conversion.
+    let mut roots: SmallVec<[&OtelLogValue; 16]> = SmallVec::new();
     if roots
         .try_reserve_exact(attributes.len() + usize::from(body_present))
         .is_err()
@@ -694,7 +697,7 @@ fn emit_record(logger: &SdkLogger, view: &OtelLogRecordView) -> OtelStatus {
     if body_present {
         roots.push(&view.body);
     }
-    let mut attribute_keys: Vec<&str> = Vec::new();
+    let mut attribute_keys: SmallVec<[&str; 16]> = SmallVec::new();
     if attribute_keys.try_reserve_exact(attributes.len()).is_err() {
         return fail(
             OtelStatus::InternalError,

@@ -239,6 +239,7 @@ int main(void) {
         goto cleanup;
     }
 
+    /* Hot-loop pattern: bind stable attributes once, then record without re-converting them. */
     status = otel_counter_u64_bind(counter, attrs, 2, &bound_counter);
     if (status != OTEL_STATUS_OK || bound_counter == NULL) {
         print_status_error("otel_counter_u64_bind", status);

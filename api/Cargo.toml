@@ -33,5 +33,9 @@ criterion = { workspace = true }
 name = "api_hotpath"
 harness = false
 
+[[bench]]
+name = "api_allocations"
+harness = false
+
 [lints]
 workspace = true

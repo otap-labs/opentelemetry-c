@@ -108,6 +108,9 @@
 
 ### Changed
 
+- API-only spans now use an immortal shared no-op sentinel, making steady-state no-SDK span
+  start/use/end/destroy allocation-free. Successful API-only recording avoids clearing stale
+  thread-local error state; callers query the last-error message only after failure.
 - Trace and Metrics ABI kind/version/size incompatibilities now consistently report
   `OTEL_STATUS_INVALID_CONFIG`; the public status classification policy is documented.
 - Observable dispatch now uses callback-thread-local registrations instead of a

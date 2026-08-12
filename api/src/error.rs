@@ -50,7 +50,8 @@ pub(crate) fn fail(status: OtelStatus, message: impl Into<Vec<u8>>) -> OtelStatu
 /// Retrieve the last error message recorded on the calling thread.
 ///
 /// The returned view points at thread-local storage valid until the next OpenTelemetry C
-/// call on the same thread. With no recorded error the view is NULL / zero-length.
+/// call on the same thread. With no recorded error the view is NULL / zero-length. Callers
+/// query this only after a failure; successful no-op recording may preserve an older message.
 ///
 /// # Safety
 /// Safe to call at any time.

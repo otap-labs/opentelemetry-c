@@ -34,6 +34,7 @@ opentelemetry_sdk = { workspace = true, features = [
     "experimental_metrics_bound_instruments",
 ] }
 futures-executor = "0.3"
+smallvec = "1.15"
 # OTLP transports are optional exporter implementations, not SDK core. HTTP/protobuf is
 # enabled by default; gRPC/tonic is independently selectable.
 opentelemetry-otlp = { workspace = true, optional = true }
