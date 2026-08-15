@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! API-owned immutable baggage and bounded W3C baggage propagation.
 
 use std::ffi::c_void;

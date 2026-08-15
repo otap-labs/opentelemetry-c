@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Enforced steady-state allocation contract for API-only trace recording.
 //!
 //! Setup is deliberately outside the measured regions. With no SDK installed, starting,

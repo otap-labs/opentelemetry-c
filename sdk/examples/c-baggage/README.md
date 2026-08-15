@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # C baggage across instrumentation libraries
 
 This API-only example extracts a W3C `baggage` header at a request edge, attaches the resulting

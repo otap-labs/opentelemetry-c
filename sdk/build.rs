@@ -4,8 +4,9 @@
 //!
 //! The SDK cdylib references the API cdylib's internal registration symbols
 //! (`otel_api_register_global_provider`, `otel_api_provider_new`, `otel_api_set_last_error`,
-//! `otel_api_clear_last_error`). The native linker records the matching API shared library
-//! as a dependency of the SDK cdylib.
+//! `otel_api_clear_last_error`). Packaging builds set `OTEL_C_API_LINK_DIR` after building the
+//! API cdylib, causing the native linker to record that matching shared library as a dependency
+//! of the SDK cdylib.
 //!
 //! The SDK cdylib has an ordinary native dependency on the API shared library. This is
 //! intentionally a linker-level dependency, not a Cargo dependency on the API crate: the
@@ -14,16 +15,20 @@
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    let link_dir = std::env::var_os("OTEL_C_API_LINK_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            // OUT_DIR is <target>/<profile>/build/<package-hash>/out.
-            let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR")?);
-            out.ancestors().nth(3).map(std::path::Path::to_path_buf)
-        })
-        .expect("cannot determine API shared-library directory");
-
     println!("cargo:rerun-if-env-changed=OTEL_C_API_LINK_DIR");
+    let Some(link_dir) = std::env::var_os("OTEL_C_API_LINK_DIR").map(std::path::PathBuf::from)
+    else {
+        // Ordinary Cargo, test, benchmark, and fuzz builds may compile the SDK without first
+        // producing an API cdylib in the same target directory. Keep those source builds
+        // independent. macOS still needs its historical unresolved-symbol policy; Linux allows
+        // unresolved shared-library symbols by default. Supported packaged shared libraries use
+        // the explicit path above and therefore always record the native dependency.
+        if target_os == "macos" || target_os == "ios" {
+            println!("cargo:rustc-cdylib-link-arg=-Wl,-undefined,dynamic_lookup");
+        }
+        return;
+    };
+
     match target_os.as_str() {
         "windows" => {
             assert_eq!(
