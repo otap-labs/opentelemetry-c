@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # opentelemetry-c-sdk
 
 [![Apache License][license-image]][license-url]
@@ -20,14 +22,14 @@ its own bounded Tokio runtime. **No user-managed async runtime is required.**
 
 Applications link **both** libraries and put both include directories on the search path
 (this header includes the API's `common.h`/`trace.h`). Instrumentation libraries link only
-the API. The SDK cdylib references the API cdylib's internal registration symbols, resolved
-at load time — so the application must link the API alongside the SDK. This load-time
-resolution is supported on **Unix-like dynamic linking (Linux, macOS)**. **Windows
-shared-library use is unsupported** because the required import-library linkage is not
-implemented.
+the API. The SDK cdylib records an ordinary native dependency on the API shared library.
+This is linker-level dependency wiring, not a Cargo dependency on the API Rust crate, which
+could embed a second API instance. Linux and macOS are supported; Windows DLL/import-library
+packaging is experimental.
 
 ```sh
-cargo build --release -p opentelemetry-c-api -p opentelemetry-c-sdk
+cargo build --release -p opentelemetry-c-api
+cargo build --release -p opentelemetry-c-sdk
 
 cc -std=c11 my_app.c \
    -I path/to/opentelemetry-c/api/include \
@@ -36,9 +38,9 @@ cc -std=c11 my_app.c \
    -Wl,-rpath,path/to/target/release -o my_app
 ```
 
-Cargo may emit static libraries, but supported static deployment has not been designed or
-validated. Multiple API copies and a static API combined with a dynamically loaded SDK are
-unsupported.
+Cargo may emit static libraries, but supported static deployment has not been validated.
+An eventual all-static build must link exactly one API archive into the final executable.
+Multiple API copies and mixed static-API/dynamic-SDK deployments are unsupported.
 
 ### Library lifetime
 
@@ -279,7 +281,8 @@ no Tokio runtime exports, flushes, shuts down, and destroys the pipeline.
 Because `cargo test` does not emit cdylib artifacts, build them first:
 
 ```sh
-cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --all-features
+cargo build -p opentelemetry-c-api
+cargo build -p opentelemetry-c-sdk --all-features
 cargo test -p opentelemetry-c-sdk --test cross_artifact --all-features
 cargo test -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact --all-features
 ```
@@ -287,7 +290,7 @@ cargo test -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact -
 The repository's `scripts/test.sh` performs this build step automatically. The test
 self-skips only as a local developer convenience (missing C compiler or unbuilt cdylibs);
 under `CI` it fails hard instead, so the proof can never silently no-op. Verified on
-Unix-like dynamic linking (Linux, macOS); see the API README for the Windows status.
+Unix-like dynamic linking (Linux, macOS); Windows packaging remains experimental.
 
 ## License
 

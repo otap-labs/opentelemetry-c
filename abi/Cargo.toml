@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "opentelemetry-c-abi"
 description = "Shared C-ABI types and internal vtable for the opentelemetry-c API/SDK split (internal)"

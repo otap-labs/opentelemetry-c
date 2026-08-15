@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Building from a source release
 
 `opentelemetry-c` is distributed as source. API and SDK libraries must be built from the
@@ -109,7 +111,8 @@ cc -std=c11 my_app.c \
   -o my_app
 ```
 
-Link or globally load the API before the SDK. Keep both libraries loaded for the lifetime
+The SDK records a normal native dependency on the API shared library, so special global loading
+and load ordering are not required. Keep both libraries loaded for the lifetime
 of all providers, tracers, spans, meters, instruments, callbacks, registrations, and other
 OpenTelemetry handles. `dlclose` after use is unsupported.
 
@@ -126,7 +129,9 @@ The trace, Metrics, and Logs examples provide working Makefiles:
 - [`sdk/examples/c-custom-log-exporter`](../sdk/examples/c-custom-log-exporter)
 - [`sdk/examples/c-custom-trace-exporter`](../sdk/examples/c-custom-trace-exporter)
 
-Windows shared-library use and supported static deployment are not currently available.
+Windows DLL/import-library packaging is experimental. Supported static deployment is not
+currently available; see `VERSIONING.md` for the required one-copy composition and unsupported
+mixed static/dynamic model.
 
 ## Linux shared-library verification
 
@@ -138,7 +143,8 @@ scripts/verify-shared-libraries.sh
 
 The Linux-only script builds separate API and SDK shared objects, compares their `otel_*`
 exports with the committed inventories, verifies that the SDK imports rather than defines the
-API-owned registration symbols, inspects dynamic objects with `nm`, `readelf`, `objdump`, and
-`ldd`, loads the API globally before the SDK, compiles C11/C++17 headers, and runs the OTLP and
+API-owned registration symbols and records an API `DT_NEEDED` dependency, inspects dynamic
+objects with `nm`, `readelf`, `objdump`, and `ldd`, loads the SDK with local scope, compiles
+C11/C++17 headers, and runs the OTLP and
 custom-exporter split-artifact applications. Intentional symbol additions or removals require
 an explicit inventory update.

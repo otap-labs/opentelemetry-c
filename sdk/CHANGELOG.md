@@ -1,9 +1,16 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Changelog
 
 ## Unreleased
 
 ### Added
 
+- Portable SDK-to-API native shared-library linkage replaces process-global symbol lookup.
+  The SDK now records the API as a normal shared dependency on Linux/macOS and uses the API
+  import library on Windows, without adding a Rust crate dependency or duplicating API state.
+- SDK panic containment reports through the API-owned process diagnostic callback in addition
+  to preserving synchronous last-error behavior.
 - General API-owned context parenting through a new append-only trace-vtable capability. The
   SDK validates the versioned borrowed context view and converts its SpanContext into the
   upstream Rust `Context` only for span construction; existing explicit SpanContext and

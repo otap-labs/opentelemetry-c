@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef OPENTELEMETRY_C_METRIC_VIEW_H
 #define OPENTELEMETRY_C_METRIC_VIEW_H
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Trace API surface: tracer providers, tracers, and spans as opaque handles.
 //!
 //! Each handle stores a `*const OtelImplVtable` (NULL = the no-op default) plus an opaque

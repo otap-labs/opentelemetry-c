@@ -1,4 +1,5 @@
 #![no_main]
+// SPDX-License-Identifier: Apache-2.0
 
 //! Fuzz W3C Trace Context extraction (traceparent + tracestate). Feeds arbitrary byte strings
 //! as the two header values; any successfully extracted context is injected back and destroyed.

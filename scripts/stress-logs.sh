@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 # Repeated execution of the Logs lifecycle tests whose failure modes are ordering-dependent

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The batch span processor builder (`otel_batch_span_processor_builder_t`).
 //!
 //! Consumes a [`OtelTraceExporter`] and batch settings, producing a generic

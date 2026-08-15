@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Experimental Metrics compliance
 
 This ledger records the implemented OpenTelemetry Metrics surface for the current

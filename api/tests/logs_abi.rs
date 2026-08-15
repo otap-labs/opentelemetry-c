@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Logs implementation-ABI contract: vtable validation, token lifecycle, and forwarding.
 //!
 //! Uses a hand-written in-test vtable rather than the SDK so the API's side of the internal

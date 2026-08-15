@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 cmake_minimum_required(VERSION 3.21)
 
 # Read coordinated version from api/Cargo.toml before project() declaration.
@@ -56,18 +58,29 @@ endforeach()
 message(STATUS "opentelemetry-c version: ${OTEL_C_VERSION}")
 
 # ── Platform / library naming ─────────────────────────────────────────────────
-if(APPLE)
+if(WIN32)
+    if(NOT MSVC)
+        message(FATAL_ERROR
+            "Experimental Windows packaging currently supports only the MSVC toolchain")
+    endif()
+    set(OTEL_C_LIB_PREFIX "")
+    set(OTEL_C_LIB_SUFFIX ".dll")
+    set(OTEL_C_IMPORT_SUFFIX ".dll.lib")
+    set(OTEL_C_RUNTIME_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}")
+elseif(APPLE)
+    set(OTEL_C_LIB_PREFIX "lib")
     set(OTEL_C_LIB_SUFFIX ".dylib")
+    set(OTEL_C_RUNTIME_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}")
 elseif(UNIX)
+    set(OTEL_C_LIB_PREFIX "lib")
     set(OTEL_C_LIB_SUFFIX ".so")
+    set(OTEL_C_RUNTIME_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}")
 else()
-    message(FATAL_ERROR
-        "Windows shared-library deployment is not currently supported. "
-        "See VERSIONING.md and docs/PACKAGING.md.")
+    message(FATAL_ERROR "Unsupported shared-library platform")
 endif()
 
-set(OTEL_C_API_LIB "libopentelemetry_c_api${OTEL_C_LIB_SUFFIX}")
-set(OTEL_C_SDK_LIB "libopentelemetry_c_sdk${OTEL_C_LIB_SUFFIX}")
+set(OTEL_C_API_LIB "${OTEL_C_LIB_PREFIX}opentelemetry_c_api${OTEL_C_LIB_SUFFIX}")
+set(OTEL_C_SDK_LIB "${OTEL_C_LIB_PREFIX}opentelemetry_c_sdk${OTEL_C_LIB_SUFFIX}")
 
 # ── Cargo target directory (under CMake build dir to avoid touching global state) ─
 set(OTEL_C_CARGO_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo-target"
@@ -189,11 +202,11 @@ set(_cargo_build_env
     "CARGO_TARGET_DIR=${OTEL_C_CARGO_TARGET_DIR}"
 )
 
-set(_cargo_build_cmd
+set(_cargo_common_args
     "${CARGO_EXECUTABLE}" build --locked
-    -p opentelemetry-c-api
-    -p opentelemetry-c-sdk
     ${OTEL_C_CARGO_PROFILE_FLAG}
+)
+set(_cargo_sdk_args
     ${_no_default}
     ${OTEL_C_CARGO_FEATURES_FLAG}
 )
@@ -208,7 +221,10 @@ set(OTEL_C_SDK_LIB_PATH "${OTEL_C_CARGO_LIB_DIR}/${OTEL_C_SDK_LIB}")
 # libraries after any Rust source change.
 add_custom_target(opentelemetry_c_cargo ALL
     COMMAND ${CMAKE_COMMAND} -E env ${_cargo_build_env}
-            ${_cargo_build_cmd}
+            ${_cargo_common_args} -p opentelemetry-c-api
+    COMMAND ${CMAKE_COMMAND} -E env ${_cargo_build_env}
+            "OTEL_C_API_LINK_DIR=${OTEL_C_CARGO_LIB_DIR}"
+            ${_cargo_common_args} -p opentelemetry-c-sdk ${_cargo_sdk_args}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building opentelemetry-c API and SDK with Cargo (incremental)"
     BYPRODUCTS
@@ -232,6 +248,12 @@ set_target_properties(OpenTelemetryC::api PROPERTIES
     IMPORTED_LOCATION "${OTEL_C_API_LIB_PATH}"
     INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/api/include"
 )
+if(WIN32)
+    set_target_properties(OpenTelemetryC::api PROPERTIES
+        IMPORTED_IMPLIB
+            "${OTEL_C_CARGO_LIB_DIR}/opentelemetry_c_api${OTEL_C_IMPORT_SUFFIX}"
+    )
+endif()
 add_dependencies(OpenTelemetryC::api opentelemetry_c_cargo)
 
 add_library(OpenTelemetryC::sdk SHARED IMPORTED GLOBAL)
@@ -241,6 +263,12 @@ set_target_properties(OpenTelemetryC::sdk PROPERTIES
         "${CMAKE_CURRENT_SOURCE_DIR}/api/include;${CMAKE_CURRENT_SOURCE_DIR}/sdk/include"
     INTERFACE_LINK_LIBRARIES OpenTelemetryC::api
 )
+if(WIN32)
+    set_target_properties(OpenTelemetryC::sdk PROPERTIES
+        IMPORTED_IMPLIB
+            "${OTEL_C_CARGO_LIB_DIR}/opentelemetry_c_sdk${OTEL_C_IMPORT_SUFFIX}"
+    )
+endif()
 add_dependencies(OpenTelemetryC::sdk opentelemetry_c_cargo)
 
 # ── Header installation ───────────────────────────────────────────────────────
@@ -269,6 +297,15 @@ install(
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     FILES_MATCHING PATTERN "*.h"
 )
+
+if(WIN32)
+    install(
+        FILES
+            "${OTEL_C_CARGO_LIB_DIR}/opentelemetry_c_api${OTEL_C_IMPORT_SUFFIX}"
+            "${OTEL_C_CARGO_LIB_DIR}/opentelemetry_c_sdk${OTEL_C_IMPORT_SUFFIX}"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    )
+endif()
 install(
     DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/sdk/include/opentelemetry_c"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
@@ -280,7 +317,7 @@ install(
     FILES
         "${OTEL_C_API_LIB_PATH}"
         "${OTEL_C_SDK_LIB_PATH}"
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    DESTINATION "${OTEL_C_RUNTIME_INSTALL_DIR}"
 )
 
 # ── pkg-config ────────────────────────────────────────────────────────────────
@@ -311,7 +348,7 @@ configure_package_config_file(
     # PATH_VARS bakes the configured lib/include dir names (e.g. lib64, include)
     # into the installed config and relocates them relative to the install prefix,
     # so the package works correctly after installation or prefix relocation.
-    PATH_VARS CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_INCLUDEDIR
+    PATH_VARS CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_BINDIR CMAKE_INSTALL_INCLUDEDIR
     NO_CHECK_REQUIRED_COMPONENTS_MACRO
 )
 

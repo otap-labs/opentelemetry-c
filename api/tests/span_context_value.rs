@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! API-only tests for the immutable `otel_span_context_t` value operations (Phase 2).
 //!
 //! These functions operate purely on the API-owned snapshot; no SDK is installed, so they

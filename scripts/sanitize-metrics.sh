@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -63,8 +65,9 @@ run_rust_sanitizer() {
     -p opentelemetry-c-sdk --lib --no-default-features
   cargo +nightly test -Zbuild-std --target "$target" \
     -p opentelemetry-c-sdk --lib --no-default-features --features metrics-async-runtime
+  cargo +nightly build -Zbuild-std --target "$target" -p opentelemetry-c-api
   cargo +nightly build -Zbuild-std --target "$target" \
-    -p opentelemetry-c-api -p opentelemetry-c-sdk --no-default-features \
+    -p opentelemetry-c-sdk --no-default-features \
     --features metrics-async-runtime
   cargo +nightly test -Zbuild-std --target "$target" \
     -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact \
@@ -88,7 +91,8 @@ case "$mode" in
   undefined)
     unset RUSTFLAGS RUSTDOCFLAGS
     export CFLAGS="-fsanitize=undefined -fno-sanitize-recover=all"
-    cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk --no-default-features
+    cargo build -p opentelemetry-c-api
+    cargo build -p opentelemetry-c-sdk --no-default-features
     cargo test -p opentelemetry-c-sdk --test custom_metric_exporter_cross_artifact \
       --no-default-features
     ;;

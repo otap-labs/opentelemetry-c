@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! C callback-backed Metrics exporter.
 
 use std::os::raw::c_void;

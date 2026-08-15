@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-artifact proof for the experimental **Logs** bridge.
 //!
 //! Compiles a C program, links it against BOTH `libopentelemetry_c_api` and
@@ -524,11 +526,12 @@ fn api_only_log_emission_after_sdk_install_exports_through_the_sdk() {
                 panic!(
                     "CI=true but the cdylibs are not built: the Logs cross-artifact proof cannot \
                      run. Build them first with: \
-                     `cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk`."
+                     `cargo build -p opentelemetry-c-api`, then \
+                     `cargo build -p opentelemetry-c-sdk`."
                 );
             }
             eprintln!(
-                "skipping: cdylibs not built. Run: cargo build -p opentelemetry-c-api -p opentelemetry-c-sdk"
+                "skipping: cdylibs not built. Run API and SDK cargo build commands sequentially"
             );
             return;
         }

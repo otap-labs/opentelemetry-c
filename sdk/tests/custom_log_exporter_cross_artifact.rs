@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-artifact custom Logs exporter proof.
 
 use std::path::{Path, PathBuf};

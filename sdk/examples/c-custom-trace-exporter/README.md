@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Custom C Traces exporter
 
 Receives finished span batches in plain C, with no OTLP transport and no networking.

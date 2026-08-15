@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Handle plumbing for the SDK crate's own handles (`otel_sdk_builder_t`, `otel_sdk_t`).
 //!
 //! Mirrors the API crate's handle plumbing, but diagnostics are recorded in the API-owned
@@ -119,6 +121,7 @@ pub(crate) fn guard_status<F: FnOnce() -> OtelStatus>(f: F) -> OtelStatus {
         Ok(s) => s,
         Err(_) => {
             api_ffi::set_last_error("caught panic at FFI boundary");
+            api_ffi::report_diagnostic(3, "caught panic at SDK FFI boundary");
             OtelStatus::InternalError
         }
     }
@@ -129,13 +132,16 @@ pub(crate) fn guard_ptr<T, F: FnOnce() -> *mut T>(f: F) -> *mut T {
         Ok(p) => p,
         Err(_) => {
             api_ffi::set_last_error("caught panic at FFI boundary");
+            api_ffi::report_diagnostic(3, "caught panic at SDK FFI boundary");
             std::ptr::null_mut()
         }
     }
 }
 
 pub(crate) fn guard_unit<F: FnOnce()>(f: F) {
-    let _ = catch_unwind(AssertUnwindSafe(f));
+    if catch_unwind(AssertUnwindSafe(f)).is_err() {
+        api_ffi::report_diagnostic(3, "caught panic at SDK FFI boundary");
+    }
 }
 
 #[cfg(test)]

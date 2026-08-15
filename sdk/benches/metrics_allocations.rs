@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Steady-state allocation counts for synchronous Metrics recording.
 //!
 //! The timed Criterion suites remain the source for latency. This executable uses a counting
