@@ -231,6 +231,10 @@ extern otel_tracer_t* otel_tracer_provider_get_tracer(const otel_tracer_provider
 extern otel_span_t* otel_tracer_start_span(const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*);
 extern int otel_span_get_context(const otel_span_t*, otel_span_context_t**);
 extern void otel_span_context_destroy(otel_span_context_t*);
+extern int otel_trace_propagation_inject_traceparent(
+    const otel_span_context_t*, char*, size_t, size_t*);
+extern int otel_trace_propagation_extract(
+    otel_string_view_t, otel_string_view_t, otel_span_context_t**);
 extern otel_span_t* otel_tracer_start_span_with_context(
     const otel_tracer_t*, otel_string_view_t, const otel_span_start_options_t*,
     const otel_span_context_t*);
@@ -365,7 +369,7 @@ static void destroy_observable_state(void* user_data){
 static void work(void){
     otel_tracer_provider_t* p = otel_global_tracer_provider();
     otel_tracer_t* t = otel_tracer_provider_get_tracer(p, cs("instr"), cs("1.0"), emp());
-    otel_span_t* parent = otel_tracer_start_span(t, cs("parent"), (void*)0);
+    otel_span_t* parent = otel_tracer_start_span(t, cs("ambient-parent"), (void*)0);
     otel_span_set_string_attribute(parent, cs("k"), cs("v"));
     otel_span_context_t* parent_context = (void*)0;
     otel_span_start_options_t o; o.kind=2; o.parent=(void*)0;
@@ -378,7 +382,7 @@ static void work(void){
         if (!context || otel_context_attach(context,&scope)!=0) abort();
         otel_context_destroy(context);
         otel_span_start_options_ex_t ex={sizeof(ex),2,0,0,0,0,0,0,0,0,1,0};
-        child=otel_tracer_start_span_ex(t, cs("child"), &ex);
+        child=otel_tracer_start_span_ex(t, cs("ambient-child"), &ex);
         if (child == (void*)0) abort();
         if (otel_context_scope_detach(&scope)!=0) abort();
     } else {
@@ -387,7 +391,34 @@ static void work(void){
     }
     otel_span_end(child); otel_span_destroy(child);
     if (parent) { otel_span_end(parent); otel_span_destroy(parent); }
+    int has_context = parent_context != (void*)0;
     if (parent_context) otel_span_context_destroy(parent_context);
+
+    if (has_context) {
+        otel_span_t* propagation_parent =
+            otel_tracer_start_span(t, cs("propagation-parent"), (void*)0);
+        otel_span_context_t* local_context = (void*)0;
+        otel_span_context_t* remote_context = (void*)0;
+        char traceparent[55];
+        size_t traceparent_len = 0;
+        if (!propagation_parent ||
+            otel_span_get_context(propagation_parent, &local_context) != 0 || !local_context ||
+            otel_trace_propagation_inject_traceparent(
+                local_context, traceparent, sizeof(traceparent), &traceparent_len) != 0 ||
+            traceparent_len != sizeof(traceparent) ||
+            otel_trace_propagation_extract(
+                (otel_string_view_t){traceparent, traceparent_len}, emp(), &remote_context) != 0 ||
+            !remote_context) abort();
+        otel_span_start_options_t remote_options;
+        remote_options.kind=1; remote_options.parent=(void*)0;
+        otel_span_t* propagation_child = otel_tracer_start_span_with_context(
+            t, cs("propagation-child"), &remote_options, remote_context);
+        if (!propagation_child) abort();
+        otel_span_end(propagation_child); otel_span_destroy(propagation_child);
+        otel_span_end(propagation_parent); otel_span_destroy(propagation_parent);
+        otel_span_context_destroy(remote_context);
+        otel_span_context_destroy(local_context);
+    }
     otel_tracer_destroy(t); otel_tracer_provider_destroy(p);
 }
 static int metrics_work(void){
@@ -945,7 +976,7 @@ fn assert_decoded_metrics(bodies: &[Vec<u8>]) {
     assert_metric_requests(&requests);
 }
 
-fn assert_snapshot_child_trace_relationship(bodies: &[Vec<u8>]) {
+fn assert_trace_context_parenting(bodies: &[Vec<u8>]) {
     let requests = bodies
         .iter()
         .map(|body| ExportTraceServiceRequest::decode(body.as_slice()).expect("decode OTLP traces"))
@@ -956,18 +987,24 @@ fn assert_snapshot_child_trace_relationship(bodies: &[Vec<u8>]) {
         .flat_map(|resource| &resource.scope_spans)
         .flat_map(|scope| &scope.spans)
         .collect::<Vec<_>>();
-    let correlated = spans.iter().any(|child| {
-        child.name == "child"
-            && spans.iter().any(|parent| {
-                parent.name == "parent"
-                    && child.trace_id == parent.trace_id
-                    && child.parent_span_id == parent.span_id
-            })
-    });
-    assert!(
-        correlated,
-        "no exported child preserved the snapshot parent's trace ID and span ID"
-    );
+    for (parent_name, child_name) in [
+        ("ambient-parent", "ambient-child"),
+        ("propagation-parent", "propagation-child"),
+    ] {
+        let parent = spans
+            .iter()
+            .find(|span| span.name == parent_name)
+            .unwrap_or_else(|| panic!("missing exported {parent_name}"));
+        let child = spans
+            .iter()
+            .find(|span| span.name == child_name)
+            .unwrap_or_else(|| panic!("missing exported {child_name}"));
+        assert_eq!(child.trace_id, parent.trace_id, "{child_name} trace ID");
+        assert_eq!(
+            child.parent_span_id, parent.span_id,
+            "{child_name} parent ID"
+        );
+    }
 }
 
 #[derive(Default)]
@@ -1338,7 +1375,7 @@ fn api_only_calls_after_sdk_install_export_through_sdk() {
         !trace_bodies.is_empty(),
         "the mock collector received no OTLP trace requests through the API-owned trace slot"
     );
-    assert_snapshot_child_trace_relationship(&trace_bodies);
+    assert_trace_context_parenting(&trace_bodies);
     eprintln!("cross-artifact export OK: {received} protobuf bytes via API-only path");
 }
 
