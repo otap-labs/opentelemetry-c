@@ -96,7 +96,8 @@ Using `fork()` without an immediate `exec()` after SDK background workers start 
 unsupported.
 
 Ready-to-run examples that link both libraries are in
-[`examples/c-basic-traces/`](examples/c-basic-traces) and
+[`examples/c-basic-traces/`](examples/c-basic-traces) (explicit, ambient, and W3C-propagated
+parent/child traces) and
 [`examples/c-metrics-basic/`](examples/c-metrics-basic),
 [`examples/c-metrics-instruments/`](examples/c-metrics-instruments),
 [`examples/c-manual-metrics/`](examples/c-manual-metrics),
