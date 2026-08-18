@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! OTLP Metrics exporter builder with optional HTTP/protobuf and gRPC transports.
 
 use std::time::Duration;

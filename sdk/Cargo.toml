@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "opentelemetry-c-sdk"
 description = "Rust-backed C SDK for OpenTelemetry traces and Metrics that installs into the C API's global providers"

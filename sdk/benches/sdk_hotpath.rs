@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Hot-path FFI-overhead benchmarks for the **SDK-backed** path.
 //!
 //! Requires the `otlp` cargo feature (part of default features); the `[[bench]]` target sets

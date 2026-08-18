@@ -1,4 +1,5 @@
 #![no_main]
+// SPDX-License-Identifier: Apache-2.0
 
 //! Fuzzes the custom Traces exporter callback ABI end to end.
 //!

@@ -1,4 +1,5 @@
 #![no_main]
+// SPDX-License-Identifier: Apache-2.0
 
 use std::os::raw::{c_char, c_void};
 use std::ptr;

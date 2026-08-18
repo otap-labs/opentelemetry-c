@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 @PACKAGE_INIT@
 
 # OpenTelemetryC CMake package configuration.
@@ -20,16 +22,33 @@ set_and_check(_otelc_lib_dir     "@PACKAGE_CMAKE_INSTALL_LIBDIR@")
 set_and_check(_otelc_include_dir "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
 
 # Determine platform suffix
-if(APPLE)
+if(WIN32)
+    if(NOT MSVC)
+        message(FATAL_ERROR
+            "OpenTelemetryC: experimental Windows packages require the MSVC toolchain")
+    endif()
+    set_and_check(_otelc_bin_dir "@PACKAGE_CMAKE_INSTALL_BINDIR@")
+    set(_otelc_lib_prefix "")
+    set(_otelc_lib_suffix ".dll")
+    set(_otelc_import_suffix ".dll.lib")
+    set(_otelc_runtime_dir "${_otelc_bin_dir}")
+elseif(APPLE)
+    set(_otelc_lib_prefix "lib")
     set(_otelc_lib_suffix ".dylib")
 elseif(UNIX)
+    set(_otelc_lib_prefix "lib")
     set(_otelc_lib_suffix ".so")
 else()
-    message(FATAL_ERROR "OpenTelemetryC: Windows is not supported.")
+    message(FATAL_ERROR "OpenTelemetryC: unsupported shared-library platform.")
 endif()
 
-set(_otelc_api_lib "${_otelc_lib_dir}/libopentelemetry_c_api${_otelc_lib_suffix}")
-set(_otelc_sdk_lib "${_otelc_lib_dir}/libopentelemetry_c_sdk${_otelc_lib_suffix}")
+if(WIN32)
+    set(_otelc_api_lib "${_otelc_runtime_dir}/opentelemetry_c_api${_otelc_lib_suffix}")
+    set(_otelc_sdk_lib "${_otelc_runtime_dir}/opentelemetry_c_sdk${_otelc_lib_suffix}")
+else()
+    set(_otelc_api_lib "${_otelc_lib_dir}/${_otelc_lib_prefix}opentelemetry_c_api${_otelc_lib_suffix}")
+    set(_otelc_sdk_lib "${_otelc_lib_dir}/${_otelc_lib_prefix}opentelemetry_c_sdk${_otelc_lib_suffix}")
+endif()
 
 # Validate that the libraries exist at the resolved location
 if(NOT EXISTS "${_otelc_api_lib}")
@@ -58,6 +77,10 @@ if(NOT TARGET OpenTelemetryC::api)
         IMPORTED_LOCATION "${_otelc_api_lib}"
         INTERFACE_INCLUDE_DIRECTORIES "${_otelc_include_dir}"
     )
+    if(WIN32)
+        set_target_properties(OpenTelemetryC::api PROPERTIES
+            IMPORTED_IMPLIB "${_otelc_lib_dir}/opentelemetry_c_api${_otelc_import_suffix}")
+    endif()
 endif()
 
 # ── OpenTelemetryC::sdk ───────────────────────────────────────────────────────
@@ -68,6 +91,10 @@ if(NOT TARGET OpenTelemetryC::sdk)
         INTERFACE_INCLUDE_DIRECTORIES "${_otelc_include_dir}"
         INTERFACE_LINK_LIBRARIES "OpenTelemetryC::api"
     )
+    if(WIN32)
+        set_target_properties(OpenTelemetryC::sdk PROPERTIES
+            IMPORTED_IMPLIB "${_otelc_lib_dir}/opentelemetry_c_sdk${_otelc_import_suffix}")
+    endif()
 endif()
 
 set(OpenTelemetryC_FOUND TRUE)

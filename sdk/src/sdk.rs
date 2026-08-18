@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! SDK builder and lifecycle.
 //!
 //! The [`OtelSdkBuilder`] holds resource/service configuration and a list of span processors,

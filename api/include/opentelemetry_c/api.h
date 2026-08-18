@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * opentelemetry_c/api.h
  *
@@ -32,9 +34,9 @@
  *
  * Platform status
  * ---------------
- * The shared-global model is verified on Unix-like dynamic linking (Linux and macOS).
- * Windows shared-library use is unsupported — the SDK's undefined otel_api_*
- * symbols need the API's import library at link time (follow-up work); see README.md.
+ * The SDK has a native shared-library dependency on the API; this is not a Rust crate
+ * dependency and does not embed a second API instance. Linux and macOS are verified.
+ * Windows DLL/import-library packaging is experimental until exercised in release CI.
  *
  * Status: EXPERIMENTAL. The C ABI is not yet stable (see README.md).
  */

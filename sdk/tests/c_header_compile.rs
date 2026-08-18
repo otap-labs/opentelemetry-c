@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Best-effort check that the SDK header (and the split example) compile with a system C
 //! compiler (syntax-only). `sdk.h` includes the API's `common.h`/`trace.h`, so the API's
 //! include directory is also on the search path — mirroring how an application compiles.

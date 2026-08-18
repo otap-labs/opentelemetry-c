@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 name: Packaging
 
 on:
@@ -15,6 +17,62 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  windows-cmake-install:
+    name: CMake install (windows experimental)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure
+        shell: pwsh
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE/install"
+          -DOTEL_SDK_NO_DEFAULT_FEATURES=ON
+
+      - name: Build and install
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+          cmake --install build --config Release
+
+      - name: Verify DLLs and import libraries
+        shell: pwsh
+        run: |
+          $prefix = "$env:GITHUB_WORKSPACE/install"
+          $expected = @(
+            "$prefix/bin/opentelemetry_c_api.dll",
+            "$prefix/bin/opentelemetry_c_sdk.dll",
+            "$prefix/lib/opentelemetry_c_api.dll.lib",
+            "$prefix/lib/opentelemetry_c_sdk.dll.lib",
+            "$prefix/include/opentelemetry_c/api.h"
+          )
+          foreach ($path in $expected) {
+            if (-not (Test-Path $path)) { throw "Missing installed artifact: $path" }
+          }
+
+      - name: Build and run installed consumers
+        shell: pwsh
+        run: |
+          $prefix = "$env:GITHUB_WORKSPACE/install"
+          $env:PATH = "$prefix/bin;$env:PATH"
+          $consumers = @("api_consumer", "sdk_consumer", "cpp_header_consumer")
+          foreach ($consumer in $consumers) {
+            $build = "build-$consumer"
+            cmake -S "packaging/tests/$consumer" -B $build `
+              -DCMAKE_PREFIX_PATH="$prefix"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cmake --build $build --config Release --parallel
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            ctest --test-dir $build -C Release --output-on-failure
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
   cmake-install:
     name: CMake install (${{ matrix.os }})
     strategy:

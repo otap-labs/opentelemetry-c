@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! API-owned cross-signal context and authoritative per-thread attachment stack.
 
 use std::cell::RefCell;

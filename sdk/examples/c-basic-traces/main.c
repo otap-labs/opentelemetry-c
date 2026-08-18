@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * c-basic-traces: a C program demonstrating the split API/SDK model.
  *

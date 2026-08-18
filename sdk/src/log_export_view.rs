@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Callback-scoped, read-only C view of an exported Logs batch.
 //!
 //! The pinned `LogExporter::export` receives a borrowed `LogBatch`. This module converts that

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Callback-scoped, read-only C view of an exported trace span batch.
 
 use std::os::raw::{c_char, c_void};

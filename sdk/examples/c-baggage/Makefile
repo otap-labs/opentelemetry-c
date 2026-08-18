@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 .PHONY: all run clean
 API_INC := ../../../api/include
 LIB_DIR := ../../../target/release

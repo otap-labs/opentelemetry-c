@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Makefile for the split-artifact c-basic-traces example.
 #
 # Builds BOTH Rust libraries (opentelemetry-c-api and opentelemetry-c-sdk) and links this
@@ -31,7 +33,8 @@ all: $(BINARY)
 
 build-rust:
 	@echo "Building opentelemetry-c-api and opentelemetry-c-sdk (release)..."
-	@cd ../../.. && cargo build --release -p opentelemetry-c-api -p opentelemetry-c-sdk
+	@cd ../../.. && cargo build --release -p opentelemetry-c-api
+	@cd ../../.. && cargo build --release -p opentelemetry-c-sdk
 
 $(BINARY): main.c build-rust
 	@echo "Linking $(BINARY) against libopentelemetry_c_api + libopentelemetry_c_sdk..."

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Performance contract and benchmarks
 
 The C API/SDK is a thin ABI boundary over the Rust OpenTelemetry SDK. It must not add runtime

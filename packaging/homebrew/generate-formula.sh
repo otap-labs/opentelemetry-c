@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
 # packaging/homebrew/generate-formula.sh
 #
 # Generates a Homebrew formula for opentelemetry-c from a source tarball.

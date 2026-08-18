@@ -1,4 +1,5 @@
 #![no_main]
+// SPDX-License-Identifier: Apache-2.0
 
 //! Structured fuzzing of the versioned span-limits surface
 //! ([`otel_sdk_builder_set_span_limits`]).

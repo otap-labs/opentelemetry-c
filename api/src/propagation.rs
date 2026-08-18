@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! W3C Trace Context propagation: a bounded, direct `traceparent`/`tracestate` API.
 //!
 //! This module operates entirely on the API-owned immutable [`OtelSpanContext`]; it needs no

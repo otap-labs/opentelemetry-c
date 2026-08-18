@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Releasing
 
 Releases are coordinated, experimental, and source-only. Follow

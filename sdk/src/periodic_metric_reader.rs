@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Periodic Metrics reader builder and transferable reader handle.
 
 use std::time::Duration;

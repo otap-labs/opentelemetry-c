@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 #include <opentelemetry_c/api.h>
 
 void worker_read_current_baggage(void);

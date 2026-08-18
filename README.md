@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # OpenTelemetry C
 
 A **Rust-backed C implementation** of OpenTelemetry traces, Metrics, and Logs, delivered as one
@@ -26,7 +28,7 @@ All three signals are available, but the C API and ABI remain experimental.
 Releases are **source-only**: one version and tag cover the API, SDK, and internal ABI
 packages. No prebuilt native binaries or crates.io packages are distributed, and API/SDK
 artifacts from different tags must not be mixed. Linux and macOS shared-library use are
-supported; Windows shared-library use and static deployment are unsupported.
+supported; Windows DLL packaging is experimental and static deployment is unsupported.
 
 Build and install from source using [docs/BUILDING.md](docs/BUILDING.md) and
 [docs/PACKAGING.md](docs/PACKAGING.md). See
@@ -128,7 +130,7 @@ constraints.
 
 The supported model is Linux or macOS shared-library use with exactly one API library loaded
 before the matching SDK library. Keep both loaded after use; `dlclose` is unsupported.
-Windows shared-library use and static deployment are unsupported. See
+Windows DLL packaging is experimental and static deployment is unsupported. See
 [VERSIONING.md](VERSIONING.md#supported-shared-library-model).
 
 ## License

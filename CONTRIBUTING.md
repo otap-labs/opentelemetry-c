@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Contributing
 
 This repository produces one coordinated C product. The API, SDK, and internal ABI Cargo
@@ -19,3 +21,11 @@ packages share one version and are not independently published.
 
 Run the repository's existing formatting, linting, and test scripts for code changes. For
 release-policy changes, also run `scripts/check-release-metadata.sh`.
+
+## License identifiers
+
+Original source, configuration, scripts, and documentation must include the
+machine-readable identifier `SPDX-License-Identifier: Apache-2.0` using the file format's
+comment syntax. Do not add headers to generated files, lockfiles, binary or fuzz-corpus data,
+JSON files, or content-sensitive symbol inventories. Run
+`scripts/check-license-headers.py --fix` to add missing identifiers to eligible files.

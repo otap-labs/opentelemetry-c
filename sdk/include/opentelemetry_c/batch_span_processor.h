@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * opentelemetry_c/batch_span_processor.h
  *

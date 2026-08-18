@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Fuzzing
 
 The `fuzz/` package uses `cargo-fuzz` and libFuzzer with structured, valid-memory inputs.

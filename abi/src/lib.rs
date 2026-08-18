@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared C-ABI definitions for the `opentelemetry-c` API/SDK split.
 //!
 //! This crate is an **internal** rlib linked statically into both the `opentelemetry-c-api`
